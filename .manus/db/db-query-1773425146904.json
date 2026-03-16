@@ -1,0 +1,9 @@
+{
+  "query": "\nUPDATE products SET active = 1 WHERE active = true;\nUPDATE products SET featured = 1 WHERE featured = true;\nUPDATE products SET featured = 0 WHERE featured = false;\nUPDATE products SET active = 0 WHERE active = false;\n",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2aaBpqLKkmjwgo3.root --database kaHK4RB3xr97ujYTRknxkX --execute \nUPDATE products SET active = 1 WHERE active = true;\nUPDATE products SET featured = 1 WHERE featured = true;\nUPDATE products SET featured = 0 WHERE featured = false;\nUPDATE products SET active = 0 WHERE active = false;\n",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 68
+}

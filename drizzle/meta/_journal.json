@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1773423439175,
+      "tag": "0000_remarkable_speed_demon",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1773423579195,
+      "tag": "0001_secret_randall",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1773488633350,
+      "tag": "0002_familiar_roughhouse",
+      "breakpoints": true
+    }
+  ]
+}
