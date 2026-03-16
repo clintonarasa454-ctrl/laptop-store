@@ -421,6 +421,7 @@ export default function AdminContent() {
                   )}
 
                   {formType === "announcement" && (
+                    <>
                     <div className="space-y-2">
                       <Label>Announcement Image (Optional)</Label>
                       <div 
@@ -447,6 +448,7 @@ export default function AdminContent() {
                       <Label>Link URL (Optional)</Label>
                       <Input value={formData.linkUrl || ""} onChange={(e) => setFormData({ ...formData, linkUrl: e.target.value })} placeholder="e.g. /products?category=laptops or https://..." />
                     </div>
+                    </>
                   )}
 
                   {formType === "promotion" && (
