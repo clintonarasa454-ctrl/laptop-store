@@ -192,10 +192,15 @@ export async function upsertProduct(data: {
 }) {
   const db = await getDb();
   if (!db) return;
+  const payload = {
+    ...data,
+    images: data.images ?? [],
+    specifications: data.specifications ?? {},
+  };
   if (data.id) {
-    await db.update(products).set(data).where(eq(products.id, data.id));
+    await db.update(products).set(payload).where(eq(products.id, data.id));
   } else {
-    await db.insert(products).values(data);
+    await db.insert(products).values(payload as any);
   }
 }
 
