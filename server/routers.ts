@@ -199,24 +199,28 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const existing = await getUserByEmail(input.email);
-        if (existing) throw new TRPCError({ code: "CONFLICT", message: "Email already in use" });
-        
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your Render DATABASE_URL variable." });
 
-        const openId = `local-${nanoid()}`;
-        const hashedPassword = hashPassword(input.password);
-        
-        await db.insert(users).values({
-          openId,
-          name: input.name,
-          email: input.email,
-          password: hashedPassword,
-          loginMethod: "email",
-          role: "user",
-          lastSignedIn: new Date()
-        });
+        try {
+          const existing = await getUserByEmail(input.email);
+          if (existing) throw new TRPCError({ code: "CONFLICT", message: "Email already in use" });
+
+          const openId = `local-${nanoid()}`;
+          const hashedPassword = hashPassword(input.password);
+          
+          await db.insert(users).values({
+            openId,
+            name: input.name,
+            email: input.email,
+            password: hashedPassword,
+            loginMethod: "email",
+            role: "user",
+            lastSignedIn: new Date()
+          });
+        } catch (err: any) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `DB Error: ${err.message}` });
+        }
 
         const user = await getUserByEmail(input.email);
         if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
@@ -277,7 +281,16 @@ export const appRouter = router({
     login: publicProcedure
       .input(z.object({ email: z.string().email(), password: z.string() }))
       .mutation(async ({ ctx, input }) => {
-        const user = await getUserByEmail(input.email);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your Render DATABASE_URL variable." });
+
+        let user;
+        try {
+          user = await getUserByEmail(input.email);
+        } catch (err: any) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `DB Error: ${err.message}` });
+        }
+
         if (!user || !user.password) {
           throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
         }
