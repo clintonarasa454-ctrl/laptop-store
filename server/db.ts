@@ -27,8 +27,20 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      const pool = mysql.createPool(process.env.DATABASE_URL);
+      let dbUrl = process.env.DATABASE_URL.trim();
       
+      // Remove accidental quotes if pasted directly from .env into Render
+      if ((dbUrl.startsWith('"') && dbUrl.endsWith('"')) || (dbUrl.startsWith("'") && dbUrl.endsWith("'"))) {
+        dbUrl = dbUrl.slice(1, -1);
+      }
+      
+      // Automatically append SSL requirement for TiDB Serverless if not present
+      if (dbUrl.includes("tidbcloud.com") && !dbUrl.includes("ssl=")) {
+        dbUrl += dbUrl.includes("?") ? "&ssl={\"rejectUnauthorized\":true}" : "?ssl={\"rejectUnauthorized\":true}";
+      }
+
+      const pool = mysql.createPool(dbUrl);
+
       // Test the connection immediately to catch Auth or SSL errors
       const connection = await pool.getConnection();
       connection.release();
