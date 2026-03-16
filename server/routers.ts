@@ -305,7 +305,6 @@ export const appRouter = router({
           throw new TRPCError({ code: "FORBIDDEN", message: "Please verify your email before logging in. Check your inbox." });
         }
 
-        const db = await getDb();
         if (db) {
           await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, user.id));
         }
