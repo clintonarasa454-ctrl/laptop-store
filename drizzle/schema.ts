@@ -59,6 +59,7 @@ export const products = mysqlTable("products", {
   sku: varchar("sku", { length: 128 }),
   images: json("images").$type<string[]>(),
   specifications: json("specifications").$type<Record<string, string>>(),
+  tags: json("tags").$type<string[]>(),
   rating: decimal("rating", { precision: 3, scale: 2 }).default("0"),
   reviewCount: int("reviewCount").default(0),
   featured: boolean("featured").default(false),

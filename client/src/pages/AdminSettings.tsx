@@ -54,6 +54,14 @@ export default function AdminSettings() {
       { title: "Desktops", link: "/products?category=desktops", desc: "High-performance desktop systems for every use case", image: "", icon: "Cpu" },
       { title: "Accessories", link: "/products?category=accessories", desc: "Premium peripherals and accessories", image: "", icon: "Headphones" },
     ],
+    lifestyles: [
+      { title: "Creative & Technical", description: "For designers, developers, and artists.", icon: "Palette", color: "text-purple-500 bg-purple-500/10", link: "/products?tag=creative" },
+      { title: "Professional", description: "For business, productivity, and meetings.", icon: "Briefcase", color: "text-blue-500 bg-blue-500/10", link: "/products?tag=professional" },
+      { title: "Gaming", description: "For high-performance, immersive gaming.", icon: "Gamepad2", color: "text-red-500 bg-red-500/10", link: "/products?tag=gaming" },
+      { title: "School & Hobbies", description: "For students, learning, and personal projects.", icon: "BookOpen", color: "text-green-500 bg-green-500/10", link: "/products?tag=student" },
+      { title: "Entertainment", description: "For movies, music, and streaming.", icon: "Film", color: "text-yellow-500 bg-yellow-500/10", link: "/products?tag=entertainment" },
+      { title: "Business", description: "For enterprise-level security and management.", icon: "Building", color: "text-gray-500 bg-gray-500/10", link: "/products?tag=business" },
+    ],
   });
 
   const [appearanceSettings, setAppearanceSettings] = useState({
@@ -144,6 +152,7 @@ export default function AdminSettings() {
         floatingBadge1: (dbGeneral as any).floatingBadge1 || prev.floatingBadge1,
         floatingBadge2: (dbGeneral as any).floatingBadge2 || prev.floatingBadge2,
         homeCategories: (dbGeneral as any).homeCategories || prev.homeCategories,
+        lifestyles: (dbGeneral as any).lifestyles || prev.lifestyles,
       }));
     }
   }, [dbGeneral]);

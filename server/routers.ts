@@ -552,6 +552,7 @@ export const appRouter = router({
         z.object({
           categoryId: z.number().optional(),
           search: z.string().optional(),
+          tag: z.string().optional(),
           featured: z.boolean().optional(),
           limit: z.number().optional(),
           offset: z.number().optional(),
@@ -1382,6 +1383,7 @@ export const appRouter = router({
           sku: z.string().optional(),
           images: z.array(z.string()).optional(),
           specifications: z.record(z.string(), z.string()).optional(),
+          tags: z.array(z.string()).optional(),
           featured: z.boolean().optional(),
         })
       )
@@ -1406,6 +1408,7 @@ export const appRouter = router({
           sku: z.string().optional(),
           images: z.array(z.string()).optional(),
           specifications: z.record(z.string(), z.string()).optional(),
+          tags: z.array(z.string()).optional(),
           featured: z.boolean().optional(),
         })
       )
@@ -1442,6 +1445,7 @@ export const appRouter = router({
           sku: z.string().optional(),
           images: z.array(z.string()).optional(),
           specifications: z.record(z.string(), z.string()).optional(),
+          tags: z.array(z.string()).optional(),
           featured: z.boolean().optional(),
           active: z.boolean().optional(),
         })

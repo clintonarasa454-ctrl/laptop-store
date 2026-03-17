@@ -20,6 +20,7 @@ interface Product {
   stock: number;
   featured?: boolean | null;
   shortDescription?: string | null;
+  tags?: unknown;
 }
 
 interface ProductCardProps {
@@ -51,6 +52,7 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
 
   const images = (product.images as string[]) ?? [];
   const image = images[0] ?? "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=400&q=80";
+  const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
   const price = parseFloat(product.price);
   const discount = comparePrice > price ? Math.round((1 - price / comparePrice) * 100) : 0;
@@ -110,6 +112,17 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
           </h3>
           {product.shortDescription && (
             <p className="text-xs text-muted-foreground line-clamp-2 flex-1">{product.shortDescription}</p>
+          )}
+
+          {/* Tags */}
+          {tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {tags.slice(0, 3).map((tag) => (
+                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-md bg-secondary text-secondary-foreground/80 font-medium whitespace-nowrap">
+                  {tag}
+                </span>
+              ))}
+            </div>
           )}
 
           {/* Rating */}

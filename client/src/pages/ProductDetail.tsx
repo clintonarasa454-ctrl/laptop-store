@@ -128,6 +128,7 @@ export default function ProductDetail() {
   }
 
   const images = (product.images as string[]) ?? [];
+  const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
   if (images.length === 0) images.push("https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80");
   const specs = (product.specifications as Record<string, string>) ?? {};
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
@@ -247,6 +248,17 @@ export default function ProductDetail() {
             {/* Short description */}
             {product.shortDescription && (
               <p className="text-muted-foreground leading-relaxed">{product.shortDescription}</p>
+            )}
+
+            {/* Tags */}
+            {tags.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {tags.map((tag) => (
+                  <Link key={tag} href={`/products?tag=${encodeURIComponent(tag)}`}>
+                    <Badge variant="secondary" className="cursor-pointer hover:bg-[var(--brand)] hover:text-white transition-colors font-medium">#{tag}</Badge>
+                  </Link>
+                ))}
+              </div>
             )}
 
             {/* Stock */}

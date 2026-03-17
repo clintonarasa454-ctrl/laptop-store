@@ -39,6 +39,7 @@ export default function AdminProducts() {
     shortDescription: "",
     images: [] as string[],
     specifications: "",
+    tags: "",
     featured: false,
     active: true,
   };
@@ -100,6 +101,7 @@ export default function AdminProducts() {
       shortDescription: product.shortDescription || "",
       images: Array.isArray(product.images) ? product.images : [],
       specifications: specsString,
+      tags: Array.isArray(product.tags) ? product.tags.join(", ") : "",
       featured: product.featured || false,
       active: product.active ?? true,
     });
@@ -180,6 +182,7 @@ export default function AdminProducts() {
       sku: formData.sku || undefined,
       images: formData.images,
       specifications: specsObj,
+      tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean),
       featured: formData.featured,
       active: formData.active,
     });
@@ -469,6 +472,14 @@ export default function AdminProducts() {
                       onChange={(e) => setFormData({ ...formData, specifications: e.target.value })}
                       rows={4}
                       placeholder="Processor: Intel Core i7&#10;RAM: 16GB DDR5"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Tags (Comma separated)</Label>
+                    <Input
+                      value={formData.tags}
+                      onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
+                      placeholder="gaming, professional, creative"
                     />
                   </div>
                   <div className="flex items-center gap-6">

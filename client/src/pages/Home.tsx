@@ -5,6 +5,12 @@ import {
   ChevronRight,
   Clock,
   Cpu,
+  Palette,
+  Briefcase,
+  Gamepad2,
+  BookOpen,
+  Film,
+  Building,
   Headphones,
   MapPin,
   Monitor,
@@ -38,6 +44,15 @@ const fallbackHomeCategories = [
   { title: "Laptops", link: "/products?category=laptops", desc: "Ultra-thin, powerful laptops for work and play", image: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80", icon: "Monitor" },
   { title: "Desktops", link: "/products?category=desktops", desc: "High-performance desktop systems for every use case", image: "https://images.unsplash.com/photo-1587202372634-32705e3bf49c?w=600&q=80", icon: "Cpu" },
   { title: "Accessories", link: "/products?category=accessories", desc: "Premium peripherals and accessories", image: "https://images.unsplash.com/photo-1625842268584-8f3296236761?w=600&q=80", icon: "Headphones" },
+];
+
+const fallbackLifestyles = [
+  { title: "Creative & Technical", description: "For designers, developers, and artists.", icon: "Palette", color: "text-purple-500 bg-purple-500/10", link: "/products?tag=creative" },
+  { title: "Professional", description: "For business, productivity, and meetings.", icon: "Briefcase", color: "text-blue-500 bg-blue-500/10", link: "/products?tag=professional" },
+  { title: "Gaming", description: "For high-performance, immersive gaming.", icon: "Gamepad2", color: "text-red-500 bg-red-500/10", link: "/products?tag=gaming" },
+  { title: "School & Hobbies", description: "For students, learning, and personal projects.", icon: "BookOpen", color: "text-green-500 bg-green-500/10", link: "/products?tag=student" },
+  { title: "Entertainment", description: "For movies, music, and streaming.", icon: "Film", color: "text-yellow-500 bg-yellow-500/10", link: "/products?tag=entertainment" },
+  { title: "Business", description: "For enterprise-level security and management.", icon: "Building", color: "text-gray-500 bg-gray-500/10", link: "/products?tag=business" },
 ];
 
 const darkMapStyle = [
@@ -95,7 +110,7 @@ export default function Home() {
     if (activeBanners.length <= 1 || isHovered) return;
     const timer = setInterval(() => {
       setCurrentBannerIndex((prev) => (prev + 1) % activeBanners.length);
-    }, 8000); // Fades to the next banner every 8 seconds
+    }, 6000); // Auto-rotate interval (e.g., 6000 = waits 6 seconds per slide)
     return () => clearInterval(timer);
   }, [activeBanners.length, isHovered]);
 
@@ -112,6 +127,8 @@ export default function Home() {
   const Badge2Icon = (LucideIcons as any)[badge2.icon] || LucideIcons.Truck;
   
   const displayBrands = settings?.brands && settings.brands.length > 0 ? settings.brands : ["Samsung", "Dell", "HP", "Lenovo", "Asus", "Apple", "Acer"];
+
+  const lifestyles = settings?.general?.lifestyles || fallbackLifestyles;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -228,7 +245,7 @@ export default function Home() {
                     key={banner.id}
                     src={banner.image}
                     alt={banner.title}
-                    className={`absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner transition-opacity duration-[2000ms] ${
+                      className={`absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner transition-opacity duration-[1500ms] ${
                       idx === currentBannerIndex ? "opacity-100 z-10" : "opacity-0 z-0"
                     }`}
                   />
@@ -311,7 +328,7 @@ export default function Home() {
             {[...displayBrands, ...displayBrands, ...displayBrands, ...displayBrands].map((brand, idx) => {
               const iconSlug = brand.toLowerCase().replace(/[^a-z0-9]/g, '');
               return (
-                <Link key={idx} href={`/products?brand=${encodeURIComponent(brand)}`} className="mx-3 block">
+                <a key={idx} href="#shop-by-lifestyle" className="mx-3 block">
                   <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 w-40 sm:w-48 h-32 cursor-pointer">
                     {/* Logo filling the card */}
                     <div className="absolute inset-0 flex items-center justify-center p-6 pb-10">
@@ -333,7 +350,7 @@ export default function Home() {
                       </span>
                     </div>
                   </div>
-                </Link>
+                </a>
               );
             })}
           </div>
@@ -472,6 +489,46 @@ export default function Home() {
               </Link>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* ── Shop by Lifestyle ─────────────────────────────────────────────────── */}
+      <section id="shop-by-lifestyle" className="py-20 scroll-mt-20">
+        <div className="container">
+          <div className="text-center mb-10">
+            <h2 className="font-display text-3xl font-bold">A Laptop for Every Lifestyle</h2>
+            <p className="text-muted-foreground mt-2 max-w-2xl mx-auto">
+              Whether you're a creative professional, a hardcore gamer, or a student, find the perfect machine tailored to your needs.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {lifestyles.map((lifestyle) => {
+              const Icon = (LucideIcons as any)[lifestyle.icon] || Package;
+              return (
+                <Link key={lifestyle.title} href={lifestyle.link} className="block">
+                  <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-36 sm:h-40 cursor-pointer">
+                    {/* Massive Icon filling the background */}
+                    <div className="absolute inset-0 flex items-center justify-center p-6 pb-12">
+                      <Icon className="w-full h-full opacity-[0.03] group-hover:opacity-[0.08] group-hover:scale-110 transition-all duration-500 text-foreground" strokeWidth={1} />
+                    </div>
+                    
+                    {/* Gradient fade on the lower side */}
+                    <div className="absolute inset-0 bg-gradient-to-t from-background/95 via-background/40 to-transparent opacity-90 group-hover:from-[var(--brand)]/90 group-hover:via-[var(--brand)]/30 group-hover:opacity-100 transition-all duration-500" />
+                    
+                    {/* Text at the bottom */}
+                    <div className="absolute bottom-0 left-0 right-0 p-5 text-center flex flex-col items-center justify-end">
+                      <h3 className="font-display font-bold text-sm sm:text-base tracking-widest text-foreground uppercase relative z-10 flex items-center justify-center gap-1 transition-colors group-hover:text-white">
+                        {lifestyle.title} <ArrowRight className="w-4 h-4 opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300" />
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-1 relative z-10 opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 transition-all duration-300 px-2 line-clamp-1 group-hover:text-white/80">
+                        {lifestyle.description}
+                      </p>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
         </div>
       </section>
 

@@ -140,6 +140,7 @@ export async function getProducts(opts?: {
   search?: string;
   featured?: boolean;
   limit?: number;
+  tag?: string;
   offset?: number;
 }) {
   const db = await getDb();
@@ -154,6 +155,9 @@ export async function getProducts(opts?: {
         like(products.brand, `%${opts.search}%`)
       ) as ReturnType<typeof eq>
     );
+  }
+  if (opts?.tag) {
+    conditions.push(sql`JSON_CONTAINS(COALESCE(${products.tags}, CAST('[]' AS JSON)), ${JSON.stringify(opts.tag)})` as ReturnType<typeof eq>);
   }
   return db
     .select()
@@ -199,6 +203,7 @@ export async function upsertProduct(data: {
   sku?: string;
   images?: string[];
   specifications?: Record<string, string>;
+  tags?: string[];
   featured?: boolean;
   active?: boolean;
 }) {
@@ -208,6 +213,7 @@ export async function upsertProduct(data: {
     ...data,
     images: data.images ?? [],
     specifications: data.specifications ?? {},
+    tags: data.tags ?? [],
   };
   if (data.id) {
     await db.update(products).set(payload).where(eq(products.id, data.id));
