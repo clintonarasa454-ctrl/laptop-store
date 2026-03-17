@@ -104,11 +104,25 @@ export default function Products() {
       if (slugs.length > 0) newParams.set("categories", slugs.join(","));
     }
 
-    const qs = newParams.toString();
-    const newUrl = qs ? `${location}?${qs}` : location;
-    const currentUrl = searchString ? `${location}?${searchString}` : location;
+    // Bulletproof deep comparison of params to avoid encoding/ordering infinite loops
+    let hasChanges = false;
+    const newKeys = Array.from(newParams.keys());
+    const currentKeys = Array.from(currentParams.keys());
     
-    if (currentUrl !== newUrl) {
+    if (newKeys.length !== currentKeys.length) {
+      hasChanges = true;
+    } else {
+      for (const key of newKeys) {
+        if (newParams.get(key) !== currentParams.get(key)) {
+          hasChanges = true;
+          break;
+        }
+      }
+    }
+
+    if (hasChanges) {
+      const qs = newParams.toString();
+      const newUrl = qs ? `${location}?${qs}` : location;
       setLocation(newUrl, { replace: true });
     }
   }, [isInitialized, search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
