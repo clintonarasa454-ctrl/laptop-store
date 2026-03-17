@@ -154,7 +154,7 @@ export const appRouter = router({
       .input(z.object({ keys: z.array(z.string()) }))
       .query(async ({ input }) => {
         // Only allow public-facing settings to be queried unauthenticated
-        const allowed = ["general", "appearance", "social", "payment_methods", "brands"];
+        const allowed = ["general", "appearance", "social", "payment_methods", "brands", "shipping"];
         const result: Record<string, any> = {};
         for (const k of input.keys) {
           if (allowed.includes(k)) {
@@ -1229,7 +1229,9 @@ export const appRouter = router({
 
   // ─── Admin ─────────────────────────────────────────────────────────────────
   admin: router({
-    stats: adminProcedure.query(() => getAdminStats()),
+    stats: adminProcedure
+      .input(z.object({ timeRange: z.string().optional() }).optional())
+      .query(({ input }) => getAdminStats(input?.timeRange)),
 
     globalSearch: adminProcedure
       .input(z.object({ query: z.string() }))

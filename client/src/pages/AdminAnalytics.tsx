@@ -32,12 +32,13 @@ const COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981"];
 
 export default function AdminAnalytics() {
   const [timeRange, setTimeRange] = useState("30d");
-  const { data: stats, isLoading } = trpc.admin.stats.useQuery(undefined, {
+  const { data: stats, isLoading } = trpc.admin.stats.useQuery({ timeRange }, {
     refetchInterval: 15000,
   });
 
   const revenueData = stats?.revenueData || [];
   const categoryData = stats?.categoryData || [];
+  const brandData = stats?.brandData || [];
   const trafficSourceData = stats?.trafficSourceData || [];
 
   const totalVisitors = revenueData.reduce((sum: number, day: any) => sum + (day.visitors || 0), 0) || 1;
@@ -193,7 +194,7 @@ export default function AdminAnalytics() {
         </div>
 
         {/* Charts - Secondary row */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="p-6">
             <h3 className="font-semibold mb-6">Sales by Category</h3>
             <div className="h-[300px]">
@@ -204,6 +205,21 @@ export default function AdminAnalytics() {
                   <YAxis type="category" dataKey="name" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} />
                   <Tooltip cursor={{ fill: "var(--muted)" }} contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "8px" }} />
                   <Bar dataKey="sales" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={32} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <h3 className="font-semibold mb-6">Sales by Brand</h3>
+            <div className="h-[300px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={brandData} layout="vertical" margin={{ top: 0, right: 0, left: 20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--border)" />
+                  <XAxis type="number" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => formatPrice(val)} />
+                  <YAxis type="category" dataKey="name" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} />
+                  <Tooltip cursor={{ fill: "var(--muted)" }} contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "8px" }} />
+                  <Bar dataKey="sales" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={32} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

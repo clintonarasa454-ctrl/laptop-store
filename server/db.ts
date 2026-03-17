@@ -591,11 +591,11 @@ export async function trackPageView(path: string) {
 }
 
 // ─── Admin Stats ──────────────────────────────────────────────────────────────
-export async function getAdminStats() {
+export async function getAdminStats(timeRange: string = "30d") {
   const db = await getDb();
   if (!db) return {
     totalOrders: 0, totalRevenue: "0", totalUsers: 0, totalProducts: 0, totalCustomers: 0, pendingOrders: 0, recentOrders: [],
-    monthlyRevenueData: [], productPerformanceData: [], categoryData: [], trafficSourceData: [], revenueData: [],
+    monthlyRevenueData: [], productPerformanceData: [], categoryData: [], brandData: [], trafficSourceData: [], revenueData: [],
     trends: { revenue: 0, orders: 0, customers: 0, products: 0, pageViews: 0, conversion: 0, aov: 0, returning: 0 }
   };
 
@@ -604,8 +604,14 @@ export async function getAdminStats() {
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  // Dynamic Time Range
+  let days = 30;
+  if (timeRange === "7d") days = 7;
+  else if (timeRange === "90d") days = 90;
+  else if (timeRange === "12m") days = 365;
+
+  const dynamicDaysAgo = new Date();
+  dynamicDaysAgo.setDate(dynamicDaysAgo.getDate() - days);
   
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -632,10 +638,10 @@ export async function getAdminStats() {
       paymentStatus: orders.paymentStatus, createdAt: orders.createdAt, customerName: users.name,
     }).from(orders).leftJoin(users, eq(orders.userId, users.id)).orderBy(desc(orders.createdAt)).limit(5),
     db.select({ total: orders.total, createdAt: orders.createdAt }).from(orders).where(and(sql`${orders.createdAt} >= ${sixMonthsAgo}`, eq(orders.paymentStatus, "paid"))),
-    db.select({ total: orders.total, createdAt: orders.createdAt }).from(orders).where(and(sql`${orders.createdAt} >= ${sevenDaysAgo}`, eq(orders.paymentStatus, "paid"))),
-    db.select({ path: pageViews.path, createdAt: pageViews.createdAt }).from(pageViews).where(sql`${pageViews.createdAt} >= ${sevenDaysAgo}`),
+    db.select({ total: orders.total, createdAt: orders.createdAt }).from(orders).where(and(sql`${orders.createdAt} >= ${dynamicDaysAgo}`, eq(orders.paymentStatus, "paid"))),
+    db.select({ path: pageViews.path, createdAt: pageViews.createdAt }).from(pageViews).where(sql`${pageViews.createdAt} >= ${dynamicDaysAgo}`),
     db.select().from(orderItems),
-    db.select({ categoryName: categories.name, subtotal: orderItems.subtotal }).from(orderItems).innerJoin(products, eq(orderItems.productId, products.id)).innerJoin(categories, eq(products.categoryId, categories.id)),
+    db.select({ categoryName: categories.name, subtotal: orderItems.subtotal, brand: products.brand }).from(orderItems).innerJoin(products, eq(orderItems.productId, products.id)).innerJoin(categories, eq(products.categoryId, categories.id)),
     db.select({ userId: orders.userId, count: sql<number>`COUNT(*)` }).from(orders).groupBy(orders.userId),
     db.select({ count: sql<number>`COUNT(*)` }).from(users).where(sql`${users.createdAt} >= ${thirtyDaysAgo}`),
     db.select({ count: sql<number>`COUNT(*)` }).from(users).where(sql`${users.createdAt} >= ${sixtyDaysAgo} AND ${users.createdAt} < ${thirtyDaysAgo}`),
@@ -661,22 +667,39 @@ export async function getAdminStats() {
   });
   const monthlyRevenueData = Object.values(monthlyDataMap).sort((a, b) => a._ts - b._ts).map(({_ts, ...rest}) => rest);
 
-  // Daily Revenue (last 7 days)
+  // Dynamic Revenue & Visitors Chart
   const dailyDataMap: Record<string, { date: string, revenue: number, visitors: number, _ts: number }> = {};
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const dateStr = `${months[d.getMonth()]} ${d.getDate()}`;
-    dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, _ts: d.getTime() };
+  if (days === 365) {
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const dateStr = `${months[d.getMonth()]} ${d.getFullYear()}`;
+      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, _ts: new Date(d.getFullYear(), d.getMonth(), 1).getTime() };
+    }
+    recent7DaysOrders.forEach(o => {
+      const dateStr = `${months[o.createdAt.getMonth()]} ${o.createdAt.getFullYear()}`;
+      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].revenue += parseFloat(o.total as string);
+    });
+    recentPageViews.forEach(pv => {
+      const dateStr = `${months[pv.createdAt.getMonth()]} ${pv.createdAt.getFullYear()}`;
+      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].visitors += 1;
+    });
+  } else {
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = `${months[d.getMonth()]} ${d.getDate()}`;
+      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, _ts: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() };
+    }
+    recent7DaysOrders.forEach(o => {
+      const dateStr = `${months[o.createdAt.getMonth()]} ${o.createdAt.getDate()}`;
+      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].revenue += parseFloat(o.total as string);
+    });
+    recentPageViews.forEach(pv => {
+      const dateStr = `${months[pv.createdAt.getMonth()]} ${pv.createdAt.getDate()}`;
+      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].visitors += 1;
+    });
   }
-  recent7DaysOrders.forEach(o => {
-    const dateStr = `${months[o.createdAt.getMonth()]} ${o.createdAt.getDate()}`;
-    if (dailyDataMap[dateStr]) dailyDataMap[dateStr].revenue += parseFloat(o.total as string);
-  });
-  recentPageViews.forEach(pv => {
-    const dateStr = `${months[pv.createdAt.getMonth()]} ${pv.createdAt.getDate()}`;
-    if (dailyDataMap[dateStr]) dailyDataMap[dateStr].visitors += 1;
-  });
   const revenueData = Object.values(dailyDataMap).sort((a, b) => a._ts - b._ts).map(({_ts, ...rest}) => rest);
 
   // Product Performance
@@ -686,12 +709,18 @@ export async function getAdminStats() {
   });
   const productPerformanceData = Object.entries(productSales).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5);
 
-  // Category Sales
+  // Category & Brand Sales
   const catSalesMap: Record<string, number> = {};
+  const brandSalesMap: Record<string, number> = {};
   categorySalesData.forEach(row => {
-    catSalesMap[row.categoryName] = (catSalesMap[row.categoryName] || 0) + parseFloat(row.subtotal as string);
+    const subtotal = parseFloat(row.subtotal as string);
+    catSalesMap[row.categoryName] = (catSalesMap[row.categoryName] || 0) + subtotal;
+    if (row.brand) {
+      brandSalesMap[row.brand] = (brandSalesMap[row.brand] || 0) + subtotal;
+    }
   });
   const categoryData = Object.entries(catSalesMap).map(([name, sales]) => ({ name, sales })).sort((a, b) => b.sales - a.sales);
+  const brandData = Object.entries(brandSalesMap).map(([name, sales]) => ({ name, sales })).sort((a, b) => b.sales - a.sales).slice(0, 10);
 
   const returningUsersCount = userOrderCounts.filter(u => Number(u.count) > 1).length;
 
@@ -771,6 +800,7 @@ export async function getAdminStats() {
     revenueData,
     productPerformanceData: productPerformanceData.length ? productPerformanceData : [{ name: "No Sales", value: 1 }],
     categoryData: categoryData.length ? categoryData : [{ name: "No Sales", sales: 1 }],
+    brandData: brandData.length ? brandData : [{ name: "No Sales", sales: 1 }],
     trafficSourceData: computedTrafficSourceData.length ? computedTrafficSourceData : [{ name: "No Traffic", value: 1 }],
   };
 }
