@@ -7,8 +7,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, GripVertical, Upload, X, Zap } from "lucide-react";
+import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, GripVertical, Upload, X, Zap, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCategories() {
@@ -56,7 +63,7 @@ export default function AdminCategories() {
     if (category) {
       setFormData({ ...category });
     } else {
-      setFormData({ name: "", slug: "", description: "", imageUrl: "", featured: false });
+      setFormData({ name: "", slug: "", description: "", imageUrl: "", featured: false, active: true, parentId: null });
     }
     setShowForm(true);
   };
@@ -112,6 +119,8 @@ export default function AdminCategories() {
       description: formData.description || undefined,
       imageUrl: formData.imageUrl || undefined,
       featured: formData.featured,
+      active: formData.active ?? true,
+      parentId: formData.parentId,
     });
   };
 
@@ -172,8 +181,8 @@ export default function AdminCategories() {
                 className={`p-4 flex flex-col cursor-move transition-all duration-300 ${
                   draggedItemIndex === index 
                     ? "opacity-40 border-2 border-dashed border-[var(--brand)] bg-muted scale-[0.98] shadow-inner" 
-                    : "hover:border-[var(--brand)]/50 shadow-sm"
-                }`}
+                : "hover:border-[var(--brand)]/50 shadow-sm"
+            } ${cat.active === false ? "opacity-60 bg-muted/30" : ""}`}
                 draggable
                 onDragStart={(e) => handleDragStart(e, index)}
                 onDragEnter={() => handleDragEnter(index)}
@@ -193,8 +202,10 @@ export default function AdminCategories() {
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
+                {cat.parentId && <span className="text-muted-foreground font-normal text-lg">↳</span>}
                     <h3 className="font-semibold text-lg">{cat.name}</h3>
                     {cat.featured && <Badge variant="secondary" className="text-[10px] py-0 h-5 bg-[var(--brand)]/10 text-[var(--brand)] hover:bg-[var(--brand)]/20 border-[var(--brand)]/20"><Zap className="w-3 h-3 mr-1" /> Featured</Badge>}
+                {cat.active === false && <Badge variant="secondary" className="text-[10px] py-0 h-5"><EyeOff className="w-3 h-3 mr-1" /> Hidden</Badge>}
                   </div>
                   <p className="text-xs text-muted-foreground font-mono mb-2">/{cat.slug}</p>
                   <p className="text-sm text-muted-foreground line-clamp-2">{cat.description || "No description provided."}</p>
@@ -225,6 +236,18 @@ export default function AdminCategories() {
                   <Button type="button" variant="ghost" size="sm" onClick={closeForm}>✕</Button>
                 </div>
                 <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Parent Category</Label>
+                <Select value={formData.parentId ? String(formData.parentId) : "none"} onValueChange={(val) => setFormData({ ...formData, parentId: val === "none" ? null : parseInt(val) })}>
+                  <SelectTrigger className="bg-background"><SelectValue placeholder="None (Top Level Category)" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None (Top Level Category)</SelectItem>
+                    {categories?.filter(c => c.id !== formData.id && !(c as any).parentId).map((c) => (
+                      <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
                   <div className="space-y-2"><Label>Category Name *</Label><Input required value={formData.name || ""} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Laptops" /></div>
                   <div className="space-y-2"><Label>Slug (URL friendly)</Label><Input value={formData.slug || ""} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} placeholder="e.g. laptops (auto-generated if empty)" /></div>
                   <div className="space-y-2">
@@ -266,6 +289,10 @@ export default function AdminCategories() {
                     <Label className="cursor-pointer">Featured on Homepage</Label>
                     <Switch checked={formData.featured} onCheckedChange={(c) => setFormData({ ...formData, featured: c })} />
                   </div>
+              <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
+                <Label className="cursor-pointer">Active (Visible)</Label>
+                <Switch checked={formData.active ?? true} onCheckedChange={(c) => setFormData({ ...formData, active: c })} />
+              </div>
                   <div className="space-y-2"><Label>Description</Label><Textarea value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Category description" rows={3}/></div>
                 </div>
                 <div className="flex justify-end gap-3 pt-2">

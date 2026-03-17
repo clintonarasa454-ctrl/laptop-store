@@ -551,7 +551,7 @@ export const appRouter = router({
     list: publicProcedure
       .input(
         z.object({
-          categoryId: z.number().optional(),
+          categoryId: z.union([z.number(), z.array(z.number())]).optional(),
           search: z.string().optional(),
           tag: z.string().optional(),
           featured: z.boolean().optional(),
@@ -1469,17 +1469,19 @@ export const appRouter = router({
       .input(
         z.object({
           id: z.number().optional(),
+          parentId: z.number().nullable().optional(),
           name: z.string().min(1),
           slug: z.string().min(1),
           description: z.string().optional(),
           imageUrl: z.string().optional(),
           featured: z.boolean().optional(),
+          active: z.boolean().optional(),
         })
       )
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (db && input.id) {
-          await db.update(categoriesSchema).set({ name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl, featured: input.featured ?? false }).where(eq(categoriesSchema.id, input.id));
+          await db.update(categoriesSchema).set({ parentId: input.parentId ?? null, name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl, featured: input.featured ?? false, active: input.active ?? true }).where(eq(categoriesSchema.id, input.id));
         } else {
           await upsertCategory(input);
         }

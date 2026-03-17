@@ -179,18 +179,18 @@ export async function getCategoryBySlug(slug: string) {
   return result[0];
 }
 
-export async function upsertCategory(data: { name: string; slug: string; description?: string; imageUrl?: string; featured?: boolean }) {
+export async function upsertCategory(data: { name: string; slug: string; description?: string; imageUrl?: string; featured?: boolean; active?: boolean; parentId?: number | null }) {
   const db = await getDb();
   if (!db) return;
   await db
     .insert(categories)
-    .values({ ...data, featured: data.featured ?? false })
-    .onDuplicateKeyUpdate({ set: { name: data.name, description: data.description, imageUrl: data.imageUrl, featured: data.featured ?? false } });
+    .values({ ...data, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null })
+    .onDuplicateKeyUpdate({ set: { name: data.name, description: data.description, imageUrl: data.imageUrl, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null } });
 }
 
 // ─── Products ─────────────────────────────────────────────────────────────────
 export async function getProducts(opts?: {
-  categoryId?: number;
+  categoryId?: number | number[];
   search?: string;
   featured?: boolean;
   limit?: number;
@@ -200,7 +200,13 @@ export async function getProducts(opts?: {
   const db = await getDb();
   if (!db) return [];
   const conditions = [eq(products.active, true)];
-  if (opts?.categoryId) conditions.push(eq(products.categoryId, opts.categoryId));
+  if (opts?.categoryId !== undefined) {
+    if (Array.isArray(opts.categoryId)) {
+      if (opts.categoryId.length > 0) conditions.push(inArray(products.categoryId, opts.categoryId));
+    } else {
+      conditions.push(eq(products.categoryId, opts.categoryId));
+    }
+  }
   if (opts?.featured) conditions.push(eq(products.featured, true));
   if (opts?.search) {
     conditions.push(

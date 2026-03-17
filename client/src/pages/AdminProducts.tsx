@@ -10,6 +10,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SelectGroup,
+  SelectLabel,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2 } from "lucide-react";
@@ -449,7 +451,15 @@ export default function AdminProducts() {
                           <SelectValue placeholder="Select a category" />
                         </SelectTrigger>
                         <SelectContent>
-                          {categories?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                        {categories?.filter(c => !(c as any).parentId).map(parent => (
+                          <SelectGroup key={parent.id}>
+                            <SelectLabel className="font-semibold text-[var(--brand)]">{parent.name}</SelectLabel>
+                            <SelectItem value={String(parent.id)}>All {parent.name}</SelectItem>
+                            {categories.filter(c => (c as any).parentId === parent.id).map(child => (
+                              <SelectItem key={child.id} value={String(child.id)} className="pl-6">{child.name}</SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))}
                         </SelectContent>
                       </Select>
                     </div>

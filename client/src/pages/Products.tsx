@@ -37,7 +37,9 @@ export default function Products() {
 
   const { data: categories } = trpc.categories.list.useQuery();
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] });
-  const orderedCategories = categories ? [...categories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
+  const activeCategories = categories ? categories.filter(c => (c as any).active !== false) : [];
+  const orderedCategories = [...activeCategories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
+  const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const currency = settings?.general?.currency || "$";
 
@@ -76,9 +78,7 @@ export default function Products() {
 
   // Sync state to URL seamlessly
   useEffect(() => {
-    // Get fresh search string directly from window to avoid stale closures
-    const currentSearch = window.location.search;
-    const currentParams = new URLSearchParams(currentSearch);
+    const currentParams = new URLSearchParams(searchString);
     const newParams = new URLSearchParams();
     
     if (search) newParams.set("search", search);
@@ -127,17 +127,25 @@ export default function Products() {
 
     if (hasChanges) {
       const newUrl = qs ? `${location}?${qs}` : location;
+      const currentUrl = searchString ? `${location}?${searchString}` : location;
       // Only push if the full URL string actually differs
-      if (`${location}${currentSearch}` !== newUrl) {
+      if (currentUrl !== newUrl) {
         setLocation(newUrl, { replace: true });
       }
     }
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, setLocation]);
+  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
+
+  // Include child categories if a parent is selected
+  const categoryIdsToFetch = selectedCategories.length > 0 ? selectedCategories.flatMap(id => {
+    const children = categories?.filter(c => (c as any).parentId === id).map(c => c.id) || [];
+    return [id, ...children];
+  }) : undefined;
 
   const { data: products, isLoading } = trpc.products.list.useQuery({
     search: search || undefined,
     featured: featuredParam || undefined,
     tag: tagFilter || undefined,
+    categoryId: categoryIdsToFetch,
     limit: 100,
   });
 
@@ -283,25 +291,38 @@ export default function Products() {
                 >
                   All Categories
                 </button>
-                {orderedCategories.map((cat) => {
-                  const isSelected = selectedCategories.includes(cat.id);
-                  return (
+              {rootCategories.map((cat) => {
+                const isSelected = selectedCategories.includes(cat.id);
+                const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
+                return (
+                  <div key={cat.id} className="space-y-0.5">
                     <button
-                      key={cat.id}
-                      onClick={() => {
-                        setSelectedCategories((prev) =>
-                          isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id]
-                        );
-                      }}
+                      onClick={() => setSelectedCategories((prev) => isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id])}
                       className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"
+                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-foreground font-medium"
                       }`}
                     >
                       <span>{cat.name}</span>
                       {isSelected && <Check className="w-3.5 h-3.5" />}
                     </button>
-                  );
-                })}
+                    {children.map(child => {
+                      const isChildSelected = selectedCategories.includes(child.id);
+                      return (
+                        <button
+                          key={child.id}
+                          onClick={() => setSelectedCategories((prev) => isChildSelected ? prev.filter((id) => id !== child.id) : [...prev, child.id])}
+                          className={`w-full flex items-center justify-between px-3 py-1.5 pl-6 rounded-md text-sm transition-colors ${
+                            isChildSelected ? "bg-[var(--brand)]/5 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          <span>{child.name}</span>
+                          {isChildSelected && <Check className="w-3.5 h-3.5" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })}
               </div>
             </div>
 

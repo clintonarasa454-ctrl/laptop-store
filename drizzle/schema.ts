@@ -33,11 +33,13 @@ export type InsertUser = typeof users.$inferInsert;
 // ─── Categories ───────────────────────────────────────────────────────────────
 export const categories = mysqlTable("categories", {
   id: int("id").autoincrement().primaryKey(),
+  parentId: int("parentId"),
   name: varchar("name", { length: 128 }).notNull(),
   slug: varchar("slug", { length: 128 }).notNull().unique(),
   description: text("description"),
   imageUrl: longtext("imageUrl"),
   featured: boolean("featured").default(false).notNull(),
+  active: boolean("active").default(true).notNull(),
   order: int("order").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });

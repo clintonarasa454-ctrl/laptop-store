@@ -365,7 +365,7 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-3 gap-5">
-            {(dbCategories || []).filter((c: any) => c.featured).slice(0, 3).map((cat: any, i: number) => {
+            {(dbCategories || []).filter((c: any) => c.featured && c.active !== false).slice(0, 3).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
               // A simple way to map category names to icons, can be expanded.
               const Icon = cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones;

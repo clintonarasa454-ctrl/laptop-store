@@ -28,6 +28,9 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "./ui/dropdown-menu";
 
 const categoryIcons: Record<string, React.ReactNode> = {
@@ -49,7 +52,9 @@ export default function Navbar() {
 
   const { data: categories } = trpc.categories.list.useQuery();
   const { data: cartItems } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
-  const orderedCategories = categories ? [...categories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
+  const activeCategories = categories ? categories.filter(c => (c as any).active !== false) : [];
+  const orderedCategories = [...activeCategories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
+  const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
 
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance"] });
   const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
@@ -204,14 +209,37 @@ export default function Navbar() {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                {orderedCategories.map((cat) => (
-                  <DropdownMenuItem key={cat.id} asChild>
-                    <Link href={`/products?category=${cat.slug}`} className="flex items-center gap-2 cursor-pointer">
-                      {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />}
-                      {cat.name}
-                    </Link>
-                  </DropdownMenuItem>
-                ))}
+            {rootCategories.map((cat) => {
+              const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
+              if (children.length > 0) {
+                return (
+                  <DropdownMenuSub key={cat.id}>
+                    <DropdownMenuSubTrigger className="flex items-center gap-2 cursor-pointer">
+                      {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} {cat.name}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem asChild>
+                        <Link href={`/products?category=${cat.slug}`} className="cursor-pointer font-medium text-[var(--brand)]">All {cat.name}</Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      {children.map(child => (
+                        <DropdownMenuItem key={child.id} asChild>
+                          <Link href={`/products?category=${child.slug}`} className="cursor-pointer">{child.name}</Link>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                );
+              }
+              return (
+                <DropdownMenuItem key={cat.id} asChild>
+                  <Link href={`/products?category=${cat.slug}`} className="flex items-center gap-2 cursor-pointer">
+                    {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />}
+                    {cat.name}
+                  </Link>
+                </DropdownMenuItem>
+              );
+            })}
               </DropdownMenuContent>
             </DropdownMenu>
             <Link href="/products?featured=true" className="px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
@@ -389,14 +417,24 @@ export default function Navbar() {
 
           <div className="space-y-1.5">
             <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-3 px-1">Categories</p>
-            {orderedCategories.map((cat) => (
-              <Link key={cat.id} href={`/products?category=${cat.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors group">
-                <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                  {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} 
+            {rootCategories.map((cat) => {
+              const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
+              return (
+                <div key={cat.id} className="space-y-0.5">
+                  <Link href={`/products?category=${cat.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors group">
+                    <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                      {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} 
+                    </div>
+                    {cat.name}
+                  </Link>
+                  {children.map(child => (
+                    <Link key={child.id} href={`/products?category=${child.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 ml-9 rounded-xl text-sm text-muted-foreground hover:bg-muted transition-colors">
+                      {child.name}
+                    </Link>
+                  ))}
                 </div>
-                {cat.name}
-              </Link>
-            ))}
+              );
+            })}
           </div>
 
           {!isAuthenticated && (

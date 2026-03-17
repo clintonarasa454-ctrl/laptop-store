@@ -38,9 +38,25 @@ export default function ProductDetail() {
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "shipping"] });
 
   const { data: product, isLoading } = trpc.products.bySlug.useQuery({ slug: slug! });
+  const { data: categories } = trpc.categories.list.useQuery();
+
+  // Smart Cross-Selling Logic
+  let crossSellCategoryId = product?.categoryId;
+  let crossSellTitle = "Related Products";
+  if (product && categories) {
+    const currentCat = categories.find(c => c.id === product.categoryId);
+    if (currentCat?.slug.includes('laptop') || currentCat?.slug.includes('desktop')) {
+      const accCat = categories.find(c => c.slug.includes('access') || c.slug.includes('peripheral'));
+      if (accCat) {
+        crossSellCategoryId = accCat.id;
+        crossSellTitle = "Recommended Accessories";
+      }
+    }
+  }
+
   const { data: relatedProducts } = trpc.products.list.useQuery(
-    { categoryId: product?.categoryId, limit: 4 },
-    { enabled: !!product }
+    { categoryId: crossSellCategoryId, limit: 4 },
+    { enabled: !!product && !!categories }
   );
   const { data: reviews, isLoading: loadingReviews } = trpc.products.reviews.useQuery(
     { productId: product?.id ?? 0 },
@@ -453,7 +469,7 @@ export default function ProductDetail() {
         {/* Related products */}
         {relatedProducts && relatedProducts.filter((p) => p.id !== product.id).length > 0 && (
           <div>
-            <h2 className="font-display text-xl font-bold mb-6">Related Products</h2>
+            <h2 className="font-display text-xl font-bold mb-6">{crossSellTitle}</h2>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
               {relatedProducts
                 .filter((p) => p.id !== product.id)
