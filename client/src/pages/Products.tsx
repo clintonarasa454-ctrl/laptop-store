@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { Filter, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
