@@ -53,7 +53,12 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
 
   useEffect(() => {
     if (user) {
-      setProfileForm(prev => ({ ...prev, name: user.name || "", email: user.email || "" }));
+      setProfileForm(prev => {
+        const name = user.name || "";
+        const email = user.email || "";
+        if (prev.name === name && prev.email === email) return prev;
+        return { ...prev, name, email };
+      });
     }
   }, [user]);
 

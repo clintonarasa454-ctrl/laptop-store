@@ -138,25 +138,48 @@ export default function AdminSettings() {
   // Populate state once data is loaded (if it exists)
   useEffect(() => { 
     if (dbGeneral) {
-      setGeneralSettings(prev => ({
-        ...prev,
-        ...(dbGeneral as any),
-        features: (dbGeneral as any).features || prev.features,
-        openingHours: (dbGeneral as any).openingHours || prev.openingHours,
-        heroImage: (dbGeneral as any).heroImage || prev.heroImage,
-        floatingBadge1: (dbGeneral as any).floatingBadge1 || prev.floatingBadge1,
-        floatingBadge2: (dbGeneral as any).floatingBadge2 || prev.floatingBadge2,
-        lifestyles: (dbGeneral as any).lifestyles || prev.lifestyles,
-      }));
+      setGeneralSettings(prev => {
+        const next = {
+          ...prev,
+          ...(dbGeneral as any),
+          features: (dbGeneral as any).features || prev.features,
+          openingHours: (dbGeneral as any).openingHours || prev.openingHours,
+          heroImage: (dbGeneral as any).heroImage || prev.heroImage,
+          floatingBadge1: (dbGeneral as any).floatingBadge1 || prev.floatingBadge1,
+          floatingBadge2: (dbGeneral as any).floatingBadge2 || prev.floatingBadge2,
+          lifestyles: (dbGeneral as any).lifestyles || prev.lifestyles,
+        };
+        if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+        return next;
+      });
     }
   }, [dbGeneral]);
-  useEffect(() => { if (dbAppearance) setAppearanceSettings(dbAppearance as any); }, [dbAppearance]);
-  useEffect(() => { if (dbPayment) setPaymentSettings(prev => ({ ...prev, ...(dbPayment as any) })); }, [dbPayment]);
-  useEffect(() => { if (dbShipping) setShippingSettings(dbShipping as any); }, [dbShipping]);
-  useEffect(() => { if (dbEmail) setEmailSettings(dbEmail as any); }, [dbEmail]);
-  useEffect(() => { if (dbSecurity) setSecuritySettings(dbSecurity as any); }, [dbSecurity]);
-  useEffect(() => { if (dbSocial) setSocialSettings(dbSocial as any); }, [dbSocial]);
-  useEffect(() => { if (dbBackup) setBackupSettings(dbBackup as any); }, [dbBackup]);
+
+  useEffect(() => { 
+    if (dbAppearance) {
+      setAppearanceSettings(prev => {
+        const next = { ...prev, ...(dbAppearance as any) };
+        if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+        return next;
+      });
+    } 
+  }, [dbAppearance]);
+
+  useEffect(() => { 
+    if (dbPayment) {
+      setPaymentSettings(prev => {
+        const next = { ...prev, ...(dbPayment as any) };
+        if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+        return next;
+      });
+    } 
+  }, [dbPayment]);
+
+  useEffect(() => { if (dbShipping) setShippingSettings(prev => JSON.stringify(prev) === JSON.stringify(dbShipping) ? prev : (dbShipping as any)); }, [dbShipping]);
+  useEffect(() => { if (dbEmail) setEmailSettings(prev => JSON.stringify(prev) === JSON.stringify(dbEmail) ? prev : (dbEmail as any)); }, [dbEmail]);
+  useEffect(() => { if (dbSecurity) setSecuritySettings(prev => JSON.stringify(prev) === JSON.stringify(dbSecurity) ? prev : (dbSecurity as any)); }, [dbSecurity]);
+  useEffect(() => { if (dbSocial) setSocialSettings(prev => JSON.stringify(prev) === JSON.stringify(dbSocial) ? prev : (dbSocial as any)); }, [dbSocial]);
+  useEffect(() => { if (dbBackup) setBackupSettings(prev => JSON.stringify(prev) === JSON.stringify(dbBackup) ? prev : (dbBackup as any)); }, [dbBackup]);
 
   const handleSave = async (key: string, data: any, label: string) => {
     try {

@@ -56,8 +56,11 @@ export default function AdminProducts() {
 
   const [formData, setFormData] = useState(defaultForm);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handledUrlRef = useRef("");
 
   useEffect(() => {
+    if (handledUrlRef.current === searchString) return;
+
     const params = new URLSearchParams(searchString);
     const editId = params.get('edit');
     const isNew = params.get('new') === 'true';
@@ -65,16 +68,18 @@ export default function AdminProducts() {
     if (editId && products) {
       const productToEdit = products.find(p => p.id === parseInt(editId));
       if (productToEdit) {
+        handledUrlRef.current = searchString;
         handleEdit(productToEdit);
         // Clean the URL so reloading doesn't re-open the modal
         setLocation('/admin/products', { replace: true });
       }
     } else if (isNew) {
+      handledUrlRef.current = searchString;
       resetForm();
       setShowForm(true);
       setLocation('/admin/products', { replace: true });
     }
-  }, [products, searchString]);
+  }, [products, searchString, setLocation]);
 
   const resetForm = () => {
     setFormData(defaultForm);
