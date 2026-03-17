@@ -27,6 +27,7 @@ export default function Products() {
 
   const [search, setSearch] = useState(searchParam ?? "");
   const [selectedCategories, setSelectedCategories] = useState<number[]>([]);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [selectedBrand, setSelectedBrand] = useState<string | undefined>(brandParam);
   const [minPrice, setMinPrice] = useState<string>(minPriceParam);
   const [maxPrice, setMaxPrice] = useState<string>(maxPriceParam);
@@ -58,6 +59,7 @@ export default function Products() {
               if (prev.length === ids.length && prev.every((v, i) => v === ids[i])) return prev;
               return ids;
             });
+      setIsInitialized(true);
     }
   }, [categories, categoriesParam, categorySlug]);
 
@@ -78,6 +80,8 @@ export default function Products() {
 
   // Sync state to URL seamlessly
   useEffect(() => {
+    if (!isInitialized) return;
+    
     const currentParams = new URLSearchParams(searchString);
     const newParams = new URLSearchParams();
     
@@ -133,7 +137,7 @@ export default function Products() {
         setLocation(newUrl, { replace: true });
       }
     }
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
+  }, [isInitialized, search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
 
   // Include child categories if a parent is selected
   const categoryIdsToFetch = selectedCategories.length > 0 ? selectedCategories.flatMap(id => {
