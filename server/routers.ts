@@ -200,7 +200,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your Render DATABASE_URL variable." });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your DATABASE_URL variable." });
 
         try {
           const existing = await getUserByEmail(input.email);
@@ -282,7 +282,7 @@ export const appRouter = router({
       .input(z.object({ email: z.string().email(), password: z.string() }))
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
-        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your Render DATABASE_URL variable." });
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your DATABASE_URL variable." });
 
         let user;
         try {
@@ -302,7 +302,15 @@ export const appRouter = router({
 
         // Enforce email verification 
         if (user.emailVerified === false) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "Please verify your email before logging in. Check your inbox." });
+          const emailSettings = await getSetting("email");
+          const isSmtpConfigured = !!(emailSettings?.smtpHost && emailSettings?.smtpUser);
+          if (isSmtpConfigured) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Please verify your email before logging in. Check your inbox." });
+          } else if (db) {
+            // Auto-verify the user in the database so they don't get locked out when SMTP is added later
+            await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+            user.emailVerified = true;
+          }
         }
 
         if (db) {
