@@ -290,8 +290,8 @@ export default function Products() {
               <div className="space-y-1">
                 <button
                   onClick={() => setSelectedCategories([])}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                    selectedCategories.length === 0 ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"
+                  className={`w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ${
+                    selectedCategories.length === 0 ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-muted-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                   }`}
                 >
                   All Categories
@@ -300,31 +300,35 @@ export default function Products() {
                 const isSelected = selectedCategories.includes(cat.id);
                 const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
                 return (
-                  <div key={cat.id} className="space-y-0.5">
+                  <div key={cat.id} className="pt-1">
                     <button
                       onClick={() => setSelectedCategories((prev) => isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id])}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
-                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-foreground font-medium"
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                       }`}
                     >
                       <span>{cat.name}</span>
                       {isSelected && <Check className="w-3.5 h-3.5" />}
                     </button>
-                    {children.map(child => {
-                      const isChildSelected = selectedCategories.includes(child.id);
-                      return (
-                        <button
-                          key={child.id}
-                          onClick={() => setSelectedCategories((prev) => isChildSelected ? prev.filter((id) => id !== child.id) : [...prev, child.id])}
-                          className={`w-full flex items-center justify-between px-3 py-1.5 pl-6 rounded-md text-sm transition-colors ${
-                            isChildSelected ? "bg-[var(--brand)]/5 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          <span>{child.name}</span>
-                          {isChildSelected && <Check className="w-3.5 h-3.5" />}
-                        </button>
-                      );
-                    })}
+                    {children.length > 0 && (
+                      <div className="flex flex-col gap-0.5 ml-3 pl-3 border-l-2 border-border/50 mt-1 mb-2">
+                        {children.map(child => {
+                          const isChildSelected = selectedCategories.includes(child.id);
+                          return (
+                            <button
+                              key={child.id}
+                              onClick={() => setSelectedCategories((prev) => isChildSelected ? prev.filter((id) => id !== child.id) : [...prev, child.id])}
+                              className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-sm transition-all duration-200 ${
+                                isChildSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                              }`}
+                            >
+                              <span>{child.name}</span>
+                              {isChildSelected && <Check className="w-3.5 h-3.5 text-[var(--brand)]" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
