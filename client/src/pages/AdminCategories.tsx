@@ -247,6 +247,9 @@ export default function AdminCategories() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-muted-foreground mt-1.5 leading-tight">
+                  <strong>Tip:</strong> Leave this as "None" to make this a Top-Level (Parent) Category. Select an existing category to nest this as a Sub-Category.
+                </p>
               </div>
                   <div className="space-y-2"><Label>Category Name *</Label><Input required value={formData.name || ""} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Laptops" /></div>
                   <div className="space-y-2"><Label>Slug (URL friendly)</Label><Input value={formData.slug || ""} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} placeholder="e.g. laptops (auto-generated if empty)" /></div>

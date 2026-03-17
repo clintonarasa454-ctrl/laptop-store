@@ -40,6 +40,11 @@ export default function ProductDetail() {
   const { data: product, isLoading } = trpc.products.bySlug.useQuery({ slug: slug! });
   const { data: categories } = trpc.categories.list.useQuery();
 
+  // Compute Cross-Navigation Categories (siblings or children)
+  const currentCategory = categories?.find((c) => c.id === product?.categoryId);
+  const targetParentId = (currentCategory as any)?.parentId || currentCategory?.id;
+  const crossNavCategories = categories?.filter((c) => (c as any).parentId === targetParentId && c.id !== currentCategory?.id && (c as any).active !== false).sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) || [];
+
   // Smart Cross-Selling Logic
   let crossSellCategoryId = product?.categoryId;
   let crossSellTitle = "Related Products";
@@ -465,6 +470,32 @@ export default function ProductDetail() {
             )}
           </TabsContent>
         </Tabs>
+
+        {/* Cross-Navigation: Other Subcategories */}
+        {crossNavCategories.length > 0 && (
+          <div className="mb-12">
+            <h2 className="font-display text-xl font-bold mb-6">Explore More {categories?.find(c => c.id === targetParentId)?.name}</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              {crossNavCategories.slice(0, 4).map(subCat => (
+                <Link key={subCat.id} href={`/products?category=${subCat.slug}`}>
+                  <div className="group relative overflow-hidden rounded-xl border border-border bg-card hover:border-[var(--brand)]/40 hover:shadow-lg transition-all duration-300 cursor-pointer">
+                    <div className="aspect-[16/9] sm:aspect-[2/1] bg-muted overflow-hidden flex items-center justify-center">
+                      {subCat.imageUrl ? (
+                        <img src={subCat.imageUrl} alt={subCat.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                      ) : (
+                        <Package className="w-8 h-8 text-muted-foreground opacity-20 group-hover:scale-110 transition-transform duration-500" />
+                      )}
+                    </div>
+                    <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/10 to-transparent pointer-events-none" />
+                    <div className="absolute bottom-0 left-0 right-0 p-3 text-center pointer-events-none">
+                      <h4 className="font-medium text-sm group-hover:text-[var(--brand)] transition-colors">{subCat.name}</h4>
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Related products */}
         {relatedProducts && relatedProducts.filter((p) => p.id !== product.id).length > 0 && (

@@ -1492,7 +1492,12 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
-        if (db) await db.delete(categoriesSchema).where(eq(categoriesSchema.id, input.id));
+        if (db) {
+          // Safely release any subcategories so they don't become hidden orphans
+          await db.update(categoriesSchema).set({ parentId: null }).where(eq(categoriesSchema.parentId, input.id));
+          // Delete the requested category
+          await db.delete(categoriesSchema).where(eq(categoriesSchema.id, input.id));
+        }
         return { success: true };
       }),
 

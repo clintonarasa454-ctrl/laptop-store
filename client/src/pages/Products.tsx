@@ -149,6 +149,11 @@ export default function Products() {
     limit: 100,
   });
 
+  // Identify if we are viewing exactly one category that has children
+  const currentCategoryId = selectedCategories.length === 1 ? selectedCategories[0] : undefined;
+  const currentCategory = categories?.find(c => c.id === currentCategoryId);
+  const subCategories = currentCategory ? orderedCategories.filter(c => (c as any).parentId === currentCategory.id) : [];
+
   const sorted = [...(products ?? [])]
     .filter((p) => selectedCategories.length === 0 || selectedCategories.includes(p.categoryId))
     .filter((p) => !selectedBrand || p.brand?.toLowerCase() === selectedBrand.toLowerCase())
@@ -379,6 +384,32 @@ export default function Products() {
 
           {/* Product grid */}
           <div className="flex-1 min-w-0">
+            {/* Sub-categories Grid */}
+            {subCategories.length > 0 && !isLoading && !search && (
+              <div className="mb-8">
+                <h3 className="font-display font-semibold text-lg mb-4">Shop by Subcategory</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {subCategories.map(subCat => (
+                    <Link key={subCat.id} href={`/products?category=${subCat.slug}`}>
+                      <div className="group relative overflow-hidden rounded-xl border border-border bg-card hover:border-[var(--brand)]/40 hover:shadow-lg transition-all duration-300 cursor-pointer">
+                        <div className="aspect-[16/9] sm:aspect-[2/1] bg-muted overflow-hidden flex items-center justify-center">
+                          {subCat.imageUrl ? (
+                            <img src={subCat.imageUrl} alt={subCat.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                          ) : (
+                            <Package className="w-8 h-8 text-muted-foreground opacity-20 group-hover:scale-110 transition-transform duration-500" />
+                          )}
+                        </div>
+                        <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/10 to-transparent pointer-events-none" />
+                        <div className="absolute bottom-0 left-0 right-0 p-3 text-center pointer-events-none">
+                          <h4 className="font-medium text-sm group-hover:text-[var(--brand)] transition-colors">{subCat.name}</h4>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {isLoading ? (
               <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
                 {Array.from({ length: 9 }).map((_, i) => (
