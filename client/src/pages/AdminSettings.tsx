@@ -93,6 +93,8 @@ export default function AdminSettings() {
     orderConfirmation: true,
     shippingNotification: true,
     abandonedCartReminder: true,
+    orderConfirmationMessage: "Thank you for your order. We are getting your items ready for shipment.",
+    shippingNotificationMessage: "Great news! Your order has been shipped and is on its way to you.",
   });
 
   const [securitySettings, setSecuritySettings] = useState({
@@ -1163,6 +1165,17 @@ export default function AdminSettings() {
                       onCheckedChange={(c) => setEmailSettings({ ...emailSettings, orderConfirmation: c })} 
                     />
                   </div>
+                  {emailSettings.orderConfirmation && (
+                    <div className="pl-4 border-l-2 border-border mt-2 mb-4 space-y-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Custom Order Message</label>
+                      <Textarea 
+                        value={emailSettings.orderConfirmationMessage || ""} 
+                        onChange={(e) => setEmailSettings({ ...emailSettings, orderConfirmationMessage: e.target.value })}
+                        placeholder="Thank you for your order. We are getting your items ready for shipment."
+                        rows={2}
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium">Shipping Notification Emails</label>
                     <Switch 
@@ -1170,6 +1183,17 @@ export default function AdminSettings() {
                       onCheckedChange={(c) => setEmailSettings({ ...emailSettings, shippingNotification: c })} 
                     />
                   </div>
+                  {emailSettings.shippingNotification && (
+                    <div className="pl-4 border-l-2 border-border mt-2 mb-4 space-y-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Custom Shipping Message</label>
+                      <Textarea 
+                        value={emailSettings.shippingNotificationMessage || ""} 
+                        onChange={(e) => setEmailSettings({ ...emailSettings, shippingNotificationMessage: e.target.value })}
+                        placeholder="Great news! Your order has been shipped and is on its way to you."
+                        rows={2}
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium">Abandoned Checkout Reminders (after 24h)</label>
                     <Switch 

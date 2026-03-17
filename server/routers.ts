@@ -791,7 +791,7 @@ export const appRouter = router({
                   <h1 style="font-size: 20px; margin: 0; color: #10b981;">Order Confirmed!</h1>
                 </div>
                 <p style="font-size: 14px; margin-top: 0;">Hi <strong>${input.shippingFullName}</strong>,</p>
-                <p style="font-size: 14px; color: #4b5563; margin-bottom: 20px;">Thank you for your order. We are getting your items ready for shipment.</p>
+                <p style="font-size: 14px; color: #4b5563; margin-bottom: 20px;">${emailSettings.orderConfirmationMessage || "Thank you for your order. We are getting your items ready for shipment."}</p>
                 
                 <div style="background: #f9fafb; padding: 15px 20px; border-radius: 6px; margin: 15px 0;">
                   <h3 style="margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em;">Order Summary (#${orderNumber})</h3>
@@ -1326,7 +1326,8 @@ export const appRouter = router({
                         <h1 style="font-size: 24px; margin: 0; color: #8b5cf6;">Your Order Has Shipped!</h1>
                       </div>
                       <p style="font-size: 16px;">Hi <strong>${order.shippingFullName}</strong>,</p>
-                      <p style="color: #4b5563;">Great news! Your order <strong>#${order.orderNumber}</strong> has been shipped and is on its way to you.</p>
+                      <p style="color: #4b5563;">${emailSettings?.shippingNotificationMessage || "Great news! Your order has been shipped and is on its way to you."}</p>
+                      <p style="color: #4b5563;"><strong>Order Number:</strong> #${order.orderNumber}</p>
                       ${trackingHtml}
                       <div style="text-align: center; margin: 30px 0;">
                         <a href="${trackLink}" style="display: inline-block; padding: 12px 24px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">Track Your Order</a>
