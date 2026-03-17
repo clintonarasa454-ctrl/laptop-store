@@ -76,16 +76,22 @@ export default function Products() {
 
   // Sync state to URL seamlessly
   useEffect(() => {
+    // Get fresh search string directly from window to avoid stale closures
+    const currentSearch = window.location.search;
+    const currentParams = new URLSearchParams(currentSearch);
     const newParams = new URLSearchParams();
+    
     if (search) newParams.set("search", search);
-    if (featuredParam) newParams.set("featured", "true");
+    
+    // Read featured directly from current URL so we don't need it in dependencies
+    if (currentParams.get("featured") === "true") newParams.set("featured", "true");
+    
     if (selectedBrand) newParams.set("brand", selectedBrand);
     if (minPrice) newParams.set("minPrice", minPrice);
     if (maxPrice) newParams.set("maxPrice", maxPrice);
     if (sortBy !== "newest") newParams.set("sortBy", sortBy);
     if (tagFilter) newParams.set("tag", tagFilter);
     
-    // Preserve URL parameters if categories haven't loaded yet to avoid stripping them
     if (categories) {
       if (selectedCategories.length > 0) {
         const slugs = categories
@@ -95,13 +101,13 @@ export default function Products() {
         if (slugs.length > 0) newParams.set("categories", slugs.join(","));
       }
     } else {
-      if (categoriesParam) newParams.set("categories", categoriesParam);
-      else if (categorySlug) newParams.set("category", categorySlug);
+      const pCats = currentParams.get("categories");
+      const pCat = currentParams.get("category");
+      if (pCats) newParams.set("categories", pCats);
+      else if (pCat) newParams.set("category", pCat);
     }
 
     const qs = newParams.toString();
-    
-    const currentParams = new URLSearchParams(searchString);
     
     // Bulletproof deep comparison
     let hasChanges = false;
@@ -122,11 +128,11 @@ export default function Products() {
     if (hasChanges) {
       const newUrl = qs ? `${location}?${qs}` : location;
       // Only push if the full URL string actually differs
-      if (`${location}${searchString ? `?${searchString}` : ''}` !== newUrl) {
+      if (`${location}${currentSearch}` !== newUrl) {
         setLocation(newUrl, { replace: true });
       }
     }
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation, featuredParam, categoriesParam, categorySlug]);
+  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, setLocation]);
 
   const { data: products, isLoading } = trpc.products.list.useQuery({
     search: search || undefined,
