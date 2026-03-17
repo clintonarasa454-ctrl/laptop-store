@@ -26,11 +26,12 @@ import {
   Cell,
 } from "recharts";
 import { Link } from "wouter";
-import { DollarSign, ShoppingCart, Users, Package, TrendingUp } from "lucide-react";
+import { DollarSign, ShoppingCart, Users, Package, TrendingUp, Calendar } from "lucide-react";
 import { formatPrice } from "@/lib/cart";
 
 export default function AdminDashboard() {
-  const { data: stats, isLoading } = trpc.admin.stats.useQuery(undefined, {
+  const [timeRange, setTimeRange] = useState("30d");
+  const { data: stats, isLoading } = trpc.admin.stats.useQuery({ timeRange }, {
     refetchInterval: 10000, // Auto-refresh top stats every 10s
   });
 
