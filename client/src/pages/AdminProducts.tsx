@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import AdminLayout from "@/components/AdminLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation, useSearch } from "wouter";
 import { formatPrice } from "@/lib/cart";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,6 +26,8 @@ export default function AdminProducts() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [, setLocation] = useLocation();
+  const searchString = useSearch();
   
   const defaultForm = {
     name: "",
@@ -46,6 +49,25 @@ export default function AdminProducts() {
 
   const [formData, setFormData] = useState(defaultForm);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchString);
+    const editId = params.get('edit');
+    const isNew = params.get('new') === 'true';
+    
+    if (editId && products) {
+      const productToEdit = products.find(p => p.id === parseInt(editId));
+      if (productToEdit) {
+        handleEdit(productToEdit);
+        // Clean the URL so reloading doesn't re-open the modal
+        setLocation('/admin/products', { replace: true });
+      }
+    } else if (isNew) {
+      resetForm();
+      setShowForm(true);
+      setLocation('/admin/products', { replace: true });
+    }
+  }, [products, searchString]);
 
   const resetForm = () => {
     setFormData(defaultForm);

@@ -57,6 +57,60 @@ export async function getDb() {
   return _db;
 }
 
+// ─── Global Search ────────────────────────────────────────────────────────────
+export async function adminGlobalSearch(query: string) {
+  const db = await getDb();
+  if (!db) return { products: [], orders: [], customers: [], categories: [] };
+
+  const searchQuery = `%${query}%`;
+
+  const [productsRes, ordersRes, customersRes, categoriesRes] = await Promise.all([
+    db.select({ id: products.id, name: products.name, slug: products.slug, brand: products.brand })
+      .from(products)
+      .where(
+        or(
+          like(products.name, searchQuery), 
+          like(products.sku, searchQuery),
+          like(products.brand, searchQuery),
+          like(products.shortDescription, searchQuery)
+        )
+      )
+      .limit(15),
+    db.select({ id: orders.id, orderNumber: orders.orderNumber, customerName: users.name })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.id))
+      .where(
+        or(
+          like(orders.orderNumber, searchQuery),
+          like(users.name, searchQuery),
+          like(users.email, searchQuery)
+        )
+      )
+      .limit(15),
+    db.select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(
+        or(
+          like(users.name, searchQuery), 
+          like(users.email, searchQuery),
+          like(users.phone, searchQuery)
+        )
+      )
+      .limit(15),
+    db.select({ id: categories.id, name: categories.name, slug: categories.slug })
+      .from(categories)
+      .where(
+        or(
+          like(categories.name, searchQuery),
+          like(categories.description, searchQuery)
+        )
+      )
+      .limit(15),
+  ]);
+
+  return { products: productsRes, orders: ordersRes, customers: customersRes, categories: categoriesRes };
+}
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");

@@ -27,6 +27,7 @@ import {
   EyeOff,
   ShieldAlert
 } from "lucide-react";
+import { AdminSearch } from "@/components/AdminSearch";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -303,17 +304,20 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="bg-card border-b border-border px-8 py-4 flex items-center justify-between">
+        <div className="bg-card border-b border-border px-6 py-3 flex items-center justify-between gap-4">
           <h1 className="text-2xl font-bold text-foreground">
             {navItems.find((item) => item.id === activeTab)?.label || "Admin Panel"}
           </h1>
-          <div className="text-sm text-muted-foreground">
-            {new Date().toLocaleDateString("en-US", {
-              weekday: "long",
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
+          <div className="flex items-center gap-4">
+            <AdminSearch />
+            <div className="text-sm text-muted-foreground hidden md:block">
+              {new Date().toLocaleDateString("en-US", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+            </div>
           </div>
         </div>
 

@@ -509,7 +509,7 @@ export default function Home() {
                   <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-36 sm:h-40 cursor-pointer">
                     {/* Massive Icon filling the background */}
                     <div className="absolute inset-0 flex items-center justify-center p-6 pb-12">
-                      <Icon className="w-full h-full opacity-[0.03] group-hover:opacity-[0.08] group-hover:scale-110 transition-all duration-500 text-foreground" strokeWidth={1} />
+                      <Icon className="w-full h-full opacity-10 group-hover:opacity-30 group-hover:scale-110 transition-all duration-500 text-foreground group-hover:text-[var(--brand)]" strokeWidth={1.5} />
                     </div>
                     
                     {/* Gradient fade on the lower side */}

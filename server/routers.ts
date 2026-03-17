@@ -17,6 +17,7 @@ import {
   getAllOrders,
   getAllPayments,
   getAllUsers,
+  adminGlobalSearch,
   getAdminStats,
   getCartItems,
   getCategories,
@@ -1229,6 +1230,15 @@ export const appRouter = router({
   // ─── Admin ─────────────────────────────────────────────────────────────────
   admin: router({
     stats: adminProcedure.query(() => getAdminStats()),
+
+    globalSearch: adminProcedure
+      .input(z.object({ query: z.string() }))
+      .query(({ input }) => {
+        if (!input.query) {
+          return { products: [], orders: [], customers: [], categories: [] };
+        }
+        return adminGlobalSearch(input.query);
+      }),
 
     orders: adminProcedure
       .input(z.object({ limit: z.number().optional(), offset: z.number().optional() }).optional())
