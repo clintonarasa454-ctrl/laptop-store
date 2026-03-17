@@ -27,7 +27,7 @@ import {
   EyeOff,
   ShieldAlert
 } from "lucide-react";
-import { AdminSearch } from "@/pages/AdminSearch";
+import { AdminSearch } from "@/components/AdminSearch";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";

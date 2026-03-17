@@ -21,6 +21,7 @@ export default function Products() {
   const brandParam = params.get("brand") ?? undefined;
   const minPriceParam = params.get("minPrice") ?? "";
   const maxPriceParam = params.get("maxPrice") ?? "";
+  const tagParam = params.get("tag") ?? undefined;
   const validSorts = ["newest", "price_asc", "price_desc"];
   const sortByParam = validSorts.includes(params.get("sortBy") || "") ? (params.get("sortBy") as any) : "newest";
 
@@ -30,6 +31,7 @@ export default function Products() {
   const [minPrice, setMinPrice] = useState<string>(minPriceParam);
   const [maxPrice, setMaxPrice] = useState<string>(maxPriceParam);
   const [sortBy, setSortBy] = useState<"newest" | "price_asc" | "price_desc">(sortByParam);
+  const [tagFilter, setTagFilter] = useState<string | undefined>(tagParam);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [visibleCount, setVisibleCount] = useState(12);
 
@@ -49,19 +51,28 @@ export default function Products() {
         const cat = categories.find(c => c.slug === categorySlug);
         if (cat) ids = [cat.id];
       }
-      setSelectedCategories(ids);
+            // Deep compare to prevent React state update loops
+            setSelectedCategories((prev) => {
+              if (prev.length === ids.length && prev.every((v, i) => v === ids[i])) return prev;
+              return ids;
+            });
     }
   }, [categories, categoriesParam, categorySlug]);
 
   // Reset pagination when any filter changes
   useEffect(() => {
     setVisibleCount(12);
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy]);
+  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter]);
 
   // Sync search URL param to state when navigating from Navbar
   useEffect(() => {
     setSearch(searchParam ?? "");
   }, [searchParam]);
+
+  // Sync tag URL param to state
+  useEffect(() => {
+    setTagFilter(tagParam);
+  }, [tagParam]);
 
   // Sync state to URL seamlessly
   useEffect(() => {
@@ -72,27 +83,55 @@ export default function Products() {
     if (minPrice) newParams.set("minPrice", minPrice);
     if (maxPrice) newParams.set("maxPrice", maxPrice);
     if (sortBy !== "newest") newParams.set("sortBy", sortBy);
+    if (tagFilter) newParams.set("tag", tagFilter);
     
-    if (orderedCategories && selectedCategories.length > 0) {
-      const slugs = orderedCategories.filter(c => selectedCategories.includes(c.id)).map(c => c.slug);
-      if (slugs.length > 0) newParams.set("categories", slugs.join(","));
+    // Preserve URL parameters if categories haven't loaded yet to avoid stripping them
+    if (categories) {
+      if (selectedCategories.length > 0) {
+        const slugs = categories
+          .filter(c => selectedCategories.includes(c.id))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+          .map(c => c.slug);
+        if (slugs.length > 0) newParams.set("categories", slugs.join(","));
+      }
+    } else {
+      if (categoriesParam) newParams.set("categories", categoriesParam);
+      else if (categorySlug) newParams.set("category", categorySlug);
     }
 
     const qs = newParams.toString();
     
-    // Robust comparison to prevent infinite loop
     const currentParams = new URLSearchParams(searchString);
-    currentParams.sort();
-    newParams.sort();
     
-    if (currentParams.toString() !== newParams.toString()) {
-      setLocation(qs ? `${location}?${qs}` : location, { replace: true });
+    // Bulletproof deep comparison
+    let hasChanges = false;
+    const newKeys = Array.from(newParams.keys());
+    const currentKeys = Array.from(currentParams.keys());
+    
+    if (newKeys.length !== currentKeys.length) {
+      hasChanges = true;
+    } else {
+      for (const key of newKeys) {
+        if (newParams.get(key) !== currentParams.get(key)) {
+          hasChanges = true;
+          break;
+        }
+      }
     }
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, categories, location, searchString, setLocation, featuredParam]);
+
+    if (hasChanges) {
+      const newUrl = qs ? `${location}?${qs}` : location;
+      // Only push if the full URL string actually differs
+      if (`${location}${searchString ? `?${searchString}` : ''}` !== newUrl) {
+        setLocation(newUrl, { replace: true });
+      }
+    }
+  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation, featuredParam, categoriesParam, categorySlug]);
 
   const { data: products, isLoading } = trpc.products.list.useQuery({
     search: search || undefined,
     featured: featuredParam || undefined,
+    tag: tagFilter || undefined,
     limit: 100,
   });
 
@@ -122,6 +161,9 @@ export default function Products() {
 
   if (search) {
     activeFilters.push({ id: "search", label: `"${search}"`, onRemove: () => setSearch("") });
+  }
+  if (tagFilter) {
+    activeFilters.push({ id: "tag", label: `Tag: ${tagFilter}`, onRemove: () => setTagFilter(undefined) });
   }
   if (featuredParam) {
     activeFilters.push({ id: "featured", label: "Featured", onRemove: () => window.location.href = "/products" });
