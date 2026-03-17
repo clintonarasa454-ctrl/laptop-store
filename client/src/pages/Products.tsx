@@ -340,24 +340,28 @@ export default function Products() {
               <h3 className="font-display font-semibold text-sm mb-3">Price Range</h3>
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs font-medium">{currency}</span>
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="text-muted-foreground text-xs font-medium">{currency}</span>
+                  </div>
                   <input
                     type="number"
                     placeholder="Min"
                     value={minPrice}
                     onChange={(e) => setMinPrice(e.target.value)}
-                    className="w-full h-9 pl-10 pr-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="w-full h-10 pl-8 pr-3 text-sm rounded-lg border border-input bg-background focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 transition-all shadow-sm"
                   />
                 </div>
                 <span className="text-muted-foreground">-</span>
                 <div className="relative flex-1">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-xs font-medium">{currency}</span>
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <span className="text-muted-foreground text-xs font-medium">{currency}</span>
+                  </div>
                   <input
                     type="number"
                     placeholder="Max"
                     value={maxPrice}
                     onChange={(e) => setMaxPrice(e.target.value)}
-                    className="w-full h-9 pl-10 pr-2 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    className="w-full h-10 pl-8 pr-3 text-sm rounded-lg border border-input bg-background focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 transition-all shadow-sm"
                   />
                 </div>
               </div>
@@ -369,17 +373,23 @@ export default function Products() {
               <div className="space-y-1">
                 <button
                   onClick={() => setSelectedBrand(undefined)}
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${!selectedBrand ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"}`}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm transition-all duration-200 ${
+                    !selectedBrand ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-muted-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
+                  }`}
                 >
-                  All Brands
+                  <span>All Brands</span>
+                  {!selectedBrand && <Check className="w-3.5 h-3.5 text-[var(--brand)]" />}
                 </button>
                 {availableBrands.map((brand: string) => (
                   <button
                     key={brand}
                     onClick={() => setSelectedBrand(brand)}
-                    className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${selectedBrand === brand ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "hover:bg-muted text-muted-foreground"}`}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                      selectedBrand === brand ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
+                    }`}
                   >
-                    {brand}
+                    <span>{brand}</span>
+                    {selectedBrand === brand && <Check className="w-3.5 h-3.5 text-[var(--brand)]" />}
                   </button>
                 ))}
               </div>
