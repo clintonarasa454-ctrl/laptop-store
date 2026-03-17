@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, GripVertical, Upload, X } from "lucide-react";
+import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, GripVertical, Upload, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCategories() {
@@ -54,7 +56,7 @@ export default function AdminCategories() {
     if (category) {
       setFormData({ ...category });
     } else {
-      setFormData({ name: "", slug: "", description: "", imageUrl: "" });
+      setFormData({ name: "", slug: "", description: "", imageUrl: "", featured: false });
     }
     setShowForm(true);
   };
@@ -109,6 +111,7 @@ export default function AdminCategories() {
       slug: formData.slug || formData.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
       description: formData.description || undefined,
       imageUrl: formData.imageUrl || undefined,
+      featured: formData.featured,
     });
   };
 
@@ -189,7 +192,10 @@ export default function AdminCategories() {
                   )}
                 </div>
                 <div className="flex-1">
-                  <h3 className="font-semibold text-lg">{cat.name}</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-lg">{cat.name}</h3>
+                    {cat.featured && <Badge variant="secondary" className="text-[10px] py-0 h-5 bg-[var(--brand)]/10 text-[var(--brand)] hover:bg-[var(--brand)]/20 border-[var(--brand)]/20"><Zap className="w-3 h-3 mr-1" /> Featured</Badge>}
+                  </div>
                   <p className="text-xs text-muted-foreground font-mono mb-2">/{cat.slug}</p>
                   <p className="text-sm text-muted-foreground line-clamp-2">{cat.description || "No description provided."}</p>
                 </div>
@@ -255,6 +261,10 @@ export default function AdminCategories() {
                         </div>
                       )}
                     </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
+                    <Label className="cursor-pointer">Featured on Homepage</Label>
+                    <Switch checked={formData.featured} onCheckedChange={(c) => setFormData({ ...formData, featured: c })} />
                   </div>
                   <div className="space-y-2"><Label>Description</Label><Textarea value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Category description" rows={3}/></div>
                 </div>

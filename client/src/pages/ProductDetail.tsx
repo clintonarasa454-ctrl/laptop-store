@@ -127,9 +127,10 @@ export default function ProductDetail() {
     );
   }
 
-  const images = (product.images as string[]) ?? [];
+  const images = Array.isArray(product.images) && product.images.length > 0 
+    ? [...product.images] 
+    : ["https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80"];
   const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
-  if (images.length === 0) images.push("https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80");
   const specs = (product.specifications as Record<string, string>) ?? {};
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
   const price = parseFloat(product.price);
@@ -152,7 +153,7 @@ export default function ProductDetail() {
 
       <div className="container py-6 flex-1">
         {/* Breadcrumb */}
-        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-6">
+        <nav className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground mb-6">
           <Link href="/" className="hover:text-foreground transition-colors">Home</Link>
           <ChevronRight className="w-3.5 h-3.5" />
           <Link href="/products" className="hover:text-foreground transition-colors">Products</Link>
@@ -338,7 +339,7 @@ export default function ProductDetail() {
 
         {/* Tabs: Description, Specs, Reviews */}
         <Tabs defaultValue="description" className="mb-12">
-          <TabsList className="mb-6">
+          <TabsList className="mb-6 flex flex-wrap h-auto w-full justify-start md:w-fit">
             <TabsTrigger value="description">Description</TabsTrigger>
             {Object.keys(specs).length > 0 && <TabsTrigger value="specs">Specifications</TabsTrigger>}
             <TabsTrigger value="reviews">Reviews</TabsTrigger>

@@ -342,7 +342,7 @@ export default function AdminProducts() {
 
         {/* Product Form Modal */}
         {showForm && (
-          <Card className="p-6 fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
               <div className="p-6">
                 <div className="flex items-center justify-between mb-4">
@@ -350,7 +350,7 @@ export default function AdminProducts() {
                   <Button variant="ghost" size="sm" onClick={() => { setShowForm(false); resetForm(); }}>✕</Button>
                 </div>
                 <form onSubmit={handleSubmit} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label>Product Name *</Label>
                     <Input
@@ -373,7 +373,7 @@ export default function AdminProducts() {
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label>Price *</Label>
                     <Input
@@ -416,7 +416,7 @@ export default function AdminProducts() {
                       )}
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div className="space-y-1.5">
                       <Label>Stock *</Label>
                       <Input
@@ -524,7 +524,7 @@ export default function AdminProducts() {
                       <span className="text-sm font-medium">Active (Visible)</span>
                     </label>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col-reverse sm:flex-row gap-2 mt-6">
                     <Button type="button" variant="outline" onClick={() => { setShowForm(false); resetForm(); }}>Cancel</Button>
                     <Button type="submit" disabled={upsertProduct.isPending} className="flex-1 bg-[var(--brand)] text-white hover:opacity-90">
                       {upsertProduct.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : (editingId ? "Update Product" : "Create Product")}
@@ -533,7 +533,7 @@ export default function AdminProducts() {
                 </form>
               </div>
             </Card>
-          </Card>
+          </div>
         )}
       </div>
     </AdminLayout>

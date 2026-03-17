@@ -55,6 +55,16 @@ export default function Navbar() {
   const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
   const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
 
+  // Prevent background scrolling when mobile menu is open
+  useEffect(() => {
+    if (mobileOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "auto";
+    }
+    return () => { document.body.style.overflow = "auto"; };
+  }, [mobileOpen]);
+
   // Auto-sync guest cart globally when authenticating (e.g. returning from Google OAuth)
   const syncCart = trpc.cart.syncFromGuest.useMutation({
     onSuccess: () => {
@@ -353,41 +363,53 @@ export default function Navbar() {
         </div>
         
         {/* Sidebar Content */}
-        <div className="p-4 overflow-y-auto flex-1 space-y-1">
-          <form onSubmit={handleSearch} className="flex gap-2 mb-3 relative">
+        <div className="p-5 overflow-y-auto flex-1 flex flex-col">
+          <form onSubmit={handleSearch} className="flex gap-2 mb-6 relative">
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search products..."
-              className="flex-1 h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+              className="flex-1 h-11 px-4 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-[var(--brand)] shadow-sm"
             />
-            <Button type="submit" size="sm" className="bg-[var(--brand)] text-white">
-              <Search className="w-3.5 h-3.5" />
+            <Button type="submit" size="icon" className="bg-[var(--brand)] text-white h-11 w-11 rounded-xl shadow-sm hover:opacity-90 shrink-0">
+              <Search className="w-4.5 h-4.5" />
             </Button>
             {renderAutocomplete()}
           </form>
-          <Link href="/" onClick={() => setMobileOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-muted">
-            Home
-          </Link>
-          <Link href="/products" onClick={() => setMobileOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-muted">
-            All Products
-          </Link>
-          {orderedCategories.map((cat) => (
-            <Link key={cat.id} href={`/products?category=${cat.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium hover:bg-muted pl-6">
-              {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} {cat.name}
+
+          <div className="space-y-1.5 mb-6">
+            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-3 px-1">Navigation</p>
+            <Link href="/" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors">
+              Home
             </Link>
-          ))}
+            <Link href="/products" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors">
+              All Products
+            </Link>
+          </div>
+
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-3 px-1">Categories</p>
+            {orderedCategories.map((cat) => (
+              <Link key={cat.id} href={`/products?category=${cat.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors group">
+                <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                  {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} 
+                </div>
+                {cat.name}
+              </Link>
+            ))}
+          </div>
+
           {!isAuthenticated && (
-            <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-border">
+            <div className="flex flex-col gap-3 mt-auto pt-6 pb-2 border-t border-border">
               <Button
                 variant="outline"
-                className="w-full"
+                className="w-full h-11 rounded-xl"
                 onClick={() => (window.location.href = getLoginUrl(location))}
               >
                 Sign In
               </Button>
               <Button
-                className="w-full bg-[var(--brand)] text-white hover:opacity-90"
+                className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11 rounded-xl shadow-md"
                 onClick={() => (window.location.href = getLoginUrl(location, "register"))}
               >
                 Sign Up

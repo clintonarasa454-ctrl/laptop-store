@@ -1473,12 +1473,13 @@ export const appRouter = router({
           slug: z.string().min(1),
           description: z.string().optional(),
           imageUrl: z.string().optional(),
+          featured: z.boolean().optional(),
         })
       )
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (db && input.id) {
-          await db.update(categoriesSchema).set({ name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl }).where(eq(categoriesSchema.id, input.id));
+          await db.update(categoriesSchema).set({ name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl, featured: input.featured ?? false }).where(eq(categoriesSchema.id, input.id));
         } else {
           await upsertCategory(input);
         }

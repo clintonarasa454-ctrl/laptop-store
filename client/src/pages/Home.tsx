@@ -211,7 +211,7 @@ export default function Home() {
                   </Button>
                 </Link>
               </div>
-              <div className="flex items-center gap-6 pt-2">
+              <div className="flex flex-wrap items-center gap-4 sm:gap-6 pt-2">
                 <div>
                   <p className="font-display font-bold text-2xl">{settings?.general?.statsProductCount || storeStats?.productCount || 0}+</p>
                   <p className="text-xs text-muted-foreground">Products</p>
@@ -365,7 +365,7 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-3 gap-5">
-            {(dbCategories || []).slice(0, 3).map((cat: any, i: number) => {
+            {(dbCategories || []).filter((c: any) => c.featured).slice(0, 3).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
               // A simple way to map category names to icons, can be expanded.
               const Icon = cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones;
@@ -375,7 +375,7 @@ export default function Home() {
                   <div className="aspect-[16/9] overflow-hidden">
                     <img
                       src={cat.imageUrl || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80"}
-                      alt={cat.title}
+                      alt={cat.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
                     />
                   </div>
@@ -384,7 +384,7 @@ export default function Home() {
                     <div className={`w-9 h-9 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center mb-2.5 ${style.iconColor}`}>
                       <Icon className="w-4.5 h-4.5" />
                     </div>
-                    <h3 className="font-display font-bold text-lg">{cat.title}</h3>
+                    <h3 className="font-display font-bold text-lg">{cat.name}</h3>
                     <p className="text-sm text-muted-foreground mt-0.5">{cat.description}</p>
                     <div className="flex items-center gap-1 mt-2 text-[var(--brand)] text-sm font-medium">
                       Shop now <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />

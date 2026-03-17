@@ -202,6 +202,9 @@ export default function AdminSettings() {
         reader.readAsDataURL(file);
       }
     } catch (err) { toast.error("Failed to upload file"); }
+
+    if (key === 'logoUrl' && logoInputRef.current) logoInputRef.current.value = "";
+    if (key === 'faviconUrl' && faviconInputRef.current) faviconInputRef.current.value = "";
   };
 
   // Handle general setting file uploads (like the Hero Image)
@@ -236,6 +239,8 @@ export default function AdminSettings() {
         reader.readAsDataURL(file);
       }
     } catch (err) { toast.error("Failed to upload file"); }
+
+    if (e.target) e.target.value = "";
   };
 
   const handleDownloadBackup = async () => {

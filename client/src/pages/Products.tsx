@@ -21,7 +21,8 @@ export default function Products() {
   const brandParam = params.get("brand") ?? undefined;
   const minPriceParam = params.get("minPrice") ?? "";
   const maxPriceParam = params.get("maxPrice") ?? "";
-  const sortByParam = (params.get("sortBy") as any) ?? "newest";
+  const validSorts = ["newest", "price_asc", "price_desc"];
+  const sortByParam = validSorts.includes(params.get("sortBy") || "") ? (params.get("sortBy") as any) : "newest";
 
   const [search, setSearch] = useState(searchParam ?? "");
   const [selectedCategories, setSelectedCategories] = useState<number[]>([]);
@@ -207,7 +208,7 @@ export default function Products() {
       <div className="container py-8 flex-1">
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Sidebar filters */}
-          <aside className={`${filtersOpen ? "block" : "hidden"} lg:block w-56 shrink-0 space-y-6`}>
+          <aside className={`${filtersOpen ? "block" : "hidden"} lg:block w-full lg:w-56 shrink-0 space-y-6`}>
             {/* Search */}
             <div>
               <h3 className="font-display font-semibold text-sm mb-3">Search</h3>

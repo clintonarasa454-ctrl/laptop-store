@@ -14,11 +14,17 @@ import { useLocation } from "wouter";
 export function AdminSearch() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [, navigate] = useLocation();
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const { data, isLoading, isFetching } = trpc.admin.globalSearch.useQuery(
-    { query },
-    { enabled: query.length > 0 }
+    { query: debouncedQuery },
+    { enabled: debouncedQuery.trim().length > 0 }
   );
 
   useEffect(() => {

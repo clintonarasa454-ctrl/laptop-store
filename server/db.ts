@@ -179,13 +179,13 @@ export async function getCategoryBySlug(slug: string) {
   return result[0];
 }
 
-export async function upsertCategory(data: { name: string; slug: string; description?: string; imageUrl?: string }) {
+export async function upsertCategory(data: { name: string; slug: string; description?: string; imageUrl?: string; featured?: boolean }) {
   const db = await getDb();
   if (!db) return;
   await db
     .insert(categories)
-    .values(data)
-    .onDuplicateKeyUpdate({ set: { name: data.name, description: data.description, imageUrl: data.imageUrl } });
+    .values({ ...data, featured: data.featured ?? false })
+    .onDuplicateKeyUpdate({ set: { name: data.name, description: data.description, imageUrl: data.imageUrl, featured: data.featured ?? false } });
 }
 
 // ─── Products ─────────────────────────────────────────────────────────────────
