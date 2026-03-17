@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { getGuestCart, clearGuestCart, formatPrice } from "@/lib/cart";
 import {
   ChevronDown,
+  ChevronRight,
   Cpu,
   LogOut,
   Menu,
@@ -217,14 +218,17 @@ export default function Navbar() {
                     <DropdownMenuSubTrigger className="flex items-center gap-2 cursor-pointer">
                       {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} {cat.name}
                     </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>
-                      <DropdownMenuItem asChild>
-                        <Link href={`/products?category=${cat.slug}`} className="cursor-pointer font-medium text-[var(--brand)]">All {cat.name}</Link>
+                    <DropdownMenuSubContent className="w-56 p-1.5 shadow-xl border-border/60">
+                      <DropdownMenuItem asChild className="py-2.5 px-3">
+                        <Link href={`/products?category=${cat.slug}`} className="cursor-pointer font-semibold text-[var(--brand)]">All {cat.name}</Link>
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       {children.map(child => (
-                        <DropdownMenuItem key={child.id} asChild>
-                          <Link href={`/products?category=${child.slug}`} className="cursor-pointer">{child.name}</Link>
+                        <DropdownMenuItem key={child.id} asChild className="group/item py-2.5 px-3 focus:bg-muted/50 transition-colors">
+                          <Link href={`/products?category=${child.slug}`} className="cursor-pointer flex items-center justify-between w-full text-muted-foreground focus:text-foreground">
+                            <span>{child.name}</span>
+                            <ChevronRight className="w-3.5 h-3.5 opacity-0 -translate-x-2 group-hover/item:opacity-100 group-hover/item:translate-x-0 transition-all duration-300 text-[var(--brand)]" />
+                          </Link>
                         </DropdownMenuItem>
                       ))}
                     </DropdownMenuSubContent>
@@ -427,11 +431,13 @@ export default function Navbar() {
                     </div>
                     {cat.name}
                   </Link>
-                  {children.map(child => (
-                    <Link key={child.id} href={`/products?category=${child.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 ml-9 rounded-xl text-sm text-muted-foreground hover:bg-muted transition-colors">
-                      {child.name}
-                    </Link>
-                  ))}
+                  <div className="flex flex-col gap-0.5 ml-7 pl-3 border-l-2 border-border/40 mt-0.5">
+                    {children.map(child => (
+                      <Link key={child.id} href={`/products?category=${child.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors">
+                        {child.name}
+                      </Link>
+                    ))}
+                  </div>
                 </div>
               );
             })}
