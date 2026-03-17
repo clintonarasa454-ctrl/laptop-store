@@ -44,6 +44,9 @@ export default function Products() {
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const currency = settings?.general?.currency || "$";
 
+  const parsedUrlRef = useRef<string | null>(null);
+
+  // 1. URL -> State Sync
   useEffect(() => {
     if (categories) {
       let ids: number[] = [];
@@ -54,88 +57,59 @@ export default function Products() {
         const cat = categories.find(c => c.slug === categorySlug);
         if (cat) ids = [cat.id];
       }
-            // Deep compare to prevent React state update loops
-            setSelectedCategories((prev) => {
-              if (prev.length === ids.length && prev.every((v, i) => v === ids[i])) return prev;
-              return ids;
-            });
+      setSelectedCategories((prev) => {
+        if (prev.length === ids.length && prev.every((v, i) => v === ids[i])) return prev;
+        return ids;
+      });
+
+      setSearch(searchParam ?? "");
+      setTagFilter(tagParam);
+      setSelectedBrand(brandParam);
+      setMinPrice(minPriceParam);
+      setMaxPrice(maxPriceParam);
+      setSortBy(sortByParam);
+
       setIsInitialized(true);
+      parsedUrlRef.current = searchString;
     }
-  }, [categories, categoriesParam, categorySlug]);
+  }, [categories, searchString, categoriesParam, categorySlug, searchParam, tagParam, brandParam, minPriceParam, maxPriceParam, sortByParam]);
 
   // Reset pagination when any filter changes
   useEffect(() => {
     setVisibleCount(12);
   }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter]);
 
-  // Sync search URL param to state when navigating from Navbar
-  useEffect(() => {
-    setSearch(searchParam ?? "");
-  }, [searchParam]);
-
-  // Sync tag URL param to state
-  useEffect(() => {
-    setTagFilter(tagParam);
-  }, [tagParam]);
-
-  // Sync state to URL seamlessly
+  // 2. State -> URL Sync
   useEffect(() => {
     if (!isInitialized) return;
-    
+    // Guard against race conditions: Wait for the URL->State sync to process the current URL before we try to rewrite it!
+    if (parsedUrlRef.current !== searchString) return;
+
     const currentParams = new URLSearchParams(searchString);
     const newParams = new URLSearchParams();
     
     if (search) newParams.set("search", search);
-    
-    // Read featured directly from current URL so we don't need it in dependencies
     if (currentParams.get("featured") === "true") newParams.set("featured", "true");
-    
     if (selectedBrand) newParams.set("brand", selectedBrand);
     if (minPrice) newParams.set("minPrice", minPrice);
     if (maxPrice) newParams.set("maxPrice", maxPrice);
     if (sortBy !== "newest") newParams.set("sortBy", sortBy);
     if (tagFilter) newParams.set("tag", tagFilter);
     
-    if (categories) {
-      if (selectedCategories.length > 0) {
-        const slugs = categories
-          .filter(c => selectedCategories.includes(c.id))
-          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-          .map(c => c.slug);
-        if (slugs.length > 0) newParams.set("categories", slugs.join(","));
-      }
-    } else {
-      const pCats = currentParams.get("categories");
-      const pCat = currentParams.get("category");
-      if (pCats) newParams.set("categories", pCats);
-      else if (pCat) newParams.set("category", pCat);
+    if (selectedCategories.length > 0 && categories) {
+      const slugs = categories
+        .filter(c => selectedCategories.includes(c.id))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map(c => c.slug);
+      if (slugs.length > 0) newParams.set("categories", slugs.join(","));
     }
 
     const qs = newParams.toString();
+    const newUrl = qs ? `${location}?${qs}` : location;
+    const currentUrl = searchString ? `${location}?${searchString}` : location;
     
-    // Bulletproof deep comparison
-    let hasChanges = false;
-    const newKeys = Array.from(newParams.keys());
-    const currentKeys = Array.from(currentParams.keys());
-    
-    if (newKeys.length !== currentKeys.length) {
-      hasChanges = true;
-    } else {
-      for (const key of newKeys) {
-        if (newParams.get(key) !== currentParams.get(key)) {
-          hasChanges = true;
-          break;
-        }
-      }
-    }
-
-    if (hasChanges) {
-      const newUrl = qs ? `${location}?${qs}` : location;
-      const currentUrl = searchString ? `${location}?${searchString}` : location;
-      // Only push if the full URL string actually differs
-      if (currentUrl !== newUrl) {
-        setLocation(newUrl, { replace: true });
-      }
+    if (currentUrl !== newUrl) {
+      setLocation(newUrl, { replace: true });
     }
   }, [isInitialized, search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
 
