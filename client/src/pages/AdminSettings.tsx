@@ -49,11 +49,6 @@ export default function AdminSettings() {
     ],
     floatingBadge1: { icon: "Shield", title: "Verified Quality", desc: "All products certified" },
     floatingBadge2: { icon: "Truck", title: "Fast Delivery", desc: "2–5 business days" },
-    homeCategories: [
-      { title: "Laptops", link: "/products?category=laptops", desc: "Ultra-thin, powerful laptops for work and play", image: "", icon: "Monitor" },
-      { title: "Desktops", link: "/products?category=desktops", desc: "High-performance desktop systems for every use case", image: "", icon: "Cpu" },
-      { title: "Accessories", link: "/products?category=accessories", desc: "Premium peripherals and accessories", image: "", icon: "Headphones" },
-    ],
     lifestyles: [
       { title: "Creative & Technical", description: "For designers, developers, and artists.", icon: "Palette", color: "text-purple-500 bg-purple-500/10", link: "/products?tag=creative" },
       { title: "Professional", description: "For business, productivity, and meetings.", icon: "Briefcase", color: "text-blue-500 bg-blue-500/10", link: "/products?tag=professional" },
@@ -151,7 +146,6 @@ export default function AdminSettings() {
         heroImage: (dbGeneral as any).heroImage || prev.heroImage,
         floatingBadge1: (dbGeneral as any).floatingBadge1 || prev.floatingBadge1,
         floatingBadge2: (dbGeneral as any).floatingBadge2 || prev.floatingBadge2,
-        homeCategories: (dbGeneral as any).homeCategories || prev.homeCategories,
         lifestyles: (dbGeneral as any).lifestyles || prev.lifestyles,
       }));
     }
@@ -237,42 +231,6 @@ export default function AdminSettings() {
         const reader = new FileReader();
         reader.onload = (event) => {
           setGeneralSettings(prev => ({ ...prev, [key]: event.target?.result as string }));
-          toast.success("Processed locally!", { id: toastId });
-        };
-        reader.readAsDataURL(file);
-      }
-    } catch (err) { toast.error("Failed to upload file"); }
-  };
-
-  // Handle category card file uploads
-  const handleCategoryFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, idx: number) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      return toast.error("Please upload a valid image file.");
-    }
-    if (file.size > 2 * 1024 * 1024) {
-      return toast.error("Image size should be less than 2MB.");
-    }
-
-    try {
-      const toastId = toast.loading("Uploading...");
-      const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
-      
-      if (uploadUrl && publicUrl) {
-        const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-        if (!res.ok) throw new Error("S3 Upload Failed");
-        const newCats = [...(generalSettings.homeCategories || [])];
-        newCats[idx] = { ...newCats[idx], image: publicUrl };
-        setGeneralSettings(prev => ({ ...prev, homeCategories: newCats }));
-        toast.success("Uploaded successfully!", { id: toastId });
-      } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const newCats = [...(generalSettings.homeCategories || [])];
-          newCats[idx] = { ...newCats[idx], image: event.target?.result as string };
-          setGeneralSettings(prev => ({ ...prev, homeCategories: newCats }));
           toast.success("Processed locally!", { id: toastId });
         };
         reader.readAsDataURL(file);
@@ -592,73 +550,6 @@ export default function AdminSettings() {
                         setGeneralSettings({ ...generalSettings, ctaDescription: e.target.value })
                       }
                     />
-                  </div>
-                </div>
-
-                <div className="border-t border-border pt-4 mt-2 space-y-4">
-                  <div>
-                    <h4 className="font-medium text-base">Homepage Category Cards</h4>
-                    <p className="text-xs text-muted-foreground mb-4">Customize the 3 static category cards displayed on the homepage.</p>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {generalSettings.homeCategories?.map((cat, idx) => (
-                      <div key={idx} className="p-4 border border-border rounded-lg space-y-3 bg-secondary/30">
-                        <h5 className="text-sm font-semibold mb-2">Card {idx + 1}</h5>
-                        
-                        <div className="space-y-1">
-                          <label className="text-xs text-muted-foreground">Image</label>
-                          <div 
-                            className="border-2 border-dashed border-border rounded-lg p-3 text-center cursor-pointer hover:bg-muted/50 transition-colors relative"
-                            onClick={() => document.getElementById(`home-cat-img-${idx}`)?.click()}
-                          >
-                            <input 
-                              type="file" 
-                              id={`home-cat-img-${idx}`}
-                              className="hidden" 
-                              accept="image/*" 
-                              onChange={(e) => handleCategoryFileUpload(e, idx)} 
-                            />
-                            {cat.image ? (
-                              <div className="relative inline-block w-full">
-                                <img src={cat.image} alt="Preview" className="w-full h-24 object-cover rounded-md border border-border" />
-                                <Button type="button" variant="destructive" size="icon" className="absolute -top-2 -right-2 h-6 w-6 rounded-full" onClick={(e) => { e.stopPropagation(); const newCats = [...generalSettings.homeCategories]; newCats[idx].image = ""; setGeneralSettings({ ...generalSettings, homeCategories: newCats }); }}>
-                                  <X size={12} />
-                                </Button>
-                              </div>
-                            ) : (
-                              <div className="py-2">
-                                <Upload size={16} className="mx-auto mb-1 text-muted-foreground" />
-                                <p className="text-[10px] text-muted-foreground">Upload Image</p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-xs text-muted-foreground">Icon</label>
-                          <Select value={cat.icon} onValueChange={(val) => { const newCats = [...generalSettings.homeCategories]; newCats[idx].icon = val; setGeneralSettings({ ...generalSettings, homeCategories: newCats }); }}>
-                            <SelectTrigger className="bg-background h-8 text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {["Monitor", "Cpu", "Headphones", "Smartphone", "Mouse", "Keyboard", "Watch", "Camera", "HardDrive", "Gamepad", "Speaker", "Package"].map(icon => (
-                                <SelectItem key={icon} value={icon}>{icon}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-xs text-muted-foreground">Title</label>
-                          <Input value={cat.title} onChange={(e) => { const newCats = [...generalSettings.homeCategories]; newCats[idx].title = e.target.value; setGeneralSettings({ ...generalSettings, homeCategories: newCats }); }} className="bg-background h-8 text-xs" />
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-xs text-muted-foreground">Description</label>
-                          <Input value={cat.desc} onChange={(e) => { const newCats = [...generalSettings.homeCategories]; newCats[idx].desc = e.target.value; setGeneralSettings({ ...generalSettings, homeCategories: newCats }); }} className="bg-background h-8 text-xs" />
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-xs text-muted-foreground">Link URL</label>
-                          <Input value={cat.link} onChange={(e) => { const newCats = [...generalSettings.homeCategories]; newCats[idx].link = e.target.value; setGeneralSettings({ ...generalSettings, homeCategories: newCats }); }} className="bg-background h-8 text-xs" />
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 </div>
 

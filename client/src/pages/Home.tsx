@@ -40,12 +40,6 @@ const categoryGradients = [
   { gradient: "from-emerald-500/10 to-teal-500/10", iconColor: "text-emerald-500" },
 ];
 
-const fallbackHomeCategories = [
-  { title: "Laptops", link: "/products?category=laptops", desc: "Ultra-thin, powerful laptops for work and play", image: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80", icon: "Monitor" },
-  { title: "Desktops", link: "/products?category=desktops", desc: "High-performance desktop systems for every use case", image: "https://images.unsplash.com/photo-1587202372634-32705e3bf49c?w=600&q=80", icon: "Cpu" },
-  { title: "Accessories", link: "/products?category=accessories", desc: "Premium peripherals and accessories", image: "https://images.unsplash.com/photo-1625842268584-8f3296236761?w=600&q=80", icon: "Headphones" },
-];
-
 const fallbackLifestyles = [
   { title: "Creative & Technical", description: "For designers, developers, and artists.", icon: "Palette", color: "text-purple-500 bg-purple-500/10", link: "/products?tag=creative" },
   { title: "Professional", description: "For business, productivity, and meetings.", icon: "Briefcase", color: "text-blue-500 bg-blue-500/10", link: "/products?tag=professional" },
@@ -371,15 +365,16 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-3 gap-5">
-            {(settings?.general?.homeCategories || fallbackHomeCategories).map((cat: any, i: number) => {
+            {(dbCategories || []).slice(0, 3).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
-              const Icon = (LucideIcons as any)[cat.icon] || LucideIcons.Package;
+              // A simple way to map category names to icons, can be expanded.
+              const Icon = cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones;
               return (
-              <Link key={i} href={cat.link}>
+              <Link key={i} href={`/products?category=${cat.slug}`}>
                 <div className={`group relative overflow-hidden rounded-3xl bg-gradient-to-br ${style.gradient} border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer`}>
                   <div className="aspect-[16/9] overflow-hidden">
                     <img
-                      src={cat.image || fallbackHomeCategories[i].image}
+                      src={cat.imageUrl || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80"}
                       alt={cat.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
                     />
@@ -390,7 +385,7 @@ export default function Home() {
                       <Icon className="w-4.5 h-4.5" />
                     </div>
                     <h3 className="font-display font-bold text-lg">{cat.title}</h3>
-                    <p className="text-sm text-muted-foreground mt-0.5">{cat.desc}</p>
+                    <p className="text-sm text-muted-foreground mt-0.5">{cat.description}</p>
                     <div className="flex items-center gap-1 mt-2 text-[var(--brand)] text-sm font-medium">
                       Shop now <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                     </div>

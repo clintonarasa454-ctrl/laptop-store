@@ -4,6 +4,13 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -428,15 +435,18 @@ export default function AdminProducts() {
                     </div>
                     <div className="space-y-1.5">
                       <Label>Category *</Label>
-                      <select 
+                      <Select
                         value={formData.categoryId} 
-                        onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })} 
-                        className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background"
-                        required
+                        onValueChange={(value) => setFormData({ ...formData, categoryId: value })}
+                        required={true}
                       >
-                        <option value="">Select...</option>
-                        {categories?.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {categories?.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
                   <div className="space-y-1.5">
