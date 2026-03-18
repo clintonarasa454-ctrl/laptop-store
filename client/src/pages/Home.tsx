@@ -105,7 +105,7 @@ export default function Home() {
     if (activeBanners.length <= 1 || isHovered) return;
     const timer = setInterval(() => {
       setActiveIndex((prev) => (prev + 1) % activeBanners.length);
-    }, 4000);
+    }, 2000);
     return () => clearInterval(timer);
   }, [activeBanners.length, isHovered]);
 
