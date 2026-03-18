@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Zap, EyeOff, ChevronUp, ChevronDown, Layers } from "lucide-react";
+import * as LucideIcons from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCategories() {
@@ -28,6 +29,8 @@ export default function AdminCategories() {
   const [orderedCategories, setOrderedCategories] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rootCategories = orderedCategories.filter(c => !c.parentId);
+  
+  const iconOptions = ["Package", "Monitor", "Cpu", "Headphones", "Mouse", "Keyboard", "Smartphone", "Tablet", "Speaker", "Printer", "Camera", "Gamepad2", "Tv", "HardDrive", "BatteryCharging", "Cable", "Wifi", "Bluetooth"];
 
   useEffect(() => {
     if (categories) {
@@ -64,7 +67,7 @@ export default function AdminCategories() {
     if (category) {
       setFormData({ ...category });
     } else {
-      setFormData({ name: "", slug: "", description: "", imageUrl: "", featured: false, active: true, parentId: prefillParentId || null });
+      setFormData({ name: "", slug: "", description: "", imageUrl: "", icon: "", featured: false, active: true, parentId: prefillParentId || null });
     }
     setShowForm(true);
   };
@@ -117,8 +120,9 @@ export default function AdminCategories() {
       id: formData.id,
       name: formData.name,
       slug: formData.slug || formData.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
-      description: formData.description || undefined,
-      imageUrl: formData.imageUrl || undefined,
+      description: formData.description === "" ? null : formData.description,
+      imageUrl: formData.imageUrl === "" ? null : formData.imageUrl,
+      icon: formData.icon === "" || formData.icon === "none" ? null : formData.icon,
       featured: formData.featured,
       active: formData.active ?? true,
       parentId: formData.parentId,
@@ -359,6 +363,28 @@ export default function AdminCategories() {
                         </div>
                       )}
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Category Icon</Label>
+                    <Select value={formData.icon || "none"} onValueChange={(val) => setFormData({ ...formData, icon: val === "none" ? null : val })}>
+                      <SelectTrigger className="bg-background">
+                        <SelectValue placeholder="Select an icon" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Default / None</SelectItem>
+                        {iconOptions.map(iconName => {
+                          const Icon = (LucideIcons as any)[iconName];
+                          return (
+                            <SelectItem key={iconName} value={iconName}>
+                              <div className="flex items-center gap-2">
+                                {Icon && <Icon className="w-4 h-4 text-muted-foreground" />}
+                                <span>{iconName}</span>
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                     <Label className="cursor-pointer">Featured on Homepage</Label>

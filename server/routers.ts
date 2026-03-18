@@ -1475,8 +1475,9 @@ export const appRouter = router({
           parentId: z.number().nullable().optional(),
           name: z.string().min(1),
           slug: z.string().min(1),
-          description: z.string().optional(),
-          imageUrl: z.string().optional(),
+          description: z.string().nullable().optional(),
+          imageUrl: z.string().nullable().optional(),
+          icon: z.string().nullable().optional(),
           featured: z.boolean().optional(),
           active: z.boolean().optional(),
         })
@@ -1484,7 +1485,7 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (db && input.id) {
-          await db.update(categoriesSchema).set({ parentId: input.parentId ?? null, name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl, featured: input.featured ?? false, active: input.active ?? true }).where(eq(categoriesSchema.id, input.id));
+          await db.update(categoriesSchema).set({ parentId: input.parentId ?? null, name: input.name, slug: input.slug, description: input.description, imageUrl: input.imageUrl, icon: input.icon, featured: input.featured ?? false, active: input.active ?? true }).where(eq(categoriesSchema.id, input.id));
         } else {
           await upsertCategory(input);
         }

@@ -367,8 +367,8 @@ export default function Home() {
           <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
             {(dbCategories || []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
-              // A simple way to map category names to icons, can be expanded.
-              const Icon = cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones;
+              
+              const Icon = cat.icon ? (LucideIcons as any)[cat.icon] || Package : (cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones);
               return (
               <Link key={i} href={`/products?category=${cat.slug}`}>
                 <div className={`group relative overflow-hidden rounded-3xl bg-gradient-to-br ${style.gradient} border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer`}>

@@ -40,6 +40,14 @@ const categoryIcons: Record<string, React.ReactNode> = {
   accessories: <Headphones className="w-4 h-4" />,
 };
 
+const getCategoryIcon = (cat: any) => {
+  if (cat.icon && (LucideIcons as any)[cat.icon]) {
+    const CustomIcon = (LucideIcons as any)[cat.icon];
+    return <CustomIcon className="w-4 h-4" />;
+  }
+  return categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />;
+};
+
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
   const [location, navigate] = useLocation();
@@ -216,7 +224,7 @@ export default function Navbar() {
                 return (
                   <DropdownMenuSub key={cat.id}>
                     <DropdownMenuSubTrigger className="flex items-center gap-2 cursor-pointer">
-                      {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} {cat.name}
+                      {getCategoryIcon(cat)} {cat.name}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent className="w-56 p-1.5 shadow-xl border-border/60">
                       <DropdownMenuItem asChild className="py-2.5 px-3">
@@ -238,7 +246,7 @@ export default function Navbar() {
               return (
                 <DropdownMenuItem key={cat.id} asChild>
                   <Link href={`/products?category=${cat.slug}`} className="flex items-center gap-2 cursor-pointer">
-                    {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />}
+                    {getCategoryIcon(cat)}
                     {cat.name}
                   </Link>
                 </DropdownMenuItem>
@@ -427,7 +435,7 @@ export default function Navbar() {
                 <div key={cat.id} className="space-y-0.5">
                   <Link href={`/products?category=${cat.slug}`} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] transition-colors group">
                     <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                      {categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />} 
+                      {getCategoryIcon(cat)} 
                     </div>
                     {cat.name}
                   </Link>
