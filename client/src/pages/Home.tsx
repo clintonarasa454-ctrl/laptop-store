@@ -322,7 +322,7 @@ export default function Home() {
             {[...displayBrands, ...displayBrands, ...displayBrands, ...displayBrands].map((brand, idx) => {
               const iconSlug = brand.toLowerCase().replace(/[^a-z0-9]/g, '');
               return (
-                <a key={idx} href="#shop-by-lifestyle" className="mx-3 block">
+                <Link key={idx} href={`/products?brand=${encodeURIComponent(brand)}`} className="mx-3 block">
                   <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 w-40 sm:w-48 h-32 cursor-pointer">
                     {/* Logo filling the card */}
                     <div className="absolute inset-0 flex items-center justify-center p-6 pb-10">
@@ -344,7 +344,7 @@ export default function Home() {
                       </span>
                     </div>
                   </div>
-                </a>
+                </Link>
               );
             })}
           </div>
