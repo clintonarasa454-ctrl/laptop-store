@@ -267,10 +267,11 @@ export const appRouter = router({
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+               secure: Number(emailSettings.smtpPort) === 465,
                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-               connectionTimeout: 5000,
-               greetingTimeout: 5000,
-               socketTimeout: 5000
+               connectionTimeout: 10000,
+               greetingTimeout: 10000,
+               socketTimeout: 10000
              });
              await transporter.sendMail({
                from: `"${storeName}" <${emailSettings.smtpUser}>`, to: input.email, subject: `Verify your email - ${storeName}`, html: emailHtml
@@ -395,10 +396,11 @@ export const appRouter = router({
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+               secure: Number(emailSettings.smtpPort) === 465,
                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-               connectionTimeout: 5000,
-               greetingTimeout: 5000,
-               socketTimeout: 5000
+               connectionTimeout: 10000,
+               greetingTimeout: 10000,
+               socketTimeout: 10000
              });
              await transporter.sendMail({
                from: `"${storeName}" <${emailSettings.smtpUser}>`, to: user.email, subject: `Password Reset Request - ${storeName}`,
@@ -515,10 +517,11 @@ export const appRouter = router({
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+               secure: Number(emailSettings.smtpPort) === 465,
                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-               connectionTimeout: 5000,
-               greetingTimeout: 5000,
-               socketTimeout: 5000
+               connectionTimeout: 10000,
+               greetingTimeout: 10000,
+               socketTimeout: 10000
              });
              await transporter.sendMail({
                from: `"${storeName}" <${emailSettings.smtpUser}>`, to: input.email, subject: `Verify your email - ${storeName}`, html: emailHtml
@@ -840,8 +843,9 @@ export const appRouter = router({
             if (emailSettings?.smtpHost && emailSettings.smtpUser) {
               const transporter = nodemailer.createTransport({ 
                 host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), 
+                secure: Number(emailSettings.smtpPort) === 465,
                 auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-                connectionTimeout: 5000, greetingTimeout: 5000, socketTimeout: 5000
+                connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 10000
               });
               await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: ctx.user.email || input.shippingFullName, subject: `Order Confirmation #${orderNumber}`, html: emailHtml });
               console.log(`[Email] Order confirmation sent to ${ctx.user.email || input.shippingFullName}`);
@@ -1363,10 +1367,11 @@ export const appRouter = router({
                   if (emailSettings?.smtpHost && emailSettings.smtpUser) {
                     const transporter = nodemailer.createTransport({
                       host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+                      secure: Number(emailSettings.smtpPort) === 465,
                       auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-                      connectionTimeout: 5000,
-                      greetingTimeout: 5000,
-                      socketTimeout: 5000
+                      connectionTimeout: 10000,
+                      greetingTimeout: 10000,
+                      socketTimeout: 10000
                     });
                     await transporter.sendMail({
                       from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Your ${storeName} Order Has Shipped!`,
@@ -1699,10 +1704,11 @@ export async function processAbandonedCheckouts() {
     const logoHtml = logoUrl ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 40px; margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto;" />` : `<h2 style="margin: 0 0 12px 0; color: #111; text-align: center; font-size: 20px;">${storeName}</h2>`;
     const transporter = nodemailer.createTransport({
       host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+      secure: Number(emailSettings.smtpPort) === 465,
       auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
 
     for (const order of abandonedOrders) {
