@@ -180,9 +180,9 @@ export default function Home() {
           <div className="absolute top-1/2 -left-40 w-[24rem] h-[24rem] rounded-full bg-purple-500/10 blur-[100px]" />
         </div>
 
-      <div className="container relative py-10 lg:py-16">
-          <div className="grid lg:grid-cols-2 gap-12 items-center">
-            <div className="space-y-6">
+      <div className="container relative pt-6 pb-12 lg:pt-10 lg:pb-20">
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-12 items-start lg:mt-6">
+            <div className="space-y-5">
               <Badge className="bg-[var(--brand)]/10 text-[var(--brand)] border-[var(--brand)]/20 hover:bg-[var(--brand)]/15">
                 <Zap className="w-3 h-3 mr-1" /> {settings?.general?.heroBadge || "New Arrivals 2025"}
               </Badge>
@@ -227,7 +227,7 @@ export default function Home() {
             </div>
 
             {/* ── RIGHT CARD ZONE ────────────────────────────────────────────────── */}
-          <div className="relative hidden lg:flex h-[500px] xl:h-[600px] w-full items-center justify-center">
+          <div className="relative hidden lg:flex h-[500px] xl:h-[600px] w-full items-center justify-center mt-6 lg:mt-0">
               {/* Ambient Glow */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24rem] h-[24rem] rounded-full bg-[var(--brand)]/10 blur-[100px] pointer-events-none" />
 
@@ -252,7 +252,7 @@ export default function Home() {
                 return (
                   <div
                     key={banner.id}
-                  className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[320px] xl:w-[380px] transition-all duration-700 ease-in-out hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
+                  className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[340px] xl:w-[440px] transition-all duration-700 ease-in-out hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
                     style={{ animation: `float 6s ease-in-out infinite`, animationDelay: animDelay }}
                   >
                     <div className="w-full aspect-[4/3] rounded-2xl overflow-hidden bg-muted mb-4 border border-border/30 relative">
