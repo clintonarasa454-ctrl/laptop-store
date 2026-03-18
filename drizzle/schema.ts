@@ -147,7 +147,7 @@ export const orders = mysqlTable("orders", {
   shippingCost: decimal("shippingCost", { precision: 10, scale: 2 }).default("0").notNull(),
   total: decimal("total", { precision: 10, scale: 2 }).notNull(),
   // Payment
-  paymentMethod: mysqlEnum("paymentMethod", ["mpesa", "paypal", "stripe", "card"]),
+  paymentMethod: mysqlEnum("paymentMethod", ["mpesa", "paypal", "stripe", "card", "cod"]),
   paymentStatus: mysqlEnum("paymentStatus", ["pending", "paid", "failed", "refunded"]).default("pending").notNull(),
   paymentReference: varchar("paymentReference", { length: 256 }),
   // Tracking
@@ -211,7 +211,7 @@ export type OrderStatusHistory = typeof orderStatusHistory.$inferSelect;
 export const payments = mysqlTable("payments", {
   id: int("id").autoincrement().primaryKey(),
   orderId: int("orderId").notNull(),
-  method: mysqlEnum("method", ["mpesa", "paypal", "stripe", "card"]).notNull(),
+  method: mysqlEnum("method", ["mpesa", "paypal", "stripe", "card", "cod"]).notNull(),
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
   currency: varchar("currency", { length: 8 }).default("USD").notNull(),
   status: mysqlEnum("status", ["pending", "completed", "failed", "refunded"]).default("pending").notNull(),

@@ -77,6 +77,7 @@ export default function AdminSettings() {
     paypalSecret: "",
     stripePublishable: "",
     stripeSecret: "",
+    codEnabled: false,
   });
 
   const [shippingSettings, setShippingSettings] = useState({
@@ -1063,6 +1064,17 @@ export default function AdminSettings() {
                       }
                     />
                   </div>
+                </div>
+
+                <div className="border-t border-border pt-6 mt-6 flex items-center justify-between p-4 bg-secondary/50 rounded-lg">
+                  <div>
+                    <h4 className="font-medium text-foreground">Cash on Delivery (COD)</h4>
+                    <p className="text-xs text-muted-foreground mt-0.5">Allow customers to pay in cash upon receiving their order.</p>
+                  </div>
+                  <Switch 
+                    checked={paymentSettings.codEnabled} 
+                    onCheckedChange={(c) => setPaymentSettings({ ...paymentSettings, codEnabled: c })} 
+                  />
                 </div>
 
                 <Button onClick={() => handleSave("payment", paymentSettings, "Payment")} className="gap-2" disabled={updateSetting.isPending}>

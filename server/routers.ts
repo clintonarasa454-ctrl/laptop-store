@@ -683,7 +683,7 @@ export const appRouter = router({
           shippingCity: z.string().min(1),
           shippingPostalCode: z.string().optional(),
           shippingCountry: z.string().min(1),
-          paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card"]),
+          paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card", "cod"]),
           saveAddress: z.boolean().optional(),
           notes: z.string().optional(),
         })
@@ -1177,7 +1177,7 @@ export const appRouter = router({
       .input(
         z.object({
           orderId: z.number(),
-          paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card"]),
+          paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card", "cod"]),
         })
       )
       .mutation(async ({ ctx, input }) => {
