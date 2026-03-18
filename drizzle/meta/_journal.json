@@ -29,6 +29,13 @@
       "when": 1773742584103,
       "tag": "0003_brave_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1773825930900,
+      "tag": "0004_uneven_ares",
+      "breakpoints": true
     }
   ]
 }

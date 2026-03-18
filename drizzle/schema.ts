@@ -9,13 +9,14 @@ import {
   boolean,
   json,
   longtext,
+  index,
 } from "drizzle-orm/mysql-core";
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
   openId: varchar("openId", { length: 64 }).notNull().unique(),
-  name: text("name"),
+  name: varchar("name", { length: 256 }),
   email: varchar("email", { length: 320 }),
   phone: varchar("phone", { length: 32 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
@@ -25,7 +26,11 @@ export const users = mysqlTable("users", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
+}, (table) => ({
+  emailIdx: index("email_idx").on(table.email),
+  nameIdx: index("name_idx").on(table.name),
+  phoneIdx: index("phone_idx").on(table.phone),
+}));
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
@@ -42,7 +47,9 @@ export const categories = mysqlTable("categories", {
   active: boolean("active").default(true).notNull(),
   order: int("order").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  activeIdx: index("active_idx").on(table.active),
+}));
 
 export type Category = typeof categories.$inferSelect;
 export type InsertCategory = typeof categories.$inferInsert;
@@ -69,7 +76,13 @@ export const products = mysqlTable("products", {
   active: boolean("active").default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  nameIdx: index("name_idx").on(table.name),
+  brandIdx: index("brand_idx").on(table.brand),
+  skuIdx: index("sku_idx").on(table.sku),
+  activeIdx: index("active_idx").on(table.active),
+  categoryIdIdx: index("category_id_idx").on(table.categoryId),
+}));
 
 export type Product = typeof products.$inferSelect;
 export type InsertProduct = typeof products.$inferInsert;
@@ -99,7 +112,10 @@ export const cartItems = mysqlTable("cart_items", {
   quantity: int("quantity").default(1).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+  productIdIdx: index("product_id_idx").on(table.productId),
+}));
 
 export type CartItem = typeof cartItems.$inferSelect;
 export type InsertCartItem = typeof cartItems.$inferInsert;
@@ -141,7 +157,11 @@ export const orders = mysqlTable("orders", {
   abandonedEmailSent: boolean("abandonedEmailSent").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+  statusIdx: index("status_idx").on(table.status),
+  createdAtIdx: index("created_at_idx").on(table.createdAt),
+}));
 
 export type Order = typeof orders.$inferSelect;
 export type InsertOrder = typeof orders.$inferInsert;
@@ -156,7 +176,9 @@ export const orderItems = mysqlTable("order_items", {
   price: decimal("price", { precision: 10, scale: 2 }).notNull(),
   quantity: int("quantity").notNull(),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
-});
+}, (table) => ({
+  orderIdIdx: index("order_id_idx").on(table.orderId),
+}));
 
 export type OrderItem = typeof orderItems.$inferSelect;
 export type InsertOrderItem = typeof orderItems.$inferInsert;
@@ -167,7 +189,10 @@ export const wishlists = mysqlTable("wishlists", {
   userId: int("userId").notNull(),
   productId: int("productId").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+  productIdIdx: index("product_id_idx").on(table.productId),
+}));
 
 export type Wishlist = typeof wishlists.$inferSelect;
 
@@ -208,7 +233,10 @@ export const reviews = mysqlTable("reviews", {
   title: varchar("title", { length: 256 }),
   body: text("body"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  productIdIdx: index("product_id_idx").on(table.productId),
+  userIdIdx: index("user_id_idx").on(table.userId),
+}));
 
 export type Review = typeof reviews.$inferSelect;
 
@@ -217,7 +245,9 @@ export const pageViews = mysqlTable("page_views", {
   id: int("id").autoincrement().primaryKey(),
   path: varchar("path", { length: 256 }).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  createdAtIdx: index("created_at_idx").on(table.createdAt),
+}));
 
 export type PageView = typeof pageViews.$inferSelect;
 
