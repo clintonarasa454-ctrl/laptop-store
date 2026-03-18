@@ -314,11 +314,12 @@ export default function Products() {
                 const isSelected = selectedCategories.includes(cat.id);
                 const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
                 const isExpanded = expandedCategories.includes(cat.id);
+                const hasSelectedChild = children.some(child => selectedCategories.includes(child.id));
                 return (
                   <div key={cat.id} className="pt-1 group">
                     <div
                       className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all duration-200 cursor-pointer ${
-                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
+                        isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : hasSelectedChild ? "text-[var(--brand)] font-semibold" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                       }`}
                       onClick={() => {
                         setSelectedCategories((prev) => isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id]);
