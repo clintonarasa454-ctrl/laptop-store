@@ -235,6 +235,12 @@ export default function Home() {
               {activeBanners.length > 0 ? (
                 activeBanners.map((banner, idx) => {
                   const style = getBannerStyle(idx, activeBanners.length);
+                  const content = (
+                    <>
+                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
+                      <img src={banner.image} alt={banner.title} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
+                    </>
+                  );
                   return (
                     <div 
                       key={banner.id}
@@ -246,15 +252,27 @@ export default function Home() {
                         pointerEvents: style.opacity === 0 ? 'none' : 'auto'
                       }}
                     >
-                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-                      <img src={banner.image} alt={banner.title} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
+                      {banner.linkUrl ? (
+                        <a href={banner.linkUrl} className="block w-full h-full cursor-pointer">
+                          {content}
+                        </a>
+                      ) : content}
                     </div>
                   );
                 })
               ) : (
                 <div className="absolute inset-0 z-30">
-                  <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-                  <img src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner?.title || "Premium Laptop"} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
+                  {mainBanner?.linkUrl ? (
+                    <a href={mainBanner.linkUrl} className="block w-full h-full cursor-pointer">
+                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
+                      <img src={mainBanner.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner.title || "Premium Laptop"} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
+                    </a>
+                  ) : (
+                    <>
+                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
+                      <img src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner?.title || "Premium Laptop"} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
+                    </>
+                  )}
                 </div>
               )}
 

@@ -420,6 +420,13 @@ export default function AdminContent() {
                     </div>
                   )}
 
+                  {formType === "banner" && (
+                    <div className="space-y-2">
+                      <Label>Link URL (Optional)</Label>
+                      <Input value={formData.linkUrl || ""} onChange={(e) => setFormData({ ...formData, linkUrl: e.target.value })} placeholder="e.g. /products?category=gaming or https://..." />
+                    </div>
+                  )}
+
                   {formType === "announcement" && (
                     <>
                     <div className="space-y-2">

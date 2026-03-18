@@ -848,7 +848,7 @@ export async function getBanners(opts?: { activeOnly?: boolean }) {
   return db.select().from(banners).orderBy(desc(banners.createdAt));
 }
 
-export async function upsertBanner(data: { id?: number; title: string; image: string; active?: boolean }) {
+export async function upsertBanner(data: { id?: number; title: string; image: string; linkUrl?: string | null; active?: boolean }) {
   const db = await getDb();
   if (!db) return;
   if (data.id) {
