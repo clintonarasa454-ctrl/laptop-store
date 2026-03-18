@@ -275,7 +275,10 @@ export const appRouter = router({
           } else {
              console.log("No SMTP configured. Verification Code for", input.email, "is", otp);
           }
-        } catch (err) { console.error("Failed to send verification email", err); }
+        } catch (err: any) { 
+          console.error("Failed to send verification email", err); 
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Email sending failed: ${err.message}. Please check your SMTP settings.` });
+        }
 
         return { success: true, token, email: input.email };
       }),
@@ -399,7 +402,10 @@ export const appRouter = router({
           else {
              console.log("No SMTP configured. Reset Code for", user.email, "is", otp);
           }
-        } catch (err) { console.error("Failed to send reset email", err); }
+        } catch (err: any) { 
+          console.error("Failed to send reset email", err); 
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Email sending failed: ${err.message}. Please check your SMTP settings.` });
+        }
         return { success: true, token, email: user.email };
       }),
     resetPassword: publicProcedure
@@ -511,7 +517,10 @@ export const appRouter = router({
           } else {
              console.log("No SMTP configured. Verification Code for", input.email, "is", otp);
           }
-        } catch (err) { console.error("Failed to send verification email", err); }
+        } catch (err: any) { 
+          console.error("Failed to send verification email", err); 
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Email sending failed: ${err.message}. Please check your SMTP settings.` });
+        }
 
         return { success: true, token, email: input.email };
       }),
