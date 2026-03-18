@@ -1580,7 +1580,7 @@ export const appRouter = router({
     // --- Content Management ---
     banners: adminProcedure.query(() => getBanners()),
     upsertBanner: adminProcedure
-      .input(z.object({ id: z.number().optional(), title: z.string().min(1), image: z.string().min(1), linkUrl: z.string().nullable().optional(), active: z.boolean().optional() }))
+      .input(z.object({ id: z.number().optional(), title: z.string().min(1), image: z.string().min(1), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         await upsertBanner(input);
         return { success: true };

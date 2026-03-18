@@ -232,52 +232,28 @@ export default function Home() {
             <div className="relative hidden lg:block">
               <div className="relative w-full aspect-square max-w-lg mx-auto mt-8 lg:mt-0" style={{ animation: 'float 6s ease-in-out infinite' }}>
                 <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[var(--brand)]/20 to-purple-500/20 blur-3xl" />
+                <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
               {activeBanners.length > 0 ? (
-                activeBanners.map((banner, idx) => {
-                  const style = getBannerStyle(idx, activeBanners.length);
-                  const content = (
-                    <>
-                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-                      <img src={banner.image} alt={banner.title} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
-                    </>
-                  );
-                  return (
-                    <div 
-                      key={banner.id}
-                      className="absolute inset-0 transition-all duration-1000 ease-[cubic-bezier(0.25,1,0.5,1)]"
-                      style={{
-                        transform: style.transform,
-                        opacity: style.opacity,
-                        zIndex: style.zIndex,
-                        pointerEvents: style.opacity === 0 ? 'none' : 'auto'
-                      }}
-                    >
-                      {banner.linkUrl ? (
-                        <a href={banner.linkUrl} className="block w-full h-full cursor-pointer">
-                          {content}
-                        </a>
-                      ) : content}
-                    </div>
-                  );
-                })
+                activeBanners.map((banner, idx) => (
+                  <img
+                    key={banner.id}
+                    src={banner.image}
+                    alt={banner.title}
+                      className={`absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner transition-opacity duration-[1500ms] ${
+                      idx === currentBannerIndex ? "opacity-100 z-10" : "opacity-0 z-0"
+                    }`}
+                  />
+                ))
               ) : (
-                <div className="absolute inset-0 z-30">
-                  {mainBanner?.linkUrl ? (
-                    <a href={mainBanner.linkUrl} className="block w-full h-full cursor-pointer">
-                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-                      <img src={mainBanner.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner.title || "Premium Laptop"} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
-                    </a>
-                  ) : (
-                    <>
-                      <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-                      <img src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner?.title || "Premium Laptop"} className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner" />
-                    </>
-                  )}
-                </div>
+                <img
+                  src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"}
+                  alt={mainBanner?.title || "Premium Laptop"}
+                  className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner"
+                />
               )}
 
                 {/* Floating badge */}
-                <div className="absolute -bottom-2 -left-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-50" style={{ animation: 'float-delayed 7s ease-in-out infinite' }}>
+                <div className="absolute -bottom-2 -left-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-20" style={{ animation: 'float-delayed 7s ease-in-out infinite' }}>
                   <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
                       <Badge1Icon className="w-4 h-4 text-green-500" />
@@ -288,7 +264,7 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
-                <div className="absolute -top-2 -right-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-50" style={{ animation: 'float-delayed 8s ease-in-out infinite', animationDelay: '1s' }}>
+                <div className="absolute -top-2 -right-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-20" style={{ animation: 'float-delayed 8s ease-in-out infinite', animationDelay: '1s' }}>
                   <div className="flex items-center gap-2.5">
                     <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 flex items-center justify-center">
                       <Badge2Icon className="w-4 h-4 text-[var(--brand)]" />
