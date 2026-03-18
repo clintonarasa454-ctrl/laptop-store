@@ -98,18 +98,7 @@ export default function Home() {
   const orderedBanners = banners ? [...banners].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
   const mainBanner = orderedBanners?.[0];
   const activeBanners = orderedBanners?.filter(b => b.active) || [];
-  const [currentBannerIndex, setCurrentBannerIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
-
-  useEffect(() => {
-    if (activeBanners.length <= 1 || isHovered) return;
-    const timer = setInterval(() => {
-      setCurrentBannerIndex((prev) => (prev + 1) % activeBanners.length);
-    }, 6000); // Auto-rotate interval (e.g., 6000 = waits 6 seconds per slide)
-    return () => clearInterval(timer);
-  }, [activeBanners.length, isHovered]);
-
-  const currentBanner = activeBanners.length > 0 ? activeBanners[currentBannerIndex] : mainBanner;
   
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
   const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands. Built for professionals, creators, and gamers.";
@@ -189,13 +178,11 @@ export default function Home() {
                 <Zap className="w-3 h-3 mr-1" /> {settings?.general?.heroBadge || "New Arrivals 2025"}
               </Badge>
               <h1 
-                key={currentBanner?.id || 'default'}
                 className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight whitespace-pre-line animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-700"
               >
-                {currentBanner ? currentBanner.title : heroTitle}
+                {heroTitle}
               </h1>
               <p 
-                key={`desc-${currentBanner?.id || 'default'}`}
                 className="text-lg text-muted-foreground leading-relaxed max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200 fill-mode-backwards"
               >
                 {heroDescription}
@@ -230,91 +217,48 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="relative hidden lg:block">
-              <div className="relative w-full aspect-square max-w-lg mx-auto mt-8 lg:mt-0" style={{ animation: 'float 6s ease-in-out infinite' }}>
-                {/* Ambient Glow */}
-                <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[var(--brand)]/20 to-purple-500/20 blur-3xl" />
-                
-                {/* Premium Device Bezel */}
-                <div className="absolute inset-2 rounded-[3rem] bg-gradient-to-br from-border/50 to-background border border-[var(--brand)]/20 shadow-2xl" />
-                
-                {/* Screen Content Area */}
-                <div className="absolute inset-6 rounded-[2.25rem] bg-card overflow-hidden shadow-inner border border-border/50">
-                  {activeBanners.length > 0 ? (
-                    activeBanners.map((banner, idx) => {
-                      let positionClass = "opacity-0 translate-x-full scale-95 z-0";
-                      if (idx === currentBannerIndex) {
-                        positionClass = "opacity-100 translate-x-0 scale-100 z-10";
-                      } else if (idx === (currentBannerIndex - 1 + activeBanners.length) % activeBanners.length || (idx < currentBannerIndex && activeBanners.length === 2)) {
-                        positionClass = "opacity-0 -translate-x-full scale-95 z-0";
-                      }
+            {/* ── RIGHT CARD ZONE ────────────────────────────────────────────────── */}
+            <div className="relative hidden lg:flex h-[500px] w-full items-center justify-center">
+              {/* Ambient Glow */}
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24rem] h-[24rem] rounded-full bg-[var(--brand)]/10 blur-[100px] pointer-events-none" />
 
-                      return (
-                        <div
-                          key={banner.id}
-                          className={`absolute inset-0 w-full h-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] ${positionClass}`}
-                        >
-                          <img src={banner.image} alt={banner.title} className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-50" />
-                          
-                          {/* Glass Title Badge */}
-                          <div className="absolute top-6 right-6">
-                            <div className="bg-background/80 backdrop-blur-md border border-border/50 shadow-xl rounded-2xl px-4 py-2">
-                              <span className="text-sm font-bold bg-gradient-to-r from-[var(--brand)] to-purple-500 bg-clip-text text-transparent">
-                                {banner.title}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <img src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner?.title || "Premium Tech"} className="w-full h-full object-cover" />
-                  )}
-                  
-                  {/* Interactive Navigation Overlay */}
-                  {activeBanners.length > 1 && (
-                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-30 bg-background/80 backdrop-blur-xl px-4 py-2.5 rounded-full border border-border/50 shadow-lg">
-                      <button onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex((p) => (p - 1 + activeBanners.length) % activeBanners.length); }} className="p-1 hover:text-[var(--brand)] text-muted-foreground transition-colors">
-                        <ChevronLeft className="w-4 h-4" />
-                      </button>
-                      <div className="flex items-center gap-2">
-                        {activeBanners.map((_, i) => (
-                          <button key={i} onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex(i); }} className={`h-2 rounded-full transition-all duration-300 ${i === currentBannerIndex ? "w-6 bg-[var(--brand)]" : "w-2 bg-muted-foreground/30 hover:bg-muted-foreground/60"}`} />
-                        ))}
-                      </div>
-                      <button onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex((p) => (p + 1) % activeBanners.length); }} className="p-1 hover:text-[var(--brand)] text-muted-foreground transition-colors">
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
+              {activeBanners.slice(0, 3).map((banner, index) => {
+                const total = Math.min(activeBanners.length, 3);
+                let positionClass = "";
+                let animDelay = "0s";
 
-                {/* Floating badge */}
-                <div className="absolute -bottom-2 -left-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-20" style={{ animation: 'float-delayed 7s ease-in-out infinite' }}>
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center">
-                      <Badge1Icon className="w-4 h-4 text-green-500" />
+                // Position engine: Configures layout based on total cards rendered
+                if (total === 1) {
+                  positionClass = "z-20 scale-100";
+                } else if (total === 2) {
+                  if (index === 0) { positionClass = "z-20 scale-100 translate-x-12 -translate-y-6"; animDelay = "0s"; }
+                  else { positionClass = "z-10 scale-90 -translate-x-16 translate-y-12 opacity-95"; animDelay = "1.5s"; }
+                } else {
+                  if (index === 0) { positionClass = "z-30 scale-100"; animDelay = "0s"; }
+                  else if (index === 1) { positionClass = "z-20 scale-90 -translate-x-24 translate-y-16 opacity-95"; animDelay = "1s"; }
+                  else { positionClass = "z-10 scale-90 translate-x-24 -translate-y-16 opacity-90"; animDelay = "2s"; }
+                }
+
+                return (
+                  <div
+                    key={banner.id}
+                    className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[280px] transition-all duration-500 hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
+                    style={{ animation: `float 6s ease-in-out infinite`, animationDelay: animDelay }}
+                  >
+                    <div className="w-full aspect-[4/3] rounded-2xl overflow-hidden bg-muted mb-4 border border-border/30 relative">
+                      <img src={banner.image} alt={banner.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold">{badge1.title}</p>
-                      <p className="text-[10px] text-muted-foreground">{badge1.desc}</p>
+                    <div className="space-y-1 px-1 text-center">
+                      <h3 className="font-display font-bold text-lg leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
+                      {banner.description && (
+                        <p className="text-sm text-muted-foreground line-clamp-2">{banner.description}</p>
+                      )}
                     </div>
                   </div>
-                </div>
-                <div className="absolute -top-2 -right-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-20" style={{ animation: 'float-delayed 8s ease-in-out infinite', animationDelay: '1s' }}>
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/10 flex items-center justify-center">
-                      <Badge2Icon className="w-4 h-4 text-[var(--brand)]" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold">{badge2.title}</p>
-                      <p className="text-[10px] text-muted-foreground">{badge2.desc}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+                );
+              })}
             </div>
+
           </div>
         </div>
       </section>

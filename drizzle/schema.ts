@@ -265,8 +265,8 @@ export type Setting = typeof settings.$inferSelect;
 export const banners = mysqlTable("banners", {
   id: int("id").autoincrement().primaryKey(),
   title: varchar("title", { length: 256 }).notNull(),
+  description: text("description"),
   image: longtext("image").notNull(),
-  linkUrl: varchar("linkUrl", { length: 512 }),
   active: boolean("active").default(true).notNull(),
   order: int("order").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

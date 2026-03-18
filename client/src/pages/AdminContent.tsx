@@ -383,6 +383,11 @@ export default function AdminContent() {
                   </div>
 
                   {formType === "banner" && (
+                    <>
+                    <div className="space-y-2">
+                      <Label>Subtitle / Description (Optional)</Label>
+                      <Input value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="E.g. Save up to 40% on top tech" />
+                    </div>
                     <div className="space-y-2">
                       <Label>Banner Image *</Label>
                       <div 
@@ -418,6 +423,7 @@ export default function AdminContent() {
                         )}
                       </div>
                     </div>
+                    </>
                   )}
 
                   {formType === "announcement" && (
