@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { Filter, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -27,7 +27,7 @@ export default function Products() {
 
   const [search, setSearch] = useState(searchParam ?? "");
   const [selectedCategories, setSelectedCategories] = useState<number[]>([]);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [syncedUrl, setSyncedUrl] = useState<string | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<string | undefined>(brandParam);
   const [minPrice, setMinPrice] = useState<string>(minPriceParam);
   const [maxPrice, setMaxPrice] = useState<string>(maxPriceParam);
@@ -43,8 +43,6 @@ export default function Products() {
   const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const currency = settings?.general?.currency || "$";
-
-  const parsedUrlRef = useRef<string | null>(null);
 
   // 1. URL -> State Sync
   useEffect(() => {
@@ -69,8 +67,7 @@ export default function Products() {
       setMaxPrice(maxPriceParam);
       setSortBy(sortByParam);
 
-      setIsInitialized(true);
-      parsedUrlRef.current = searchString;
+      setSyncedUrl(searchString);
     }
   }, [categories, searchString, categoriesParam, categorySlug, searchParam, tagParam, brandParam, minPriceParam, maxPriceParam, sortByParam]);
 
@@ -81,9 +78,9 @@ export default function Products() {
 
   // 2. State -> URL Sync
   useEffect(() => {
-    if (!isInitialized) return;
-    // Guard against race conditions: Wait for the URL->State sync to process the current URL before we try to rewrite it!
-    if (parsedUrlRef.current !== searchString) return;
+    // Guard against race conditions: Wait until categories are loaded and 
+    // the state has fully synchronized with the current URL before attempting to rewrite it!
+    if (!categories || syncedUrl !== searchString) return;
 
     const currentParams = new URLSearchParams(searchString);
     const newParams = new URLSearchParams();
@@ -125,7 +122,7 @@ export default function Products() {
       const newUrl = qs ? `${location}?${qs}` : location;
       setLocation(newUrl, { replace: true });
     }
-  }, [isInitialized, search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, setLocation]);
+  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, syncedUrl, setLocation]);
 
   // Include child categories if a parent is selected
   const categoryIdsToFetch = selectedCategories.length > 0 ? selectedCategories.flatMap(id => {
