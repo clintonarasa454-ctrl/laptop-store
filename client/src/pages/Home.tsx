@@ -2,6 +2,7 @@ import { trpc } from "@/lib/trpc";
 import {
   ArrowRight,
   Award,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Cpu,
@@ -231,26 +232,63 @@ export default function Home() {
 
             <div className="relative hidden lg:block">
               <div className="relative w-full aspect-square max-w-lg mx-auto mt-8 lg:mt-0" style={{ animation: 'float 6s ease-in-out infinite' }}>
+                {/* Ambient Glow */}
                 <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[var(--brand)]/20 to-purple-500/20 blur-3xl" />
-                <div className="absolute inset-4 rounded-[3rem] bg-gradient-to-br from-[var(--brand)]/10 to-purple-500/10 border border-[var(--brand)]/30 shadow-2xl" />
-              {activeBanners.length > 0 ? (
-                activeBanners.map((banner, idx) => (
-                  <img
-                    key={banner.id}
-                    src={banner.image}
-                    alt={banner.title}
-                      className={`absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner transition-opacity duration-[1500ms] ${
-                      idx === currentBannerIndex ? "opacity-100 z-10" : "opacity-0 z-0"
-                    }`}
-                  />
-                ))
-              ) : (
-                <img
-                  src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"}
-                  alt={mainBanner?.title || "Premium Laptop"}
-                  className="absolute inset-4 w-[calc(100%-2rem)] h-[calc(100%-2rem)] object-cover rounded-[2.5rem] shadow-inner"
-                />
-              )}
+                
+                {/* Premium Device Bezel */}
+                <div className="absolute inset-2 rounded-[3rem] bg-gradient-to-br from-border/50 to-background border border-[var(--brand)]/20 shadow-2xl" />
+                
+                {/* Screen Content Area */}
+                <div className="absolute inset-6 rounded-[2.25rem] bg-card overflow-hidden shadow-inner border border-border/50">
+                  {activeBanners.length > 0 ? (
+                    activeBanners.map((banner, idx) => {
+                      let positionClass = "opacity-0 translate-x-full scale-95 z-0";
+                      if (idx === currentBannerIndex) {
+                        positionClass = "opacity-100 translate-x-0 scale-100 z-10";
+                      } else if (idx === (currentBannerIndex - 1 + activeBanners.length) % activeBanners.length || (idx < currentBannerIndex && activeBanners.length === 2)) {
+                        positionClass = "opacity-0 -translate-x-full scale-95 z-0";
+                      }
+
+                      return (
+                        <div
+                          key={banner.id}
+                          className={`absolute inset-0 w-full h-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] ${positionClass}`}
+                        >
+                          <img src={banner.image} alt={banner.title} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-50" />
+                          
+                          {/* Glass Title Badge */}
+                          <div className="absolute top-6 right-6">
+                            <div className="bg-background/80 backdrop-blur-md border border-border/50 shadow-xl rounded-2xl px-4 py-2">
+                              <span className="text-sm font-bold bg-gradient-to-r from-[var(--brand)] to-purple-500 bg-clip-text text-transparent">
+                                {banner.title}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <img src={mainBanner?.image || settings?.general?.heroImage || "https://images.unsplash.com/photo-1593642632559-0c6d3fc62b89?w=700&q=85"} alt={mainBanner?.title || "Premium Tech"} className="w-full h-full object-cover" />
+                  )}
+                  
+                  {/* Interactive Navigation Overlay */}
+                  {activeBanners.length > 1 && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-30 bg-background/80 backdrop-blur-xl px-4 py-2.5 rounded-full border border-border/50 shadow-lg">
+                      <button onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex((p) => (p - 1 + activeBanners.length) % activeBanners.length); }} className="p-1 hover:text-[var(--brand)] text-muted-foreground transition-colors">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <div className="flex items-center gap-2">
+                        {activeBanners.map((_, i) => (
+                          <button key={i} onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex(i); }} className={`h-2 rounded-full transition-all duration-300 ${i === currentBannerIndex ? "w-6 bg-[var(--brand)]" : "w-2 bg-muted-foreground/30 hover:bg-muted-foreground/60"}`} />
+                        ))}
+                      </div>
+                      <button onClick={(e) => { e.stopPropagation(); setCurrentBannerIndex((p) => (p + 1) % activeBanners.length); }} className="p-1 hover:text-[var(--brand)] text-muted-foreground transition-colors">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 {/* Floating badge */}
                 <div className="absolute -bottom-2 -left-6 bg-background/80 backdrop-blur-xl border border-border rounded-2xl p-4 shadow-xl z-20" style={{ animation: 'float-delayed 7s ease-in-out infinite' }}>
