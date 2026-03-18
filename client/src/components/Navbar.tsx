@@ -20,6 +20,7 @@ import {
   Headphones,
   Loader2,
 } from "lucide-react";
+import * as LucideIcons from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Button } from "./ui/button";
