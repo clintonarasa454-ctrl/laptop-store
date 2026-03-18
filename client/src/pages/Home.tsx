@@ -98,8 +98,17 @@ export default function Home() {
   const orderedBanners = banners ? [...banners].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
   const mainBanner = orderedBanners?.[0];
   const activeBanners = orderedBanners?.filter(b => b.active) || [];
+  const [activeIndex, setActiveIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
   
+  useEffect(() => {
+    if (activeBanners.length <= 1 || isHovered) return;
+    const timer = setInterval(() => {
+      setActiveIndex((prev) => (prev + 1) % activeBanners.length);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [activeBanners.length, isHovered]);
+
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
   const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands. Built for professionals, creators, and gamers.";
   const ctaTitle = settings?.general?.ctaTitle || "Ready to Upgrade Your Setup?";
@@ -171,7 +180,7 @@ export default function Home() {
           <div className="absolute top-1/2 -left-40 w-[24rem] h-[24rem] rounded-full bg-purple-500/10 blur-[100px]" />
         </div>
 
-        <div className="container relative py-20 lg:py-28">
+      <div className="container relative py-10 lg:py-16">
           <div className="grid lg:grid-cols-2 gap-12 items-center">
             <div className="space-y-6">
               <Badge className="bg-[var(--brand)]/10 text-[var(--brand)] border-[var(--brand)]/20 hover:bg-[var(--brand)]/15">
@@ -218,40 +227,41 @@ export default function Home() {
             </div>
 
             {/* ── RIGHT CARD ZONE ────────────────────────────────────────────────── */}
-            <div className="relative hidden lg:flex h-[500px] w-full items-center justify-center">
+          <div className="relative hidden lg:flex h-[500px] xl:h-[600px] w-full items-center justify-center">
               {/* Ambient Glow */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24rem] h-[24rem] rounded-full bg-[var(--brand)]/10 blur-[100px] pointer-events-none" />
 
-              {activeBanners.slice(0, 3).map((banner, index) => {
-                const total = Math.min(activeBanners.length, 3);
-                let positionClass = "";
+            {activeBanners.map((banner, index) => {
+              const total = activeBanners.length;
+              const offset = (index - activeIndex + total) % total;
+              let positionClass = "opacity-0 scale-75 pointer-events-none z-0";
                 let animDelay = "0s";
 
                 // Position engine: Configures layout based on total cards rendered
                 if (total === 1) {
-                  positionClass = "z-20 scale-100";
+                if (offset === 0) positionClass = "z-20 scale-100 opacity-100";
                 } else if (total === 2) {
-                  if (index === 0) { positionClass = "z-20 scale-100 translate-x-12 -translate-y-6"; animDelay = "0s"; }
-                  else { positionClass = "z-10 scale-90 -translate-x-16 translate-y-12 opacity-95"; animDelay = "1.5s"; }
+                if (offset === 0) { positionClass = "z-20 scale-100 translate-x-8 -translate-y-6 opacity-100"; animDelay = "0s"; }
+                else if (offset === 1) { positionClass = "z-10 scale-90 -translate-x-12 translate-y-10 opacity-95"; animDelay = "1.5s"; }
                 } else {
-                  if (index === 0) { positionClass = "z-30 scale-100"; animDelay = "0s"; }
-                  else if (index === 1) { positionClass = "z-20 scale-90 -translate-x-24 translate-y-16 opacity-95"; animDelay = "1s"; }
-                  else { positionClass = "z-10 scale-90 translate-x-24 -translate-y-16 opacity-90"; animDelay = "2s"; }
+                if (offset === 0) { positionClass = "z-30 scale-100 translate-x-0 translate-y-0 opacity-100"; animDelay = "0s"; }
+                else if (offset === 1) { positionClass = "z-20 scale-90 -translate-x-28 translate-y-16 opacity-95"; animDelay = "1s"; }
+                else if (offset === 2) { positionClass = "z-10 scale-90 translate-x-28 -translate-y-16 opacity-90"; animDelay = "2s"; }
                 }
 
                 return (
                   <div
                     key={banner.id}
-                    className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[280px] transition-all duration-500 hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
+                  className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[320px] xl:w-[380px] transition-all duration-700 ease-in-out hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
                     style={{ animation: `float 6s ease-in-out infinite`, animationDelay: animDelay }}
                   >
                     <div className="w-full aspect-[4/3] rounded-2xl overflow-hidden bg-muted mb-4 border border-border/30 relative">
                       <img src={banner.image} alt={banner.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
                     </div>
                     <div className="space-y-1 px-1 text-center">
-                      <h3 className="font-display font-bold text-lg leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
+                    <h3 className="font-display font-bold text-lg xl:text-xl leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
                       {banner.description && (
-                        <p className="text-sm text-muted-foreground line-clamp-2">{banner.description}</p>
+                      <p className="text-sm xl:text-base text-muted-foreground line-clamp-2">{banner.description}</p>
                       )}
                     </div>
                   </div>
