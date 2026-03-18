@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { Filter, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
+import { ChevronDown, Filter, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
@@ -34,6 +34,7 @@ export default function Products() {
   const [sortBy, setSortBy] = useState<"newest" | "price_asc" | "price_desc">(sortByParam);
   const [tagFilter, setTagFilter] = useState<string | undefined>(tagParam);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState<number[]>([]);
   const [visibleCount, setVisibleCount] = useState(12);
 
   const { data: categories } = trpc.categories.list.useQuery();
@@ -75,6 +76,30 @@ export default function Products() {
   useEffect(() => {
     setVisibleCount(12);
   }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter]);
+
+  // Auto-expand categories if selected
+  useEffect(() => {
+    if (categories && selectedCategories.length > 0) {
+      const toExpand = new Set(expandedCategories);
+      let changed = false;
+      selectedCategories.forEach(catId => {
+        const cat = categories.find(c => c.id === catId);
+        if (cat) {
+          const parentId = (cat as any).parentId;
+          if (parentId && !toExpand.has(parentId)) {
+            toExpand.add(parentId);
+            changed = true;
+          } else if (!parentId && !toExpand.has(cat.id)) {
+            toExpand.add(cat.id);
+            changed = true;
+          }
+        }
+      });
+      if (changed) {
+        setExpandedCategories(Array.from(toExpand));
+      }
+    }
+  }, [selectedCategories, categories]);
 
   // 2. State -> URL Sync
   useEffect(() => {
@@ -288,19 +313,38 @@ export default function Products() {
               {rootCategories.map((cat) => {
                 const isSelected = selectedCategories.includes(cat.id);
                 const children = orderedCategories.filter(c => (c as any).parentId === cat.id);
+                const isExpanded = expandedCategories.includes(cat.id);
                 return (
-                  <div key={cat.id} className="pt-1">
-                    <button
-                      onClick={() => setSelectedCategories((prev) => isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id])}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                  <div key={cat.id} className="pt-1 group">
+                    <div
+                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-all duration-200 cursor-pointer ${
                         isSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                       }`}
+                      onClick={() => {
+                        setSelectedCategories((prev) => isSelected ? prev.filter((id) => id !== cat.id) : [...prev, cat.id]);
+                        setExpandedCategories(prev => prev.includes(cat.id) ? prev.filter(id => id !== cat.id) : [...prev, cat.id]);
+                      }}
                     >
                       <span>{cat.name}</span>
-                      {isSelected && <Check className="w-3.5 h-3.5" />}
-                    </button>
+                      <div className="flex items-center gap-2">
+                        {isSelected && <Check className="w-3.5 h-3.5" />}
+                        {children.length > 0 && (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedCategories(prev => prev.includes(cat.id) ? prev.filter(id => id !== cat.id) : [...prev, cat.id]);
+                            }}
+                            className="p-0.5 rounded-md hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground"
+                          >
+                            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? "rotate-180" : "group-hover:rotate-180"}`} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
                     {children.length > 0 && (
-                      <div className="flex flex-col gap-0.5 ml-3 pl-3 border-l-2 border-border/50 mt-1 mb-2">
+                      <div className={`flex flex-col gap-0.5 ml-3 pl-3 border-l-2 border-border/50 transition-all duration-300 overflow-hidden ${
+                        isExpanded ? "max-h-[1000px] opacity-100 mt-1 mb-2" : "max-h-0 opacity-0 mt-0 mb-0 group-hover:max-h-[1000px] group-hover:opacity-100 group-hover:mt-1 group-hover:mb-2"
+                      }`}>
                         {children.map(child => {
                           const isChildSelected = selectedCategories.includes(child.id);
                           return (
