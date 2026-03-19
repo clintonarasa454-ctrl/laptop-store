@@ -24,6 +24,8 @@ export default function OtpInput({ value, onChange, onPaste, id }: OtpInputProps
       ))}
       <input
         id={id}
+        aria-label="One-time verification code"
+        title="One-time verification code"
         className="absolute inset-0 w-full h-full opacity-0 cursor-text"
         maxLength={6}
         value={value}

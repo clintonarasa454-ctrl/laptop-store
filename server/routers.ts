@@ -3,7 +3,6 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
-import { serialize } from "cookie";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import {
@@ -67,6 +66,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { SignJWT, jwtVerify } from "jose";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import Stripe from "stripe";
+import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmationEmailHtml, getShippingNotificationEmailHtml, getAbandonedCartEmailHtml } from "./emailTemplates";
+import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone } from "./paymentUtils";
 
 // ─── Admin guard ──────────────────────────────────────────────────────────────
 // Always require admin role for admin procedures. Tests expect FORBIDDEN for
@@ -92,47 +93,6 @@ function verifyPassword(password: string, hash: string) {
 }
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "default_jwt_secret_for_development_only");
-
-async function getPaypalAccessToken(clientId: string, secret: string) {
-  const PAYPAL_API_BASE = process.env.PAYPAL_ENV === "production" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
-  const auth = Buffer.from(`${clientId}:${secret}`).toString("base64");
-  const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error_description || "PayPal Auth failed");
-  return data.access_token;
-}
-
-async function getMpesaAccessToken(consumerKey: string, consumerSecret: string, env: string = "sandbox") {
-  const baseUrl = env === "production" ? "https://api.safaricom.co.ke" : "https://sandbox.safaricom.co.ke";
-  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-  const response = await fetch(`${baseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${auth}` },
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.errorMessage || "M-Pesa Auth failed");
-  return data.access_token;
-}
-
-function getMpesaTimestamp() {
-  const pad = (n: number) => (n < 10 ? '0' + n : n.toString());
-  const date = new Date();
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-}
-
-function formatMpesaPhone(phone: string) {
-  let cleaned = phone.replace(/\D/g, "");
-  if (cleaned.startsWith("0")) cleaned = "254" + cleaned.slice(1);
-  else if (cleaned.startsWith("+254")) cleaned = cleaned.slice(1);
-  else if (cleaned.length === 9) cleaned = "254" + cleaned;
-  return cleaned;
-}
 
 export const appRouter = router({
   system: systemRouter,
@@ -182,7 +142,8 @@ export const appRouter = router({
       if (typeof (ctx.res as any).clearCookie === "function") {
         (ctx.res as any).clearCookie(COOKIE_NAME, { ...cookieOpts, maxAge: -1 });
       } else {
-        (ctx.res as any).setHeader("Set-Cookie", serialize(COOKIE_NAME, "", { ...cookieOpts, maxAge: -1 }));
+        const sameSiteStr = cookieOpts.sameSite === "none" ? "None" : "Lax";
+        (ctx.res as any).setHeader("Set-Cookie", `${COOKIE_NAME}=; Path=/; HttpOnly; Max-Age=0; SameSite=${sameSiteStr}${isSecure ? "; Secure" : ""}`);
       }
       return { success: true } as const;
     }),
@@ -243,26 +204,10 @@ export const appRouter = router({
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@example.com";
           
-          const logoHtml = logoUrl 
-            ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 50px; margin-bottom: 20px; display: block; margin-left: auto; margin-right: auto;" />` 
-            : `<h2 style="margin-top: 0; color: #111; text-align: center;">${storeName}</h2>`;
-
-          const emailHtml = `
-            <div style="font-family: system-ui, -apple-system, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-              <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px; margin-bottom: 20px;">
-                ${logoHtml}
-                <h1 style="font-size: 24px; margin: 0; color: ${primaryColor};">Your Verification Code</h1>
-              </div>
-              <p style="font-size: 16px;">Hi <strong>${input.name}</strong>,</p>
-              <p style="color: #4b5563;">Welcome to ${storeName}! Please enter the following 6-digit code to activate your account. This code will expire in 24 hours.</p>
-              <div style="text-align: center; margin: 30px 0;">
-                <span style="display: inline-block; padding: 16px 32px; background: #f3f4f6; color: #111; border-radius: 8px; font-weight: bold; font-size: 32px; letter-spacing: 8px;">${otp}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 14px; text-align: center; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                Need help? Contact us at <a href="mailto:${contactEmail}" style="color: ${primaryColor}; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.
-              </p>
-            </div>
-          `;
+          const emailHtml = getVerificationEmailHtml({
+            storeName, logoUrl, primaryColor, contactEmail, storePhone,
+            name: input.name, otp
+          });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
@@ -348,7 +293,8 @@ export const appRouter = router({
         if (typeof (ctx.res as any).cookie === "function") {
           (ctx.res as any).cookie(COOKIE_NAME, token, { ...cookieOpts, maxAge: 604800000 });
         } else {
-          (ctx.res as any).setHeader("Set-Cookie", serialize(COOKIE_NAME, token, { ...cookieOpts, maxAge: 604800 }));
+          const sameSiteStr = cookieOpts.sameSite === "none" ? "None" : "Lax";
+          (ctx.res as any).setHeader("Set-Cookie", `${COOKIE_NAME}=${token}; Path=/; HttpOnly; Max-Age=604800; SameSite=${sameSiteStr}${isSecure ? "; Secure" : ""}`);
         }
 
         return { success: true };
@@ -376,27 +322,10 @@ export const appRouter = router({
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@nexustech.com";
           
-          const logoHtml = logoUrl 
-            ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 50px; margin-bottom: 20px; display: block; margin-left: auto; margin-right: auto;" />` 
-            : `<h2 style="margin-top: 0; color: #111; text-align: center;">${storeName}</h2>`;
-
-          const emailHtml = `
-            <div style="font-family: system-ui, -apple-system, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-              <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px; margin-bottom: 20px;">
-                ${logoHtml}
-                <h1 style="font-size: 24px; margin: 0; color: ${primaryColor};">Password Reset Code</h1>
-              </div>
-              <p style="font-size: 16px;">Hi <strong>${user.name || 'there'}</strong>,</p>
-              <p style="color: #4b5563;">We received a request to reset your password for your ${storeName} account. Please enter the following 6-digit code to choose a new password. This code will expire in 15 minutes.</p>
-              <div style="text-align: center; margin: 30px 0;">
-                <span style="display: inline-block; padding: 16px 32px; background: #f3f4f6; color: #111; border-radius: 8px; font-weight: bold; font-size: 32px; letter-spacing: 8px;">${otp}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 14px; text-align: center; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                If you didn't make this request, you can safely ignore this email.<br/><br/>
-                Need help? Contact us at <a href="mailto:${contactEmail}" style="color: ${primaryColor}; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.
-              </p>
-            </div>
-          `;
+          const emailHtml = getResetPasswordEmailHtml({
+            storeName, logoUrl, primaryColor, contactEmail, storePhone,
+            name: user.name || 'there', otp
+          });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
@@ -498,26 +427,10 @@ export const appRouter = router({
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@example.com";
           
-          const logoHtml = logoUrl 
-            ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 50px; margin-bottom: 20px; display: block; margin-left: auto; margin-right: auto;" />` 
-            : `<h2 style="margin-top: 0; color: #111; text-align: center;">${storeName}</h2>`;
-
-          const emailHtml = `
-            <div style="font-family: system-ui, -apple-system, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-              <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px; margin-bottom: 20px;">
-                ${logoHtml}
-                <h1 style="font-size: 24px; margin: 0; color: ${primaryColor};">Your Verification Code</h1>
-              </div>
-              <p style="font-size: 16px;">Hi <strong>${user.name}</strong>,</p>
-              <p style="color: #4b5563;">You requested a new verification code for ${storeName}. Please enter the following 6-digit code to activate your account. This code will expire in 24 hours.</p>
-              <div style="text-align: center; margin: 30px 0;">
-                <span style="display: inline-block; padding: 16px 32px; background: #f3f4f6; color: #111; border-radius: 8px; font-weight: bold; font-size: 32px; letter-spacing: 8px;">${otp}</span>
-              </div>
-              <p style="color: #6b7280; font-size: 14px; text-align: center; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                Need help? Contact us at <a href="mailto:${contactEmail}" style="color: ${primaryColor}; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.
-              </p>
-            </div>
-          `;
+          const emailHtml = getVerificationEmailHtml({
+            storeName, logoUrl, primaryColor, contactEmail, storePhone,
+            name: user.name || 'there', otp, isResend: true
+          });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
              const transporter = nodemailer.createTransport({
@@ -797,53 +710,13 @@ export const appRouter = router({
             const primaryColor = appearance?.primaryColor || "#3b82f6";
             const storePhone = general?.phone || "";
             const contactEmail = general?.contactEmail || "support@example.com";
-            const formatEmailPrice = (p: string | number) => new Intl.NumberFormat("en-US", { style: "currency", currency: storeCurrency }).format(typeof p === "string" ? parseFloat(p) : p);
 
-            const logoHtml = logoUrl 
-              ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 40px; margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto;" />` 
-              : `<h2 style="margin: 0 0 12px 0; color: #111; text-align: center; font-size: 20px;">${storeName}</h2>`;
-
-            const itemsHtml = cartData.map(item => `
-              <tr>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee; font-size: 13px; color: #374151;">${item.product.name} <span style="color: #6b7280;">(x${item.quantity})</span></td>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee; text-align: right; font-size: 13px; color: #374151;">${formatEmailPrice(parseFloat(item.product.price) * item.quantity)}</td>
-              </tr>
-            `).join('');
-
-            const emailHtml = `
-              <div style="font-family: system-ui, -apple-system, sans-serif; color: #1f2937; max-width: 600px; margin: 0 auto; padding: 20px 24px; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-                <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 15px; margin-bottom: 15px;">
-                  ${logoHtml}
-                  <h1 style="font-size: 20px; margin: 0; color: #10b981;">Order Confirmed!</h1>
-                </div>
-                <p style="font-size: 14px; margin-top: 0;">Hi <strong>${input.shippingFullName}</strong>,</p>
-                <p style="font-size: 14px; color: #4b5563; margin-bottom: 20px;">${emailSettings.orderConfirmationMessage || "Thank you for your order. We are getting your items ready for shipment."}</p>
-                
-                <div style="background: #f9fafb; padding: 15px 20px; border-radius: 6px; margin: 15px 0;">
-                  <h3 style="margin: 0 0 10px 0; font-size: 12px; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em;">Order Summary (#${orderNumber})</h3>
-                  <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                    ${itemsHtml}
-                    <tr>
-                      <td style="padding: 8px 0; font-weight: 600; padding-top: 12px; font-size: 13px;">Subtotal</td>
-                      <td style="padding: 8px 0; text-align: right; font-weight: 600; padding-top: 12px; font-size: 13px;">${formatEmailPrice(subtotal)}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0; font-weight: 600; font-size: 13px;">Shipping</td>
-                      <td style="padding: 8px 0; text-align: right; font-weight: 600; font-size: 13px;">${formatEmailPrice(shippingCost)}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 12px 0 0 0; font-size: 16px; font-weight: 700; border-top: 2px solid #e5e7eb;">Total</td>
-                      <td style="padding: 12px 0 0 0; font-size: 16px; font-weight: 700; text-align: right; border-top: 2px solid #e5e7eb;">${formatEmailPrice(total)}</td>
-                    </tr>
-                  </table>
-                </div>
-                
-                <p style="color: #6b7280; font-size: 12px; text-align: center; margin-top: 20px; border-top: 1px solid #e5e7eb; padding-top: 15px;">
-                  Track your order status by logging into your dashboard.<br/>
-                  Need help? Contact us at <a href="mailto:${contactEmail}" style="color: ${primaryColor}; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.
-                </p>
-              </div>
-            `;
+            const emailHtml = getOrderConfirmationEmailHtml({
+              storeName, logoUrl, primaryColor, contactEmail, storePhone, storeCurrency,
+              shippingFullName: input.shippingFullName,
+              orderNumber, cartData, subtotal, shippingCost, total,
+              customMessage: emailSettings.orderConfirmationMessage
+            });
             
             if (emailSettings?.smtpHost && emailSettings.smtpUser) {
               const transporter = nodemailer.createTransport({ 
@@ -1165,7 +1038,7 @@ export const appRouter = router({
           const generalSettings = await getSetting("general");
           const currency = (generalSettings?.currency || "USD").toLowerCase();
 
-          const stripe = new Stripe(paymentSettings.stripeSecret, { apiVersion: "2024-12-18.acacia" });
+          const stripe = new Stripe(paymentSettings.stripeSecret, { apiVersion: "2023-10-16" });
           const [expMonth, expYear] = input.expiry.split("/");
 
           // Create Payment Method
@@ -1333,41 +1206,18 @@ export const appRouter = router({
                   const logoUrl = appearance?.logoUrl;
                   const contactEmail = general?.contactEmail || "support@example.com";
                   
-                  const logoHtml = logoUrl 
-                    ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 40px; margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto;" />` 
-                    : `<h2 style="margin: 0 0 12px 0; color: #111; text-align: center; font-size: 20px;">${storeName}</h2>`;
-
-                  const trackingHtml = input.trackingNumber 
-                    ? `<div style="background: #f9fafb; padding: 16px; border-radius: 8px; margin: 24px 0; border: 1px solid #e5e7eb;">
-                         <p style="margin: 0 0 4px 0; font-size: 12px; font-weight: bold; text-transform: uppercase; color: #6b7280; letter-spacing: 0.05em;">Tracking Number</p>
-                         <a href="https://parcelsapp.com/en/tracking/${encodeURIComponent(input.trackingNumber)}" target="_blank" style="font-size: 18px; font-family: monospace; font-weight: bold; color: #8b5cf6; text-decoration: none;">
-                           ${input.trackingNumber}
-                         </a>
-                       </div>` 
-                    : ``;
-
                   const host = ctx.req.headers.host || "localhost:3000";
                   const protocol = host.includes("localhost") ? "http" : "https";
                   const trackLink = `${protocol}://${host}/dashboard/orders/${order.id}`;
 
-                  const emailHtml = `
-                    <div style="font-family: system-ui, -apple-system, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-                      <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 20px; margin-bottom: 20px;">
-                        ${logoHtml}
-                        <h1 style="font-size: 24px; margin: 0; color: #8b5cf6;">Your Order Has Shipped!</h1>
-                      </div>
-                      <p style="font-size: 16px;">Hi <strong>${order.shippingFullName}</strong>,</p>
-                      <p style="color: #4b5563;">${emailSettings?.shippingNotificationMessage || "Great news! Your order has been shipped and is on its way to you."}</p>
-                      <p style="color: #4b5563;"><strong>Order Number:</strong> #${order.orderNumber}</p>
-                      ${trackingHtml}
-                      <div style="text-align: center; margin: 30px 0;">
-                        <a href="${trackLink}" style="display: inline-block; padding: 12px 24px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">Track Your Order</a>
-                      </div>
-                      <p style="color: #6b7280; font-size: 14px; text-align: center; margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
-                        Need help? Contact us at <a href="mailto:${contactEmail}" style="color: #3b82f6; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.
-                      </p>
-                    </div>
-                  `;
+                  const emailHtml = getShippingNotificationEmailHtml({
+                    storeName, logoUrl, contactEmail, storePhone,
+                    shippingFullName: order.shippingFullName,
+                    orderNumber: order.orderNumber,
+                    trackingNumber: input.trackingNumber,
+                    trackLink,
+                    customMessage: emailSettings?.shippingNotificationMessage
+                  });
 
                   if (emailSettings?.smtpHost && emailSettings.smtpUser) {
                     const transporter = nodemailer.createTransport({
@@ -1705,8 +1555,6 @@ export async function processAbandonedCheckouts() {
     const storePhone = general?.phone || "";
     const contactEmail = general?.contactEmail || "support@example.com";
     
-    const formatEmailPrice = (p: string | number) => new Intl.NumberFormat("en-US", { style: "currency", currency: storeCurrency }).format(typeof p === "string" ? parseFloat(p) : p);
-    const logoHtml = logoUrl ? `<img src="${logoUrl}" alt="${storeName}" style="max-height: 40px; margin-bottom: 12px; display: block; margin-left: auto; margin-right: auto;" />` : `<h2 style="margin: 0 0 12px 0; color: #111; text-align: center; font-size: 20px;">${storeName}</h2>`;
     const transporter = nodemailer.createTransport({
       host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
       secure: Number(emailSettings.smtpPort) === 465,
@@ -1723,19 +1571,14 @@ export async function processAbandonedCheckouts() {
       const host = process.env.PUBLIC_URL || "http://localhost:3000";
       const orderLink = `${host}/order-confirmation/${order.orderNumber}`;
 
-      const emailHtml = `
-        <div style="font-family: system-ui, -apple-system, sans-serif; color: #1f2937; max-width: 600px; margin: 0 auto; padding: 20px 24px; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-          <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 15px; margin-bottom: 15px;">${logoHtml}<h1 style="font-size: 20px; margin: 0; color: #f59e0b;">You left something behind!</h1></div>
-          <p style="font-size: 14px; margin-top: 0;">Hi <strong>${order.shippingFullName}</strong>,</p>
-          <p style="font-size: 14px; color: #4b5563; margin-bottom: 20px;">We noticed you started an order but haven't completed the payment yet. Your items are currently saved, but they might sell out soon!</p>
-          <div style="background: #f9fafb; padding: 15px 20px; border-radius: 6px; margin: 15px 0; text-align: center;">
-            <h3 style="margin: 0 0 5px 0; font-size: 14px; color: #374151;">Order #${order.orderNumber}</h3>
-            <p style="margin: 0; font-size: 14px; color: #6b7280;">Pending Amount: <strong>${formatEmailPrice(order.total)}</strong></p>
-          </div>
-          <div style="text-align: center; margin: 30px 0;"><a href="${orderLink}" style="display: inline-block; padding: 12px 24px; background: ${primaryColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px;">Complete Your Order</a></div>
-          <p style="color: #6b7280; font-size: 12px; text-align: center; margin-top: 20px; border-top: 1px solid #e5e7eb; padding-top: 15px;">Need help? Contact us at <a href="mailto:${contactEmail}" style="color: ${primaryColor}; text-decoration: none;">${contactEmail}</a>${storePhone ? ` or call ${storePhone}` : ''}.</p>
-        </div>
-      `;
+      const emailHtml = getAbandonedCartEmailHtml({
+        storeName, logoUrl, primaryColor, contactEmail, storePhone, storeCurrency,
+        shippingFullName: order.shippingFullName,
+        orderNumber: order.orderNumber,
+        total: order.total,
+        orderLink
+      });
+
       await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customer.email, subject: `Did you forget something? Complete your order at ${storeName}`, html: emailHtml });
       await db.update(orders).set({ abandonedEmailSent: true }).where(eq(orders.id, order.id));
       console.log(`[Email] Abandoned checkout reminder sent to ${customer.email} for order ${order.orderNumber}`);

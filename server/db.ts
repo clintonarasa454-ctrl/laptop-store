@@ -45,7 +45,7 @@ export async function getDb() {
       const connection = await pool.getConnection();
       connection.release();
 
-      _db = drizzle(pool);
+      _db = drizzle(pool as any) as any;
     } catch (error) {
       console.error("\n========================================");
       console.error("[Database Error] Failed to connect to TiDB/MySQL.");
@@ -405,7 +405,7 @@ export async function createOrder(data: {
   subtotal: string;
   shippingCost: string;
   total: string;
-  paymentMethod?: "mpesa" | "paypal" | "stripe" | "card";
+  paymentMethod?: "mpesa" | "paypal" | "stripe" | "card" | "cod";
   notes?: string;
 }) {
   const db = await getDb();
@@ -519,7 +519,7 @@ export async function getOrderStatusHistory(orderId: number) {
 // ─── Payments ─────────────────────────────────────────────────────────────────
 export async function createPayment(data: {
   orderId: number;
-  method: "mpesa" | "paypal" | "stripe" | "card";
+  method: "mpesa" | "paypal" | "stripe" | "card" | "cod";
   amount: string;
   currency?: string;
   transactionId?: string;
@@ -826,7 +826,7 @@ export async function deleteProduct(productId: number) {
 }
 
 // ─── Settings & Content ───────────────────────────────────────────────────────
-export async function getSetting(key: string) {
+export async function getSetting(key: string): Promise<any> {
   const db = await getDb();
   if (!db) return null;
   const result = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
