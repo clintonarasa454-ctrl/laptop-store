@@ -5,6 +5,7 @@ import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
 import ProductCard from "@/components/ProductCard";
+import StoreLoader from "@/components/StoreLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -459,17 +460,8 @@ export default function Products() {
             )}
 
             {isLoading ? (
-              <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
-                {Array.from({ length: 9 }).map((_, i) => (
-                  <div key={i} className="rounded-xl overflow-hidden border border-border">
-                    <Skeleton className="aspect-[4/3]" />
-                    <div className="p-4 space-y-2">
-                      <Skeleton className="h-4 w-3/4" />
-                      <Skeleton className="h-3 w-full" />
-                      <Skeleton className="h-8 w-full mt-2" />
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center justify-center py-20 w-full">
+                <StoreLoader />
               </div>
             ) : sorted.length > 0 ? (
               <>

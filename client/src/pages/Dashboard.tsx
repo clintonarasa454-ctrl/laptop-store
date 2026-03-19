@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import ProductCard from "@/components/ProductCard";
+import StoreLoader from "@/components/StoreLoader";
 
 type Tab = "overview" | "orders" | "addresses" | "wishlist" | "account";
 
@@ -44,7 +45,7 @@ export default function Dashboard() {
       <div className="min-h-screen flex flex-col">
         <Navbar />
         <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--brand)]" />
+          <StoreLoader />
         </div>
         <Footer />
       </div>
@@ -282,7 +283,7 @@ function OrderDetail({ orderId }: { orderId: number }) {
   });
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
 
-  if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-[var(--brand)]" /></div>;
+  if (isLoading) return <div className="flex items-center justify-center py-20"><StoreLoader /></div>;
   if (!data) return <div className="text-center py-20 text-muted-foreground">Order not found</div>;
 
   const { order, items, history, payment } = data;

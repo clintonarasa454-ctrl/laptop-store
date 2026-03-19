@@ -30,6 +30,7 @@ import { Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
 import ProductCard from "@/components/ProductCard";
+import StoreLoader from "@/components/StoreLoader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -80,20 +81,20 @@ export default function Home() {
     { limit: 8 },
     { staleTime: 1000 * 60 * 5 }
   );
-  const { data: banners } = trpc.content.banners.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
-  const { data: promotions } = trpc.content.promotions.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
-  const { data: dbCategories } = trpc.categories.list.useQuery(undefined, { 
+  const { data: banners, isLoading: loadingBanners } = trpc.content.banners.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: promotions, isLoading: loadingPromotions } = trpc.content.promotions.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: dbCategories, isLoading: loadingCategories } = trpc.categories.list.useQuery(undefined, { 
     staleTime: 1000 * 60 * 60 // Cache categories for 1 full hour
   });
-  const { data: storeStats } = trpc.store.stats.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
-  const { data: settings } = trpc.settings.public.useQuery(
+  const { data: storeStats, isLoading: loadingStats } = trpc.store.stats.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: settings, isLoading: loadingSettings } = trpc.settings.public.useQuery(
     { keys: ["shipping", "general", "brands"] },
     { 
       staleTime: Infinity, // Settings rarely change; cache indefinitely per user session
       gcTime: Infinity 
     }
   );
-  const { data: announcements } = trpc.content.announcements.useQuery(undefined, { 
+  const { data: announcements, isLoading: loadingAnnouncements } = trpc.content.announcements.useQuery(undefined, { 
     staleTime: 1000 * 60 * 5 
   });
 
@@ -174,6 +175,20 @@ export default function Home() {
   const displayBrands = settings?.brands && settings.brands.length > 0 ? settings.brands : ["Samsung", "Dell", "HP", "Lenovo", "Asus", "Apple", "Acer"];
 
   const lifestyles = settings?.general?.lifestyles || fallbackLifestyles;
+
+  const isPageLoading = loadingFeatured || loadingLatest || loadingBanners || loadingPromotions || loadingCategories || loadingStats || loadingSettings || loadingAnnouncements;
+
+  if (isPageLoading) {
+    return (
+      <div className="min-h-screen flex flex-col bg-background">
+        <Navbar />
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <StoreLoader />
+        </div>
+        <Footer />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
