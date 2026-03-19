@@ -68,6 +68,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import Stripe from "stripe";
 import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmationEmailHtml, getShippingNotificationEmailHtml, getAbandonedCartEmailHtml } from "./emailTemplates";
 import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone } from "./paymentUtils";
+import { makeRequest } from "./_core/map";
 
 // ─── Admin guard ──────────────────────────────────────────────────────────────
 // Always require admin role for admin procedures. Tests expect FORBIDDEN for
@@ -590,7 +591,7 @@ export const appRouter = router({
       .input(
         z.object({
           fullName: z.string().min(1),
-          phone: z.string().min(1),
+          phone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
           addressLine: z.string().min(1),
           city: z.string().min(1),
           postalCode: z.string().optional(),
@@ -611,13 +612,36 @@ export const appRouter = router({
       }),
   }),
 
+  // ─── Maps & Places ─────────────────────────────────────────────────────────
+  maps: router({
+    autocomplete: protectedProcedure
+      .input(z.object({ input: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        const data = await makeRequest<any>("/maps/api/place/autocomplete/json", { 
+          input: input.input, 
+          types: "address" 
+        });
+        return data.predictions || [];
+      }),
+
+    placeDetails: protectedProcedure
+      .input(z.object({ placeId: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        const data = await makeRequest<any>("/maps/api/place/details/json", { 
+          place_id: input.placeId, 
+          fields: "address_components,formatted_address" 
+        });
+        return data.result;
+      }),
+  }),
+
   // ─── Checkout ──────────────────────────────────────────────────────────────
   checkout: router({
     placeOrder: protectedProcedure
       .input(
         z.object({
           shippingFullName: z.string().min(1),
-          shippingPhone: z.string().min(1),
+          shippingPhone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
           shippingAddress: z.string().min(1),
           shippingCity: z.string().min(1),
           shippingPostalCode: z.string().optional(),
@@ -781,7 +805,7 @@ export const appRouter = router({
 
         let callbackUrl = "https://sandbox.safaricom.co.ke/dummy_callback"; // Mpesa requires a valid URL here even though we poll for results
         const host = ctx.req.headers.host;
-        if (host && !host.includes("localhost")) callbackUrl = `https://${host}/api/mpesa/callback`;
+        if (host && !host.includes("localhost")) callbackUrl = `https://${host}/api/webhooks/mpesa`;
 
         const payload = {
           BusinessShortCode: shortcode,
@@ -807,6 +831,8 @@ export const appRouter = router({
         if (!response.ok || data.ResponseCode !== "0") {
           throw new TRPCError({ code: "BAD_REQUEST", message: data.errorMessage || data.CustomerMessage || "Failed to initiate STK Push. Check configurations." });
         }
+
+        await updatePaymentStatus(input.orderId, "pending", data.CheckoutRequestID, { provider: "mpesa", raw: data });
 
         return {
           success: true,
@@ -918,6 +944,7 @@ export const appRouter = router({
             intent: "CAPTURE",
             purchase_units: [{
               reference_id: order.orderNumber,
+              custom_id: order.id.toString(),
               amount: { currency_code: finalCurrency, value: finalTotal.toFixed(2) }
             }],
             // Use application_context (documented API shape) so PayPal shows the proper
@@ -1060,6 +1087,7 @@ export const appRouter = router({
             confirm: true,
             payment_method_types: ["card"],
             description: `Order #${order.orderNumber}`,
+            metadata: { orderId: order.id.toString() },
           });
 
           if (intent.status === "succeeded") {

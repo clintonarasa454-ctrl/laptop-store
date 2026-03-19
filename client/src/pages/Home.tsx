@@ -100,6 +100,8 @@ export default function Home() {
   const activeBanners = orderedBanners?.filter(b => b.active) || [];
   const [activeIndex, setActiveIndex] = useState(0);
   const [isHovered, setIsHovered] = useState(false);
+  const [touchStart, setTouchStart] = useState<number | null>(null);
+  const [touchEnd, setTouchEnd] = useState<number | null>(null);
   
   useEffect(() => {
     if (activeBanners.length <= 1 || isHovered) return;
@@ -108,6 +110,24 @@ export default function Home() {
     }, 2000);
     return () => clearInterval(timer);
   }, [activeBanners.length, isHovered]);
+
+  // Swipe Handlers
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchEnd(null);
+    setTouchStart(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    setTouchEnd(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchEnd = () => {
+    if (!touchStart || !touchEnd) return;
+    const distance = touchStart - touchEnd;
+    const minSwipeDistance = 50;
+    if (distance > minSwipeDistance) setActiveIndex((prev) => (prev + 1) % activeBanners.length); // Swipe left -> next
+    else if (distance < -minSwipeDistance) setActiveIndex((prev) => (prev - 1 + activeBanners.length) % activeBanners.length); // Swipe right -> prev
+  };
 
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
   const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands. Built for professionals, creators, and gamers.";
@@ -227,7 +247,12 @@ export default function Home() {
             </div>
 
             {/* ── RIGHT CARD ZONE ────────────────────────────────────────────────── */}
-          <div className="relative hidden lg:flex h-[500px] xl:h-[600px] w-full items-center justify-center mt-6 lg:mt-0">
+          <div 
+            className="relative flex h-[350px] sm:h-[450px] lg:h-[500px] xl:h-[600px] w-full items-center justify-center mt-8 lg:mt-0 touch-pan-y"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
               {/* Ambient Glow */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24rem] h-[24rem] rounded-full bg-[var(--brand)]/10 blur-[100px] pointer-events-none" />
 
@@ -241,27 +266,27 @@ export default function Home() {
                 if (total === 1) {
                 if (offset === 0) positionClass = "z-20 scale-100 opacity-100";
                 } else if (total === 2) {
-                if (offset === 0) { positionClass = "z-20 scale-100 translate-x-8 -translate-y-6 opacity-100"; animDelay = "0s"; }
-                else if (offset === 1) { positionClass = "z-10 scale-90 -translate-x-12 translate-y-10 opacity-95"; animDelay = "1.5s"; }
+                if (offset === 0) { positionClass = "z-20 scale-100 translate-x-4 sm:translate-x-8 -translate-y-4 sm:-translate-y-6 opacity-100"; animDelay = "0s"; }
+                else if (offset === 1) { positionClass = "z-10 scale-90 -translate-x-8 sm:-translate-x-12 translate-y-6 sm:translate-y-10 opacity-95"; animDelay = "1.5s"; }
                 } else {
                 if (offset === 0) { positionClass = "z-30 scale-100 translate-x-0 translate-y-0 opacity-100"; animDelay = "0s"; }
-                else if (offset === 1) { positionClass = "z-20 scale-90 -translate-x-28 translate-y-16 opacity-95"; animDelay = "1s"; }
-                else if (offset === 2) { positionClass = "z-10 scale-90 translate-x-28 -translate-y-16 opacity-90"; animDelay = "2s"; }
+                else if (offset === 1) { positionClass = "z-20 scale-90 -translate-x-12 sm:-translate-x-28 translate-y-8 sm:translate-y-16 opacity-95"; animDelay = "1s"; }
+                else if (offset === 2) { positionClass = "z-10 scale-90 translate-x-12 sm:translate-x-28 -translate-y-8 sm:-translate-y-16 opacity-90"; animDelay = "2s"; }
                 }
 
                 return (
                   <div
                     key={banner.id}
-                  className={`absolute bg-card rounded-3xl shadow-2xl p-4 w-[340px] xl:w-[440px] transition-all duration-700 ease-in-out hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
+                  className={`absolute bg-card rounded-3xl shadow-2xl p-3 sm:p-4 w-[280px] sm:w-[320px] lg:w-[340px] xl:w-[440px] transition-all duration-700 ease-in-out hover:!z-40 hover:!scale-105 border border-border/50 group ${positionClass}`}
                     style={{ animation: `float 6s ease-in-out infinite`, animationDelay: animDelay }}
                   >
                     <div className="w-full aspect-[4/3] rounded-2xl overflow-hidden bg-muted mb-4 border border-border/30 relative">
                       <img src={banner.image} alt={banner.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
                     </div>
                     <div className="space-y-1 px-1 text-center">
-                    <h3 className="font-display font-bold text-lg xl:text-xl leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
+                    <h3 className="font-display font-bold text-base sm:text-lg xl:text-xl leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
                       {banner.description && (
-                      <p className="text-sm xl:text-base text-muted-foreground line-clamp-2">{banner.description}</p>
+                      <p className="text-xs sm:text-sm xl:text-base text-muted-foreground line-clamp-2">{banner.description}</p>
                       )}
                     </div>
                   </div>
@@ -352,7 +377,7 @@ export default function Home() {
               <p className="text-sm font-medium text-[var(--brand)] mb-1">Browse by Category</p>
               <h2 className="font-display text-2xl sm:text-3xl font-bold">Shop by Category</h2>
             </div>
-            <Link href="/products" className="hidden sm:flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
+            <Link href="/products" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
               View all <ChevronRight className="w-4 h-4" />
             </Link>
           </div>
@@ -400,7 +425,7 @@ export default function Home() {
               <p className="text-sm font-medium text-[var(--brand)] mb-1">Hand-picked for you</p>
               <h2 className="font-display text-2xl sm:text-3xl font-bold">Featured Products</h2>
             </div>
-            <Link href="/products?featured=true" className="hidden sm:flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
+            <Link href="/products?featured=true" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
               View all <ChevronRight className="w-4 h-4" />
             </Link>
           </div>
@@ -444,7 +469,7 @@ export default function Home() {
               <p className="text-sm font-medium text-[var(--brand)] mb-1">Just arrived</p>
               <h2 className="font-display text-2xl sm:text-3xl font-bold">Latest Products</h2>
             </div>
-            <Link href="/products" className="hidden sm:flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
+            <Link href="/products" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
               View all <ChevronRight className="w-4 h-4" />
             </Link>
           </div>
