@@ -73,7 +73,10 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
 
   return (
     <Link href={`/products/${product.slug}`}>
-      <div className="group bg-card border border-border rounded-2xl overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-[var(--brand)]/40 transition-all duration-300 cursor-pointer h-full flex flex-col">
+      <div 
+        className="group bg-card border border-border rounded-2xl overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-[var(--brand)]/40 transition-all duration-300 cursor-pointer h-full flex flex-col"
+        onMouseEnter={() => utils.products.bySlug.prefetch({ slug: product.slug })}
+      >
         {/* Image */}
         <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           <img

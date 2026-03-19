@@ -25,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import * as LucideIcons from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -72,14 +72,30 @@ const darkMapStyle = [
 ];
 
 export default function Home() {
-  const { data: featuredProducts, isLoading: loadingFeatured } = trpc.products.list.useQuery({ featured: true, limit: 8 });
-  const { data: latestProducts, isLoading: loadingLatest } = trpc.products.list.useQuery({ limit: 8 });
-  const { data: banners } = trpc.content.banners.useQuery();
-  const { data: promotions } = trpc.content.promotions.useQuery();
-  const { data: dbCategories } = trpc.categories.list.useQuery();
-  const { data: storeStats } = trpc.store.stats.useQuery();
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["shipping", "general", "brands"] });
-  const { data: announcements } = trpc.content.announcements.useQuery();
+  const { data: featuredProducts, isLoading: loadingFeatured } = trpc.products.list.useQuery(
+    { featured: true, limit: 8 },
+    { staleTime: 1000 * 60 * 5 } // Cache for 5 minutes
+  );
+  const { data: latestProducts, isLoading: loadingLatest } = trpc.products.list.useQuery(
+    { limit: 8 },
+    { staleTime: 1000 * 60 * 5 }
+  );
+  const { data: banners } = trpc.content.banners.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: promotions } = trpc.content.promotions.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: dbCategories } = trpc.categories.list.useQuery(undefined, { 
+    staleTime: 1000 * 60 * 60 // Cache categories for 1 full hour
+  });
+  const { data: storeStats } = trpc.store.stats.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: settings } = trpc.settings.public.useQuery(
+    { keys: ["shipping", "general", "brands"] },
+    { 
+      staleTime: Infinity, // Settings rarely change; cache indefinitely per user session
+      gcTime: Infinity 
+    }
+  );
+  const { data: announcements } = trpc.content.announcements.useQuery(undefined, { 
+    staleTime: 1000 * 60 * 5 
+  });
 
   const activeAnnouncements = announcements?.filter(a => a.active) || [];
   const latestAnnouncement = activeAnnouncements[0];
@@ -102,6 +118,22 @@ export default function Home() {
   const [isHovered, setIsHovered] = useState(false);
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [touchEnd, setTouchEnd] = useState<number | null>(null);
+  const mapSectionRef = useRef<HTMLElement>(null);
+  const [isMapVisible, setIsMapVisible] = useState(false);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsMapVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "600px" } // Pre-load the map slightly before it scrolls into view
+    );
+    if (mapSectionRef.current) observer.observe(mapSectionRef.current);
+    return () => observer.disconnect();
+  }, []);
   
   useEffect(() => {
     if (activeBanners.length <= 1 || isHovered) return;
@@ -349,6 +381,7 @@ export default function Home() {
                         alt={`${brand} logo`}
                         className="w-full h-full object-contain opacity-40 grayscale contrast-0 dark:brightness-200 group-hover:opacity-100 group-hover:grayscale-0 group-hover:contrast-100 dark:group-hover:brightness-100 transition-all duration-500"
                         onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        loading="lazy"
                       />
                     </div>
                     
@@ -395,6 +428,7 @@ export default function Home() {
                       src={cat.imageUrl || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80"}
                       alt={cat.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
+                      loading="lazy"
                     />
                   </div>
                   <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/40 to-transparent" />
@@ -515,7 +549,7 @@ export default function Home() {
             </p>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {lifestyles.map((lifestyle) => {
+            {lifestyles.map((lifestyle: any) => {
               const Icon = (LucideIcons as any)[lifestyle.icon] || Package;
               return (
                 <Link key={lifestyle.title} href={lifestyle.link} className="block">
@@ -546,7 +580,7 @@ export default function Home() {
       </section>
 
       {/* ── Location / Map ─────────────────────────────────────────────────── */}
-      <section className="py-16 bg-muted/30 border-t border-border">
+      <section ref={mapSectionRef} className="py-16 bg-muted/30 border-t border-border">
         <div className="container">
           <div className="text-center mb-10">
             <p className="text-sm font-medium text-[var(--brand)] mb-1">Come visit us</p>
@@ -557,6 +591,7 @@ export default function Home() {
           <div className="grid lg:grid-cols-3 gap-8 items-start">
             {/* Map Column */}
             <div className="lg:col-span-2 rounded-2xl overflow-hidden border border-border shadow-lg">
+              {isMapVisible ? (
               <MapView 
                 className="h-[400px]" 
                 options={{ styles: darkMapStyle }}
@@ -588,6 +623,9 @@ export default function Home() {
                   }
                 }}
               />
+              ) : (
+                <Skeleton className="h-[400px] w-full" />
+              )}
             </div>
             
             {/* Hours Column */}
@@ -646,8 +684,11 @@ export default function Home() {
       {latestAnnouncement && !dismissedAnnouncements.includes(latestAnnouncement.id) && (
         <div className="fixed bottom-6 right-6 z-50 w-[calc(100%-3rem)] sm:w-80 bg-gradient-to-br from-card to-[var(--brand)]/10 backdrop-blur-xl border border-[var(--brand)]/20 hover:border-[var(--brand)]/50 rounded-2xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom-10 fade-in duration-500 group transition-colors">
           <button 
+            type="button"
             onClick={(e) => { e.preventDefault(); dismissAnnouncement(latestAnnouncement.id); }} 
             className="absolute top-2 right-2 p-1.5 bg-black/40 hover:bg-black/70 text-white rounded-full transition-colors z-20"
+            aria-label="Dismiss announcement"
+            title="Dismiss announcement"
           >
             <X className="w-4 h-4" />
           </button>
@@ -658,7 +699,12 @@ export default function Home() {
               <div className="relative z-10">
                 {latestAnnouncement.image && (
                   <div className="relative h-36 w-full overflow-hidden">
-                    <img src={latestAnnouncement.image} alt={latestAnnouncement.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    <img 
+                      src={latestAnnouncement.image} 
+                      alt={latestAnnouncement.title} 
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
+                      loading="lazy" 
+                    />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
                     <h4 className="absolute bottom-3 left-4 right-8 font-display font-bold text-white text-lg leading-tight drop-shadow-md">{latestAnnouncement.title}</h4>
                   </div>

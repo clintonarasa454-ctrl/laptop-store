@@ -594,7 +594,7 @@ export const appRouter = router({
           phone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
           addressLine: z.string().min(1),
           city: z.string().min(1),
-          postalCode: z.string().optional(),
+          postalCode: z.string().regex(/^(?:[A-Za-z0-9\s\-]{3,12})?$/, "Please enter a valid postal code").optional(),
           country: z.string().min(1),
           isDefault: z.boolean().optional(),
         })
@@ -644,7 +644,7 @@ export const appRouter = router({
           shippingPhone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
           shippingAddress: z.string().min(1),
           shippingCity: z.string().min(1),
-          shippingPostalCode: z.string().optional(),
+          shippingPostalCode: z.string().regex(/^(?:[A-Za-z0-9\s\-]{3,12})?$/, "Please enter a valid postal code").optional(),
           shippingCountry: z.string().min(1),
           paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card", "cod"]),
           saveAddress: z.boolean().optional(),
