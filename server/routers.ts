@@ -287,7 +287,12 @@ export const appRouter = router({
         return { success: true, token, email: input.email };
       }),
     login: publicProcedure
-      .input(z.object({ email: z.string().email(), password: z.string() }))
+      .input(
+        z.object({ 
+          email: z.string().trim().toLowerCase().email("Please enter a valid email address"), 
+          password: z.string().min(1, "Password is required") 
+        })
+      )
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your DATABASE_URL variable." });
