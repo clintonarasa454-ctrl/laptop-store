@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { ChevronDown, Filter, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
+import { ChevronDown, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";

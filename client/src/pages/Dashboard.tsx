@@ -441,7 +441,7 @@ function OrderDetail({ orderId }: { orderId: number }) {
           <div className="absolute top-3 left-0 right-0 h-0.5 bg-border -z-10">
             <div
               className="h-full bg-[var(--brand)] transition-all duration-500"
-              style={{ width: `${(currentStageIndex / (trackingStages.length - 1)) * 100}%` }}
+              style={{ width: `${(Math.max(0, currentStageIndex) / (trackingStages.length - 1)) * 100}%` }}
             />
           </div>
         </div>

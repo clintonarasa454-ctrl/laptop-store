@@ -160,6 +160,8 @@ export default function Home() {
     const minSwipeDistance = 50;
     if (distance > minSwipeDistance) setActiveIndex((prev) => (prev + 1) % activeBanners.length); // Swipe left -> next
     else if (distance < -minSwipeDistance) setActiveIndex((prev) => (prev - 1 + activeBanners.length) % activeBanners.length); // Swipe right -> prev
+    setTouchStart(null);
+    setTouchEnd(null);
   };
 
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
