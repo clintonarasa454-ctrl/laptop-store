@@ -84,6 +84,7 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
             alt={product.name}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             loading="lazy"
+            decoding="async"
           />
           {/* Badges */}
           <div className="absolute top-2 left-2 flex gap-1.5">

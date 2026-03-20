@@ -331,7 +331,13 @@ export default function Home() {
                     style={{ animation: `float 6s ease-in-out infinite`, animationDelay: animDelay }}
                   >
                     <div className="w-full aspect-[4/3] rounded-2xl overflow-hidden bg-muted mb-4 border border-border/30 relative">
-                      <img src={banner.image} alt={banner.title} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+                      <img 
+                        src={banner.image} 
+                        alt={banner.title} 
+                        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" 
+                        fetchPriority={index === 0 ? "high" : "auto"}
+                        decoding="async"
+                      />
                     </div>
                     <div className="space-y-1 px-1 text-center">
                     <h3 className="font-display font-bold text-base sm:text-lg xl:text-xl leading-tight group-hover:text-[var(--brand)] transition-colors">{banner.title}</h3>
