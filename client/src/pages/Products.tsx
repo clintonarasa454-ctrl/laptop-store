@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
-import { ChevronDown, Package, Search, SlidersHorizontal, X, Check } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, Package, Search, SlidersHorizontal, X, Check, Loader2 } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -27,6 +27,7 @@ export default function Products() {
   const sortByParam = validSorts.includes(params.get("sortBy") || "") ? (params.get("sortBy") as any) : "newest";
 
   const [search, setSearch] = useState(searchParam ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(searchParam ?? "");
   const [selectedCategories, setSelectedCategories] = useState<number[]>([]);
   const [syncedUrl, setSyncedUrl] = useState<string | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<string | undefined>(brandParam);
@@ -36,7 +37,7 @@ export default function Products() {
   const [tagFilter, setTagFilter] = useState<string | undefined>(tagParam);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<number[]>([]);
-  const [visibleCount, setVisibleCount] = useState(12);
+  const observerTarget = useRef<HTMLDivElement>(null);
 
   const { data: categories } = trpc.categories.list.useQuery();
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] });
@@ -45,6 +46,12 @@ export default function Products() {
   const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const currency = settings?.general?.currency || "$";
+
+  // Debounce search so we don't hammer the API while the user is typing
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   // 1. URL -> State Sync
   useEffect(() => {
@@ -72,11 +79,6 @@ export default function Products() {
       setSyncedUrl(searchString);
     }
   }, [categories, searchString, categoriesParam, categorySlug, searchParam, tagParam, brandParam, minPriceParam, maxPriceParam, sortByParam]);
-
-  // Reset pagination when any filter changes
-  useEffect(() => {
-    setVisibleCount(12);
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter]);
 
   // Auto-expand categories if selected
   useEffect(() => {
@@ -156,39 +158,41 @@ export default function Products() {
     return [id, ...children];
   }) : undefined;
 
-  const { data: products, isLoading } = trpc.products.list.useQuery({
-    search: search || undefined,
-    featured: featuredParam || undefined,
-    tag: tagFilter || undefined,
-    categoryId: categoryIdsToFetch,
-    limit: 100,
-  });
+  const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = trpc.products.infinite.useInfiniteQuery(
+    {
+      limit: 12,
+      search: debouncedSearch || undefined,
+      featured: featuredParam || undefined,
+      tag: tagFilter || undefined,
+      categoryId: categoryIdsToFetch,
+      brand: selectedBrand || undefined,
+      minPrice: minPrice || undefined,
+      maxPrice: maxPrice || undefined,
+      sortBy: sortBy,
+    },
+    { getNextPageParam: (lastPage) => lastPage.nextCursor }
+  );
+
+  // Infinite Scroll Observer
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: "400px" } // Trigger the fetch 400px before they actually reach the bottom
+    );
+    if (observerTarget.current) observer.observe(observerTarget.current);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // Identify if we are viewing exactly one category that has children
   const currentCategoryId = selectedCategories.length === 1 ? selectedCategories[0] : undefined;
   const currentCategory = categories?.find(c => c.id === currentCategoryId);
   const subCategories = currentCategory ? orderedCategories.filter(c => (c as any).parentId === currentCategory.id) : [];
 
-  const sorted = [...(products ?? [])]
-    .filter((p) => selectedCategories.length === 0 || selectedCategories.includes(p.categoryId))
-    .filter((p) => !selectedBrand || p.brand?.toLowerCase() === selectedBrand.toLowerCase())
-    .filter((p) => {
-      const price = parseFloat(p.price);
-      const min = minPrice !== "" ? parseFloat(minPrice) : 0;
-      const max = maxPrice !== "" ? parseFloat(maxPrice) : Infinity;
-      return price >= min && price <= max;
-    })
-    .filter((p) => {
-      if (!search) return true;
-      const s = search.toLowerCase();
-      return p.name.toLowerCase().includes(s) || 
-             (p.brand && p.brand.toLowerCase().includes(s));
-    })
-    .sort((a, b) => {
-      if (sortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
-      if (sortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
+  const sorted = data?.pages.flatMap((page) => page.items) ?? [];
 
   type ActiveFilter = { id: string; label: string; onRemove: () => void };
   const activeFilters: ActiveFilter[] = [];
@@ -466,20 +470,15 @@ export default function Products() {
             ) : sorted.length > 0 ? (
               <>
                 <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {sorted.slice(0, visibleCount).map((product) => (
+                  {sorted.map((product) => (
                     <ProductCard key={product.id} product={product} />
                   ))}
                 </div>
-                {visibleCount < sorted.length && (
-                  <div className="mt-10 flex justify-center">
-                    <Button
-                      variant="outline"
-                      size="lg"
-                      onClick={() => setVisibleCount((prev) => prev + 12)}
-                      className="min-w-[200px] bg-background hover:bg-muted font-medium border-border"
-                    >
-                      Load More Products
-                    </Button>
+                {hasNextPage && (
+                  <div ref={observerTarget} className="mt-10 flex justify-center py-8 w-full">
+                    {isFetchingNextPage && (
+                      <Loader2 className="w-8 h-8 animate-spin text-[var(--brand)]" />
+                    )}
                   </div>
                 )}
               </>

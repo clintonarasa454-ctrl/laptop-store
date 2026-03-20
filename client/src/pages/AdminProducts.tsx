@@ -22,10 +22,6 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 export default function AdminProducts() {
-  const { data: products, isLoading, refetch } = trpc.products.list.useQuery(
-    { limit: 100 },
-    { refetchInterval: 10000 }
-  );
   const { data: categories } = trpc.categories.list.useQuery();
   const utils = trpc.useUtils();
   
@@ -33,10 +29,21 @@ export default function AdminProducts() {
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [, setLocation] = useLocation();
   const searchString = useSearch();
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const { data: products, isLoading } = trpc.admin.products.useQuery(
+    { search: debouncedSearch || undefined },
+    { refetchInterval: 10000 }
+  );
   
   const defaultForm = {
     name: "",
@@ -108,11 +115,7 @@ export default function AdminProducts() {
     onError: (err) => toast.error("Failed to save product: " + err.message)
   });
 
-  const filteredProducts = products?.filter(
-    (p) =>
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.brand?.toLowerCase().includes(searchTerm.toLowerCase())
-  ) || [];
+  const filteredProducts = products || [];
 
   const handleDelete = async (productId: number) => {
     if (confirm("Are you sure you want to delete this product?")) {

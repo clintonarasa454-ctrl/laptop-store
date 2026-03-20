@@ -70,6 +70,23 @@ import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmati
 import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone } from "./paymentUtils";
 import { makeRequest } from "./_core/map";
 
+// ─── Simple In-Memory Cache ───────────────────────────────────────────────────
+const serverCache = new Map<string, { data: any, expires: number }>();
+
+function getCache<T>(key: string): T | null {
+  const cached = serverCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.data;
+  return null;
+}
+function setCache(key: string, data: any, ttlSeconds: number) {
+  serverCache.set(key, { data, expires: Date.now() + ttlSeconds * 1000 });
+}
+function clearCachePrefix(prefix: string) {
+  for (const key of serverCache.keys()) {
+    if (key.startsWith(prefix)) serverCache.delete(key);
+  }
+}
+
 // ─── Admin guard ──────────────────────────────────────────────────────────────
 // Always require admin role for admin procedures. Tests expect FORBIDDEN for
 // non-admin users, so enforce role checks regardless of NODE_ENV.
@@ -100,7 +117,13 @@ export const appRouter = router({
 
   // ─── Public Store Stats ──────────────────────────────────────────────────────
   store: router({
-    stats: publicProcedure.query(() => getStoreStats()),
+    stats: publicProcedure.query(async () => {
+      const cached = getCache("storeStats");
+      if (cached) return cached;
+      const data = await getStoreStats();
+      setCache("storeStats", data, 60); // Cache stats for 1 minute
+      return data;
+    }),
     trackPageView: publicProcedure
       .input(z.object({ path: z.string() }))
       .mutation(async ({ input }) => {
@@ -114,6 +137,10 @@ export const appRouter = router({
     public: publicProcedure
       .input(z.object({ keys: z.array(z.string()) }))
       .query(async ({ input }) => {
+        const cacheKey = `settings-${input.keys.sort().join(",")}`;
+        const cached = getCache<Record<string, any>>(cacheKey);
+        if (cached) return cached;
+
         // Only allow public-facing settings to be queried unauthenticated
         const allowed = ["general", "appearance", "social", "payment_methods", "brands", "shipping"];
         const result: Record<string, any> = {};
@@ -122,14 +149,33 @@ export const appRouter = router({
             result[k] = await getSetting(k);
           }
         }
+        setCache(cacheKey, result, 300); // Cache for 5 minutes
         return result;
       }),
   }),
 
   content: router({
-    banners: publicProcedure.query(() => getBanners({ activeOnly: true })),
-    promotions: publicProcedure.query(() => getPromotions({ activeOnly: true })),
-    announcements: publicProcedure.query(() => getAnnouncements({ activeOnly: true })),
+    banners: publicProcedure.query(async () => {
+      const cached = getCache("banners-active");
+      if (cached) return cached;
+      const data = await getBanners({ activeOnly: true });
+      setCache("banners-active", data, 300);
+      return data;
+    }),
+    promotions: publicProcedure.query(async () => {
+      const cached = getCache("promotions-active");
+      if (cached) return cached;
+      const data = await getPromotions({ activeOnly: true });
+      setCache("promotions-active", data, 300);
+      return data;
+    }),
+    announcements: publicProcedure.query(async () => {
+      const cached = getCache("announcements-active");
+      if (cached) return cached;
+      const data = await getAnnouncements({ activeOnly: true });
+      setCache("announcements-active", data, 300);
+      return data;
+    }),
   }),
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
@@ -480,7 +526,13 @@ export const appRouter = router({
 
   // ─── Categories ────────────────────────────────────────────────────────────
   categories: router({
-    list: publicProcedure.query(() => getCategories()),
+    list: publicProcedure.query(async () => {
+      const cached = getCache("categories");
+      if (cached) return cached;
+      const data = await getCategories();
+      setCache("categories", data, 3600); // Cache for 1 hour
+      return data;
+    }),
     bySlug: publicProcedure.input(z.object({ slug: z.string() })).query(({ input }) =>
       getCategoryBySlug(input.slug)
     ),
@@ -497,9 +549,66 @@ export const appRouter = router({
           featured: z.boolean().optional(),
           limit: z.number().optional(),
           offset: z.number().optional(),
+          minPrice: z.string().optional(),
+          maxPrice: z.string().optional(),
+          brand: z.string().optional(),
+          sortBy: z.enum(["newest", "price_asc", "price_desc"]).optional(),
         }).optional()
       )
-      .query(({ input }) => getProducts(input ?? {})),
+      .query(async ({ input }) => {
+        let products = await getProducts(input ?? {});
+        
+        // Server-side filtering before returning to the client
+        if (input?.minPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(input.minPrice!));
+        if (input?.maxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(input.maxPrice!));
+        if (input?.brand) products = products.filter((p: any) => p.brand?.toLowerCase() === input.brand!.toLowerCase());
+        if (input?.sortBy) {
+          products = products.sort((a: any, b: any) => {
+            if (input.sortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
+            if (input.sortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
+            return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          });
+        }
+        return products;
+      }),
+
+    infinite: publicProcedure
+      .input(
+        z.object({
+          categoryId: z.union([z.number(), z.array(z.number())]).optional(),
+          search: z.string().optional(),
+          tag: z.string().optional(),
+          featured: z.boolean().optional(),
+          limit: z.number().min(1).max(100).nullish(),
+          cursor: z.number().nullish(), // offset
+          minPrice: z.string().optional(),
+          maxPrice: z.string().optional(),
+          brand: z.string().optional(),
+          sortBy: z.enum(["newest", "price_asc", "price_desc"]).optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        const limit = input.limit ?? 12;
+        const offset = input.cursor ?? 0;
+        
+        let products = await getProducts({ ...input, limit: 1000, offset: 0 }); // Allow ample room for Node filtering
+        
+        // Server-side filtering & sorting
+        if (input.minPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(input.minPrice!));
+        if (input.maxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(input.maxPrice!));
+        if (input.brand) products = products.filter((p: any) => p.brand?.toLowerCase() === input.brand!.toLowerCase());
+        if (input.sortBy) {
+          products = products.sort((a: any, b: any) => {
+            if (input.sortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
+            if (input.sortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
+            return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          });
+        }
+
+        const sliced = products.slice(offset, offset + limit);
+        const nextCursor = offset + limit < products.length ? offset + limit : null;
+        return { items: sliced, nextCursor };
+      }),
 
     bySlug: publicProcedure
       .input(z.object({ slug: z.string() }))
@@ -1175,8 +1284,16 @@ export const appRouter = router({
       }),
 
     orders: adminProcedure
-      .input(z.object({ limit: z.number().optional(), offset: z.number().optional() }).optional())
-      .query(({ input }) => getAllOrders(input ?? {})),
+      .input(z.object({ limit: z.number().optional(), offset: z.number().optional(), search: z.string().optional(), status: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        let orders = await getAllOrders(input ?? {});
+        if (input?.search) {
+          const s = input.search.toLowerCase();
+          orders = orders.filter((o: any) => o.orderNumber.toLowerCase().includes(s) || (o.customerName || "").toLowerCase().includes(s));
+        }
+        if (input?.status) orders = orders.filter((o: any) => o.status === input.status);
+        return orders;
+      }),
 
     orderDetail: adminProcedure
       .input(z.object({ orderId: z.number() }))
@@ -1275,7 +1392,16 @@ export const appRouter = router({
 
     payments: adminProcedure.query(() => getAllPayments()),
 
-    customers: adminProcedure.query(() => getAllUsers()),
+    customers: adminProcedure
+      .input(z.object({ search: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        let allUsers = await getAllUsers();
+        if (input?.search) {
+          const s = input.search.toLowerCase();
+          allUsers = allUsers.filter((u: any) => (u.name || "").toLowerCase().includes(s) || (u.email || "").toLowerCase().includes(s));
+        }
+        return allUsers;
+      }),
 
     verifyPayment: adminProcedure
       .input(z.object({ orderId: z.number() }))
@@ -1352,8 +1478,15 @@ export const appRouter = router({
       }),
 
     products: adminProcedure
-      .input(z.object({ limit: z.number().optional(), offset: z.number().optional() }).optional())
-      .query(({ input }) => getProducts({ limit: input?.limit ?? 100, offset: input?.offset ?? 0 })),
+      .input(z.object({ limit: z.number().optional(), offset: z.number().optional(), search: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        let products = await getProducts({ limit: input?.limit ?? 100, offset: input?.offset ?? 0 });
+        if (input?.search) {
+          const s = input.search.toLowerCase();
+          products = products.filter((p: any) => p.name.toLowerCase().includes(s) || (p.brand || "").toLowerCase().includes(s));
+        }
+        return products;
+      }),
 
     upsertProduct: adminProcedure
       .input(
@@ -1402,6 +1535,7 @@ export const appRouter = router({
         } else {
           await upsertCategory(input);
         }
+        clearCachePrefix("categories");
         return { success: true };
       }),
 
@@ -1415,6 +1549,7 @@ export const appRouter = router({
           // Delete the requested category
           await db.delete(categoriesSchema).where(eq(categoriesSchema.id, input.id));
         }
+        clearCachePrefix("categories");
         return { success: true };
       }),
 
@@ -1427,6 +1562,7 @@ export const appRouter = router({
             await db.update(categoriesSchema).set({ order: i }).where(eq(categoriesSchema.id, input.ids[i]));
           }
         }
+        clearCachePrefix("categories");
         return { success: true };
       }),
 
@@ -1487,6 +1623,7 @@ export const appRouter = router({
       .input(z.object({ key: z.string(), value: z.any() }))
       .mutation(async ({ input }) => {
         await upsertSetting(input.key, input.value);
+        clearCachePrefix("settings");
         return { success: true };
       }),
 
@@ -1496,12 +1633,14 @@ export const appRouter = router({
       .input(z.object({ id: z.number().optional(), title: z.string().min(1), description: z.string().nullable().optional(), image: z.string().min(1), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         await upsertBanner(input);
+        clearCachePrefix("banners");
         return { success: true };
       }),
     deleteBanner: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteBanner(input.id);
+        clearCachePrefix("banners");
         return { success: true };
       }),
 
@@ -1514,6 +1653,7 @@ export const appRouter = router({
             await db.update(bannersSchema).set({ order: i }).where(eq(bannersSchema.id, input.ids[i]));
           }
         }
+        clearCachePrefix("banners");
         return { success: true };
       }),
 
@@ -1522,12 +1662,14 @@ export const appRouter = router({
       .input(z.object({ id: z.number().optional(), title: z.string().min(1), description: z.string().min(1), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         await upsertPromotion(input);
+        clearCachePrefix("promotions");
         return { success: true };
       }),
     deletePromotion: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deletePromotion(input.id);
+        clearCachePrefix("promotions");
         return { success: true };
       }),
 
@@ -1537,12 +1679,14 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const date = new Date(input.date);
         await upsertAnnouncement({ ...input, date });
+        clearCachePrefix("announcements");
         return { success: true };
       }),
     deleteAnnouncement: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteAnnouncement(input.id);
+        clearCachePrefix("announcements");
         return { success: true };
       }),
   }),

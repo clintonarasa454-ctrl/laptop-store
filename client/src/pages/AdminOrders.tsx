@@ -17,13 +17,21 @@ import { formatPrice } from "@/lib/cart";
 
 export default function AdminOrders() {
   const utils = trpc.useUtils();
-  const { data: orders, isLoading, refetch } = trpc.admin.orders.useQuery(undefined, {
-    refetchInterval: 5000, // Live sync orders every 5s
-  });
   const updateStatus = trpc.admin.updateOrderStatus.useMutation();
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const { data: orders, isLoading } = trpc.admin.orders.useQuery(
+    { search: debouncedSearch || undefined, status: statusFilter !== "all" ? statusFilter : undefined }, 
+    { refetchInterval: 5000 }
+  );
 
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
   const storeName = settings?.general?.storeName || "Store";
@@ -44,14 +52,7 @@ export default function AdminOrders() {
     "refunded",
   ];
 
-  const filteredOrders = orders?.filter((order: any) => {
-    const matchesSearch =
-      order.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      order.shippingFullName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus =
-      statusFilter === "all" || order.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  }) || [];
+  const filteredOrders = orders || [];
 
   const handleStatusUpdate = async (orderId: number, newStatus: string) => {
     try {

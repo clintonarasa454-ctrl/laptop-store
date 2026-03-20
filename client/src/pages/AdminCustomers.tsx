@@ -9,21 +9,26 @@ import { Search, Eye, Mail, Lock, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCustomers() {
-  const { data: customers, isLoading } = trpc.admin.customers.useQuery(undefined, {
-    refetchInterval: 15000,
-  });
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  const { data: customers, isLoading } = trpc.admin.customers.useQuery(
+    { search: debouncedSearch || undefined }, 
+    { refetchInterval: 15000 }
+  );
 
   const resetPassword = trpc.auth.resetPasswordRequest.useMutation({
     onSuccess: () => toast.success("Password reset link sent to customer!"),
     onError: (err) => toast.error(err.message),
   });
 
-  const filteredCustomers = customers?.filter((c: any) =>
-    c.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    c.email?.toLowerCase().includes(searchTerm.toLowerCase())
-  ) || [];
+  const filteredCustomers = customers || [];
 
   return (
     <AdminLayout activeTab="customers">
