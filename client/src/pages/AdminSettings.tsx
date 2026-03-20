@@ -14,7 +14,6 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Save, Upload, X, Loader2, Plus } from "lucide-react";
-import * as LucideIcons from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 

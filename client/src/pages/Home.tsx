@@ -24,7 +24,7 @@ import {
   Megaphone,
   X,
 } from "lucide-react";
-import * as LucideIcons from "lucide-react";
+import { dynamicIconMap } from "@/lib/iconMap";
 import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
 import Footer from "@/components/Footer";
@@ -169,14 +169,15 @@ export default function Home() {
 
   const badge1 = settings?.general?.floatingBadge1 || { icon: "Shield", title: "Verified Quality", desc: "All products certified" };
   const badge2 = settings?.general?.floatingBadge2 || { icon: "Truck", title: "Fast Delivery", desc: "2–5 business days" };
-  const Badge1Icon = (LucideIcons as any)[badge1.icon] || LucideIcons.Shield;
-  const Badge2Icon = (LucideIcons as any)[badge2.icon] || LucideIcons.Truck;
+  const Badge1Icon = dynamicIconMap[badge1.icon] || Shield;
+  const Badge2Icon = dynamicIconMap[badge2.icon] || Truck;
   
   const displayBrands = settings?.brands && settings.brands.length > 0 ? settings.brands : ["Samsung", "Dell", "HP", "Lenovo", "Asus", "Apple", "Acer"];
 
   const lifestyles = settings?.general?.lifestyles || fallbackLifestyles;
 
-  const isPageLoading = loadingFeatured || loadingLatest || loadingBanners || loadingPromotions || loadingCategories || loadingStats || loadingSettings || loadingAnnouncements;
+  // Only block the initial page render for absolutely critical data
+  const isPageLoading = loadingSettings || loadingBanners || loadingCategories;
 
   if (isPageLoading) {
     return (
@@ -355,7 +356,7 @@ export default function Home() {
               { icon: "RefreshCw", title: "30-Day Returns", desc: "Hassle-free returns" },
               { icon: "Award", title: "Certified Products", desc: "100% authentic hardware" },
             ]).map((f: any, idx: number) => {
-              const Icon = (LucideIcons as any)[f.icon] || LucideIcons.CheckCircle;
+              const Icon = dynamicIconMap[f.icon] || CheckCircle;
               return (
                 <Link key={idx} href={`/about#feature-${idx}`}>
                   <div className="flex items-center gap-3 p-2 -m-2 rounded-xl hover:bg-muted/50 transition-colors cursor-pointer group">
@@ -434,7 +435,7 @@ export default function Home() {
             {(dbCategories || []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
               
-              const Icon = cat.icon ? (LucideIcons as any)[cat.icon] || Package : (cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones);
+              const Icon = cat.icon ? dynamicIconMap[cat.icon] || Package : (cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones);
               return (
               <Link key={i} href={`/products?category=${cat.slug}`}>
                 <div className={`group relative overflow-hidden rounded-3xl bg-gradient-to-br ${style.gradient} border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer`}>
@@ -565,7 +566,7 @@ export default function Home() {
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {lifestyles.map((lifestyle: any) => {
-              const Icon = (LucideIcons as any)[lifestyle.icon] || Package;
+              const Icon = dynamicIconMap[lifestyle.icon] || Package;
               return (
                 <Link key={lifestyle.title} href={lifestyle.link} className="block">
                   <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-36 sm:h-40 cursor-pointer">

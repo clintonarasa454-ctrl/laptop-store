@@ -1,7 +1,8 @@
 import { trpc } from "@/lib/trpc";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
-import * as LucideIcons from "lucide-react";
+import { CheckCircle } from "lucide-react";
+import { dynamicIconMap } from "@/lib/iconMap";
 import { useEffect } from "react";
 
 export default function About() {
@@ -37,7 +38,7 @@ export default function About() {
         </div>
         <div className="space-y-8">
           {features.map((f: any, idx: number) => {
-            const Icon = (LucideIcons as any)[f.icon] || LucideIcons.CheckCircle;
+            const Icon = dynamicIconMap[f.icon] || CheckCircle;
             return (
               <div key={idx} id={`feature-${idx}`} className="bg-card border border-border rounded-3xl p-6 md:p-10 flex flex-col md:flex-row items-start gap-6 lg:gap-8 shadow-sm hover:shadow-xl transition-shadow duration-300">
                 <div className="w-16 h-16 rounded-2xl bg-[var(--brand)]/10 flex items-center justify-center shrink-0"><Icon className="w-8 h-8 text-[var(--brand)]" /></div>

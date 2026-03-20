@@ -18,8 +18,9 @@ import {
   Truck,
   XCircle,
   Zap,
+  CheckCircle,
 } from "lucide-react";
-import * as LucideIcons from "lucide-react";
+import { dynamicIconMap } from "@/lib/iconMap";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 import Footer from "@/components/Footer";
@@ -338,7 +339,7 @@ export default function ProductDetail() {
                 { icon: "Shield", title: "2-Year Warranty", desc: "Full coverage" },
                 { icon: "Zap", title: "Fast Delivery", desc: "2–5 business days" },
               ]).slice(0, 3).map((b: any, idx: number) => {
-                const Icon = (LucideIcons as any)[b.icon] || LucideIcons.CheckCircle;
+                const Icon = dynamicIconMap[b.icon] || CheckCircle;
                 return (
                   <Link key={idx} href={`/about#feature-${idx}`}>
                     <div className="text-center p-3 rounded-lg bg-muted/50 border border-border hover:border-[var(--brand)]/40 hover:shadow-sm transition-all cursor-pointer group h-full">

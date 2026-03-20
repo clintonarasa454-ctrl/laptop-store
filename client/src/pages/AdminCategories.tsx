@@ -16,8 +16,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Zap, EyeOff, ChevronUp, ChevronDown, Layers } from "lucide-react";
-import * as LucideIcons from "lucide-react";
+import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Zap, EyeOff, ChevronUp, ChevronDown, Layers, Package } from "lucide-react";
+import { dynamicIconMap } from "@/lib/iconMap";
 import { toast } from "sonner";
 
 export default function AdminCategories() {
@@ -373,7 +373,7 @@ export default function AdminCategories() {
                       <SelectContent>
                         <SelectItem value="none">Default / None</SelectItem>
                         {iconOptions.map(iconName => {
-                          const Icon = (LucideIcons as any)[iconName];
+                          const Icon = dynamicIconMap[iconName];
                           return (
                             <SelectItem key={iconName} value={iconName}>
                               <div className="flex items-center gap-2">

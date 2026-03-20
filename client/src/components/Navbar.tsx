@@ -20,7 +20,7 @@ import {
   Headphones,
   Loader2,
 } from "lucide-react";
-import * as LucideIcons from "lucide-react";
+import { dynamicIconMap } from "@/lib/iconMap";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Button } from "./ui/button";
@@ -42,8 +42,8 @@ const categoryIcons: Record<string, React.ReactNode> = {
 };
 
 const getCategoryIcon = (cat: any) => {
-  if (cat.icon && (LucideIcons as any)[cat.icon]) {
-    const CustomIcon = (LucideIcons as any)[cat.icon];
+  if (cat.icon && dynamicIconMap[cat.icon]) {
+    const CustomIcon = dynamicIconMap[cat.icon];
     return <CustomIcon className="w-4 h-4" />;
   }
   return categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />;
