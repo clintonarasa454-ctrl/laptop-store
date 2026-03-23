@@ -19,9 +19,10 @@ import {
   XCircle,
   Zap,
   CheckCircle,
+  Share2,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useParams } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -158,6 +159,52 @@ export default function ProductDetail() {
   const price = parseFloat(product.price);
   const discount = comparePrice > price ? Math.round((1 - price / comparePrice) * 100) : 0;
 
+  // --- SEO & Social Sharing ---
+  useEffect(() => {
+    if (!product) return;
+    const storeName = settings?.general?.storeName || 'Store';
+    document.title = `${product.name} | ${storeName}`;
+    
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    metaDesc.setAttribute("content", product.shortDescription || product.description || `Buy ${product.name} at ${storeName}`);
+
+    const ogTags = {
+      "og:title": product.name,
+      "og:description": product.shortDescription || product.description || "",
+      "og:image": images[0],
+      "og:url": window.location.href,
+      "og:type": "product"
+    };
+
+    Object.entries(ogTags).forEach(([property, content]) => {
+      let tag = document.querySelector(`meta[property="${property}"]`);
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute('property', property);
+        document.head.appendChild(tag);
+      }
+      tag.setAttribute("content", content);
+    });
+
+    return () => { document.title = storeName; };
+  }, [product, settings, images]);
+
+  const handleShare = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: product.name, text: product.shortDescription || `Check out ${product.name}`, url: window.location.href });
+      } catch (err) { /* user cancelled */ }
+    } else {
+      await navigator.clipboard.writeText(window.location.href);
+      toast.success("Link copied to clipboard!");
+    }
+  };
+
   const handleAddToCart = () => {
     if (product.stock === 0) return;
     if (isAuthenticated) {
@@ -169,8 +216,38 @@ export default function ProductDetail() {
     }
   };
 
+  // --- Schema.org JSON-LD ---
+  const jsonLd = {
+    "@context": "https://schema.org/",
+    "@type": "Product",
+    "name": product.name,
+    "image": images,
+    "description": product.shortDescription || product.description || "",
+    "sku": product.sku || product.id.toString(),
+    "brand": {
+      "@type": "Brand",
+      "name": product.brand || settings?.general?.storeName || "Store"
+    },
+    "offers": {
+      "@type": "Offer",
+      "url": typeof window !== "undefined" ? window.location.href : "",
+      "priceCurrency": settings?.general?.currency || "USD",
+      "price": product.price,
+      "availability": product.stock > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+      "itemCondition": "https://schema.org/NewCondition"
+    },
+    ...(product.rating && parseFloat(product.rating) > 0 ? {
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": product.rating,
+        "reviewCount": product.reviewCount || 1
+      }
+    } : {})
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <Navbar />
 
       <div className="container py-6 flex-1">
@@ -228,11 +305,16 @@ export default function ProductDetail() {
 
           {/* Product info */}
           <div className="space-y-5">
-            <div>
-              {product.brand && (
-                <p className="text-sm font-medium text-[var(--brand)] uppercase tracking-wide mb-1">{product.brand}</p>
-              )}
-              <h1 className="font-display text-2xl sm:text-3xl font-bold leading-tight">{product.name}</h1>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                {product.brand && (
+                  <p className="text-sm font-medium text-[var(--brand)] uppercase tracking-wide mb-1">{product.brand}</p>
+                )}
+                <h1 className="font-display text-2xl sm:text-3xl font-bold leading-tight">{product.name}</h1>
+              </div>
+              <Button variant="outline" size="icon" onClick={handleShare} className="shrink-0 rounded-full h-10 w-10 text-muted-foreground hover:text-foreground">
+                <Share2 className="w-4 h-4" />
+              </Button>
             </div>
 
             {/* Rating */}
