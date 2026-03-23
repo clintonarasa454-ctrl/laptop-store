@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { formatPrice } from "@/lib/cart";
+import { formatPrice, clearGuestCart } from "@/lib/cart";
 import {
   Check,
   ChevronRight,
@@ -60,6 +60,7 @@ const CITIES_BY_COUNTRY: Record<string, string[]> = {
 export default function Checkout() {
   const { isAuthenticated, loading: authLoading } = useAuth();
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const [step, setStep] = useState<Step>("shipping");
   const [shipping, setShipping] = useState<ShippingForm>({
     fullName: "",
@@ -467,7 +468,11 @@ export default function Checkout() {
                 paymentMethod={paymentMethod}
                 total={total}
                 shippingPhone={shipping.phone}
-                onSuccess={() => navigate(`/order-confirmation/${orderNumber}`)}
+                onSuccess={() => {
+                  clearGuestCart();
+                  utils.cart.get.invalidate();
+                  navigate(`/order-confirmation/${orderNumber}`);
+                }}
               />
             )}
           </div>

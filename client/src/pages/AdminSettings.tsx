@@ -210,7 +210,7 @@ export default function AdminSettings() {
       return;
     }
 
-    let toastId;
+    let toastId: string | number | undefined;
     try {
       toastId = toast.loading("Uploading...");
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
@@ -248,7 +248,7 @@ export default function AdminSettings() {
       return;
     }
 
-    let toastId;
+    let toastId: string | number | undefined;
     try {
       toastId = toast.loading("Uploading...");
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
@@ -328,6 +328,9 @@ export default function AdminSettings() {
                         storeName: e.target.value,
                       })
                     }
+                  title="Store Name"
+                  aria-label="Store Name"
+                  placeholder="Store Name"
                   />
                 </div>
                 <div>
@@ -342,6 +345,9 @@ export default function AdminSettings() {
                         storeDescription: e.target.value,
                       })
                     }
+                  title="Store Description"
+                  aria-label="Store Description"
+                  placeholder="Store Description"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -358,6 +364,9 @@ export default function AdminSettings() {
                           contactEmail: e.target.value,
                         })
                       }
+                    title="Contact Email"
+                    aria-label="Contact Email"
+                    placeholder="contact@example.com"
                     />
                   </div>
                   <div>
@@ -370,6 +379,9 @@ export default function AdminSettings() {
                           phone: e.target.value,
                         })
                       }
+                    title="Phone Number"
+                    aria-label="Phone Number"
+                    placeholder="+254..."
                     />
                   </div>
                 </div>
@@ -383,6 +395,9 @@ export default function AdminSettings() {
                         address: e.target.value,
                       })
                     }
+                title="Store Address"
+                aria-label="Store Address"
+                placeholder="123 Tech Street..."
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -503,6 +518,8 @@ export default function AdminSettings() {
                         ref={heroImageInputRef} 
                         accept="image/*" 
                         onChange={(e) => handleGeneralFileUpload(e, 'heroImage')} 
+                    title="Upload hero image"
+                    aria-label="Upload hero image"
                       />
                       {generalSettings.heroImage ? (
                         <div className="relative inline-block w-full max-w-sm">
@@ -516,6 +533,8 @@ export default function AdminSettings() {
                               e.stopPropagation();
                               setGeneralSettings({ ...generalSettings, heroImage: "" });
                             }}
+                        title="Remove hero image"
+                        aria-label="Remove hero image"
                           >
                             <X size={12} />
                           </Button>
@@ -555,6 +574,9 @@ export default function AdminSettings() {
                       onChange={(e) =>
                         setGeneralSettings({ ...generalSettings, heroTitle: e.target.value })
                       }
+                  title="Hero Title"
+                  aria-label="Hero Title"
+                  placeholder="Hero Title"
                     />
                   </div>
                   <div>
@@ -564,6 +586,9 @@ export default function AdminSettings() {
                       onChange={(e) =>
                         setGeneralSettings({ ...generalSettings, heroDescription: e.target.value })
                       }
+                  title="Hero Description"
+                  aria-label="Hero Description"
+                  placeholder="Hero Description"
                     />
                   </div>
                   <div>
@@ -573,6 +598,9 @@ export default function AdminSettings() {
                       onChange={(e) =>
                         setGeneralSettings({ ...generalSettings, ctaTitle: e.target.value })
                       }
+                  title="CTA Title"
+                  aria-label="CTA Title"
+                  placeholder="CTA Title"
                     />
                   </div>
                   <div>
@@ -582,6 +610,9 @@ export default function AdminSettings() {
                       onChange={(e) =>
                         setGeneralSettings({ ...generalSettings, ctaDescription: e.target.value })
                       }
+                  title="CTA Description"
+                  aria-label="CTA Description"
+                  placeholder="CTA Description"
                     />
                   </div>
                 </div>
@@ -654,15 +685,15 @@ export default function AdminSettings() {
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs text-muted-foreground">Title</label>
-                          <Input value={feat.title} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], title: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" />
+                      <Input value={feat.title} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], title: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" title={`Feature ${idx + 1} Title`} aria-label={`Feature ${idx + 1} Title`} placeholder={`Feature ${idx + 1} Title`} />
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs text-muted-foreground">Description</label>
-                          <Input value={feat.desc} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], desc: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" />
+                      <Input value={feat.desc} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], desc: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" title={`Feature ${idx + 1} Description`} aria-label={`Feature ${idx + 1} Description`} placeholder={`Feature ${idx + 1} Description`} />
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs text-muted-foreground">Detailed Content (About Page)</label>
-                          <Textarea value={feat.content || ""} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], content: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" rows={3} />
+                      <Textarea value={feat.content || ""} onChange={(e) => { const newFeatures = [...generalSettings.features]; newFeatures[idx] = { ...newFeatures[idx], content: e.target.value }; setGeneralSettings({ ...generalSettings, features: newFeatures }); }} className="bg-background" rows={3} title={`Feature ${idx + 1} Detailed Content`} aria-label={`Feature ${idx + 1} Detailed Content`} placeholder={`Feature ${idx + 1} Detailed Content`} />
                         </div>
                       </div>
                     ))}
@@ -699,11 +730,11 @@ export default function AdminSettings() {
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs text-muted-foreground">Title</label>
-                          <Input value={(generalSettings as any)[badge.key]?.title} onChange={(e) => { setGeneralSettings({ ...generalSettings, [badge.key]: { ...(generalSettings as any)[badge.key], title: e.target.value } }); }} className="bg-background" />
+                      <Input value={(generalSettings as any)[badge.key]?.title} onChange={(e) => { setGeneralSettings({ ...generalSettings, [badge.key]: { ...(generalSettings as any)[badge.key], title: e.target.value } }); }} className="bg-background" title={`${badge.label} Title`} aria-label={`${badge.label} Title`} placeholder="Badge Title" />
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs text-muted-foreground">Description</label>
-                          <Input value={(generalSettings as any)[badge.key]?.desc} onChange={(e) => { setGeneralSettings({ ...generalSettings, [badge.key]: { ...(generalSettings as any)[badge.key], desc: e.target.value } }); }} className="bg-background" />
+                      <Input value={(generalSettings as any)[badge.key]?.desc} onChange={(e) => { setGeneralSettings({ ...generalSettings, [badge.key]: { ...(generalSettings as any)[badge.key], desc: e.target.value } }); }} className="bg-background" title={`${badge.label} Description`} aria-label={`${badge.label} Description`} placeholder="Badge Description" />
                         </div>
                       </div>
                     ))}
@@ -727,6 +758,8 @@ export default function AdminSettings() {
                             setGeneralSettings({ ...generalSettings, openingHours: newHours });
                           }}
                           className="w-1/3"
+                      title="Day (e.g. Mon - Fri)"
+                      aria-label="Day (e.g. Mon - Fri)"
                         />
                         <Input
                           placeholder="Hours (e.g. 9:00 AM - 8:00 PM)"
@@ -737,6 +770,8 @@ export default function AdminSettings() {
                             setGeneralSettings({ ...generalSettings, openingHours: newHours });
                           }}
                           className="flex-1"
+                      title="Hours (e.g. 9:00 AM - 8:00 PM)"
+                      aria-label="Hours (e.g. 9:00 AM - 8:00 PM)"
                         />
                         <Button
                           type="button"
@@ -747,6 +782,8 @@ export default function AdminSettings() {
                             const newHours = generalSettings.openingHours.filter((_, i) => i !== idx);
                             setGeneralSettings({ ...generalSettings, openingHours: newHours });
                           }}
+                      title="Remove hours row"
+                      aria-label="Remove hours row"
                         >
                           <X size={16} />
                         </Button>
@@ -798,6 +835,8 @@ export default function AdminSettings() {
                           })
                         }
                         className="w-16 h-10"
+                    title="Primary Color Picker"
+                    aria-label="Primary Color Picker"
                       />
                       <Input
                         value={appearanceSettings.primaryColor}
@@ -807,6 +846,9 @@ export default function AdminSettings() {
                             primaryColor: e.target.value,
                           })
                         }
+                    title="Primary Color Hex"
+                    aria-label="Primary Color Hex"
+                    placeholder="#000000"
                       />
                     </div>
                   </div>
@@ -825,6 +867,8 @@ export default function AdminSettings() {
                           })
                         }
                         className="w-16 h-10"
+                    title="Secondary Color Picker"
+                    aria-label="Secondary Color Picker"
                       />
                       <Input
                         value={appearanceSettings.secondaryColor}
@@ -834,6 +878,9 @@ export default function AdminSettings() {
                             secondaryColor: e.target.value,
                           })
                         }
+                    title="Secondary Color Hex"
+                    aria-label="Secondary Color Hex"
+                    placeholder="#000000"
                       />
                     </div>
                   </div>
@@ -852,6 +899,8 @@ export default function AdminSettings() {
                           })
                         }
                         className="w-16 h-10"
+                    title="Promo Banner Color Picker"
+                    aria-label="Promo Banner Color Picker"
                       />
                       <Input
                         value={appearanceSettings.promoBannerColor || "#3b82f6"}
@@ -861,6 +910,9 @@ export default function AdminSettings() {
                             promoBannerColor: e.target.value,
                           })
                         }
+                    title="Promo Banner Color Hex"
+                    aria-label="Promo Banner Color Hex"
+                    placeholder="#3b82f6"
                       />
                     </div>
                   </div>
@@ -877,6 +929,8 @@ export default function AdminSettings() {
                       ref={logoInputRef} 
                       accept="image/*" 
                       onChange={(e) => handleFileUpload(e, 'logoUrl')} 
+                    title="Upload logo"
+                    aria-label="Upload logo"
                     />
                     {appearanceSettings.logoUrl ? (
                       <div className="relative inline-block">
@@ -890,6 +944,8 @@ export default function AdminSettings() {
                             e.stopPropagation();
                             setAppearanceSettings({ ...appearanceSettings, logoUrl: "" });
                           }}
+                        title="Remove logo"
+                        aria-label="Remove logo"
                         >
                           <X size={12} />
                         </Button>
@@ -915,6 +971,8 @@ export default function AdminSettings() {
                       ref={faviconInputRef} 
                       accept="image/x-icon,image/png,image/svg+xml" 
                       onChange={(e) => handleFileUpload(e, 'faviconUrl')} 
+                    title="Upload favicon"
+                    aria-label="Upload favicon"
                     />
                     {appearanceSettings.faviconUrl ? (
                       <div className="relative inline-block">
@@ -928,6 +986,8 @@ export default function AdminSettings() {
                             e.stopPropagation();
                             setAppearanceSettings({ ...appearanceSettings, faviconUrl: "" });
                           }}
+                        title="Remove favicon"
+                        aria-label="Remove favicon"
                         >
                           <X size={12} />
                         </Button>
@@ -1076,6 +1136,8 @@ export default function AdminSettings() {
                   <Switch 
                     checked={paymentSettings.codEnabled} 
                     onCheckedChange={(c) => setPaymentSettings({ ...paymentSettings, codEnabled: c })} 
+                title="Enable Cash on Delivery"
+                aria-label="Enable Cash on Delivery"
                   />
                 </div>
 
@@ -1106,6 +1168,9 @@ export default function AdminSettings() {
                         standardFee: e.target.value,
                       })
                     }
+                  title="Standard Shipping Fee"
+                  aria-label="Standard Shipping Fee"
+                  placeholder="10.00"
                   />
                 </div>
                 <div>
@@ -1122,6 +1187,9 @@ export default function AdminSettings() {
                         expressDelivery: e.target.value,
                       })
                     }
+                  title="Express Delivery Fee"
+                  aria-label="Express Delivery Fee"
+                  placeholder="25.00"
                   />
                 </div>
                 <div>
@@ -1138,6 +1206,9 @@ export default function AdminSettings() {
                         freeShippingThreshold: e.target.value,
                       })
                     }
+                  title="Free Shipping Threshold"
+                  aria-label="Free Shipping Threshold"
+                  placeholder="100.00"
                   />
                 </div>
                 <Button onClick={() => handleSave("shipping", shippingSettings, "Shipping")} className="gap-2" disabled={updateSetting.isPending}>
@@ -1155,21 +1226,21 @@ export default function AdminSettings() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium mb-2">SMTP Host</label>
-                  <Input value={emailSettings.smtpHost} onChange={(e) => setEmailSettings({ ...emailSettings, smtpHost: e.target.value })} />
+              <Input value={emailSettings.smtpHost} onChange={(e) => setEmailSettings({ ...emailSettings, smtpHost: e.target.value })} title="SMTP Host" aria-label="SMTP Host" placeholder="smtp.example.com" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium mb-2">SMTP Port</label>
-                    <Input value={emailSettings.smtpPort} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPort: e.target.value })} />
+                <Input value={emailSettings.smtpPort} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPort: e.target.value })} title="SMTP Port" aria-label="SMTP Port" placeholder="587" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium mb-2">SMTP User</label>
-                    <Input value={emailSettings.smtpUser} onChange={(e) => setEmailSettings({ ...emailSettings, smtpUser: e.target.value })} />
+                <Input value={emailSettings.smtpUser} onChange={(e) => setEmailSettings({ ...emailSettings, smtpUser: e.target.value })} title="SMTP User" aria-label="SMTP User" placeholder="user@example.com" />
                   </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-2">SMTP Password</label>
-                  <Input type="password" value={emailSettings.smtpPassword} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })} />
+              <Input type="password" value={emailSettings.smtpPassword} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })} title="SMTP Password" aria-label="SMTP Password" placeholder="********" />
                 </div>
                 <div className="space-y-3 border-t border-border pt-4">
                   <div className="flex items-center justify-between">
@@ -1177,6 +1248,8 @@ export default function AdminSettings() {
                     <Switch 
                       checked={emailSettings.orderConfirmation} 
                       onCheckedChange={(c) => setEmailSettings({ ...emailSettings, orderConfirmation: c })} 
+                  title="Order Confirmation Emails"
+                  aria-label="Order Confirmation Emails"
                     />
                   </div>
                   {emailSettings.orderConfirmation && (
@@ -1187,6 +1260,8 @@ export default function AdminSettings() {
                         onChange={(e) => setEmailSettings({ ...emailSettings, orderConfirmationMessage: e.target.value })}
                         placeholder="Thank you for your order. We are getting your items ready for shipment."
                         rows={2}
+                    title="Custom Order Message"
+                    aria-label="Custom Order Message"
                       />
                     </div>
                   )}
@@ -1195,6 +1270,8 @@ export default function AdminSettings() {
                     <Switch 
                       checked={emailSettings.shippingNotification} 
                       onCheckedChange={(c) => setEmailSettings({ ...emailSettings, shippingNotification: c })} 
+                  title="Shipping Notification Emails"
+                  aria-label="Shipping Notification Emails"
                     />
                   </div>
                   {emailSettings.shippingNotification && (
@@ -1205,6 +1282,8 @@ export default function AdminSettings() {
                         onChange={(e) => setEmailSettings({ ...emailSettings, shippingNotificationMessage: e.target.value })}
                         placeholder="Great news! Your order has been shipped and is on its way to you."
                         rows={2}
+                    title="Custom Shipping Message"
+                    aria-label="Custom Shipping Message"
                       />
                     </div>
                   )}
@@ -1213,6 +1292,8 @@ export default function AdminSettings() {
                     <Switch 
                       checked={emailSettings.abandonedCartReminder} 
                       onCheckedChange={(c) => setEmailSettings({ ...emailSettings, abandonedCartReminder: c })} 
+                  title="Abandoned Cart Reminder Emails"
+                  aria-label="Abandoned Cart Reminder Emails"
                     />
                   </div>
                 </div>
@@ -1236,6 +1317,8 @@ export default function AdminSettings() {
                   <Switch 
                     checked={securitySettings.twoFactorAuth} 
                     onCheckedChange={(c) => setSecuritySettings({ ...securitySettings, twoFactorAuth: c })} 
+                title="Two-Factor Authentication"
+                aria-label="Two-Factor Authentication"
                   />
                 </div>
                 <div>
@@ -1246,6 +1329,9 @@ export default function AdminSettings() {
                     type="number"
                     value={securitySettings.loginAttemptLimit}
                     onChange={(e) => setSecuritySettings({ ...securitySettings, loginAttemptLimit: e.target.value })}
+                title="Login Attempt Limit"
+                aria-label="Login Attempt Limit"
+                placeholder="5"
                   />
                 </div>
                 <div className="flex items-center justify-between p-4 bg-secondary rounded-lg">
@@ -1253,6 +1339,8 @@ export default function AdminSettings() {
                   <Switch 
                     checked={securitySettings.captchaEnabled} 
                     onCheckedChange={(c) => setSecuritySettings({ ...securitySettings, captchaEnabled: c })} 
+                title="Enable CAPTCHA"
+                aria-label="Enable CAPTCHA"
                   />
                 </div>
                 <div className="border-t border-border pt-6 mt-6">
@@ -1319,6 +1407,9 @@ export default function AdminSettings() {
                           [key]: e.target.value,
                         })
                       }
+                    title={`${key} Link`}
+                    aria-label={`${key} Link`}
+                    placeholder={`https://${key}.com/yourstore`}
                     />
                   </div>
                 ))}
