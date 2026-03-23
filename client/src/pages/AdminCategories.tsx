@@ -90,8 +90,9 @@ export default function AdminCategories() {
       return;
     }
 
+    let toastId;
     try {
-      const toastId = toast.loading(`Uploading ${file.name}...`);
+      toastId = toast.loading(`Uploading ${file.name}...`);
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
       
       if (uploadUrl && publicUrl) {
@@ -107,7 +108,7 @@ export default function AdminCategories() {
         };
         reader.readAsDataURL(file);
       }
-    } catch (err) { toast.error("Failed to upload image."); }
+    } catch (err) { toast.error("Failed to upload image.", { id: toastId }); }
     
     if (fileInputRef.current) fileInputRef.current.value = "";
   };

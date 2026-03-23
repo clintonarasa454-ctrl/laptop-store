@@ -97,8 +97,9 @@ export default function AdminContent() {
       return;
     }
 
+    let toastId: string | number | undefined;
     try {
-      const toastId = toast.loading(`Uploading ${file.name}...`);
+      toastId = toast.loading(`Uploading ${file.name}...`);
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
       
       if (uploadUrl && publicUrl) {
@@ -114,7 +115,7 @@ export default function AdminContent() {
         };
         reader.readAsDataURL(file);
       }
-    } catch (err) { toast.error("Failed to upload image."); }
+    } catch (err) { toast.error("Failed to upload image.", { id: toastId }); }
 
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -400,6 +401,8 @@ export default function AdminContent() {
                           ref={fileInputRef} 
                           accept="image/*" 
                           onChange={handleFileUpload} 
+                          title="Upload banner image"
+                          aria-label="Upload banner image"
                         />
                         {formData.image ? (
                           <div className="relative w-full aspect-[21/9] rounded-lg overflow-hidden border border-border">
@@ -434,7 +437,7 @@ export default function AdminContent() {
                         className="border-2 border-dashed border-border rounded-xl p-4 text-center cursor-pointer hover:bg-muted/50 transition-colors relative"
                         onClick={() => fileInputRef.current?.click()}
                       >
-                        <input type="file" className="hidden" ref={fileInputRef} accept="image/*" onChange={handleFileUpload} />
+                        <input type="file" className="hidden" ref={fileInputRef} accept="image/*" onChange={handleFileUpload} title="Upload announcement image" aria-label="Upload announcement image" />
                         {formData.image ? (
                           <div className="relative w-full h-32 rounded-lg overflow-hidden border border-border">
                             <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />

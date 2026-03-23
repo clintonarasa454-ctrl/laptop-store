@@ -18,7 +18,6 @@ import {
   Truck,
   XCircle,
   Zap,
-  CheckCircle,
   Share2,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
@@ -42,18 +41,22 @@ export default function ProductDetail() {
   const { data: product, isLoading } = trpc.products.bySlug.useQuery({ slug: slug! });
   const { data: categories } = trpc.categories.list.useQuery();
 
+  const categoryArray = (categories as any[]) || [];
+
   // Compute Cross-Navigation Categories (siblings or children)
-  const currentCategory = categories?.find((c) => c.id === product?.categoryId);
-  const targetParentId = (currentCategory as any)?.parentId || currentCategory?.id;
-  const crossNavCategories = categories?.filter((c) => (c as any).parentId === targetParentId && c.id !== currentCategory?.id && (c as any).active !== false).sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) || [];
+  const currentCategory = categoryArray.find((c) => c.id === product?.categoryId);
+  const targetParentId = currentCategory?.parentId || currentCategory?.id;
+  const crossNavCategories = targetParentId 
+    ? categoryArray.filter((c) => c.parentId === targetParentId && c.id !== currentCategory?.id && c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    : [];
 
   // Smart Cross-Selling Logic
   let crossSellCategoryId = product?.categoryId;
   let crossSellTitle = "Related Products";
-  if (product && categories) {
-    const currentCat = categories.find(c => c.id === product.categoryId);
+  if (product && categoryArray.length > 0) {
+    const currentCat = categoryArray.find(c => c.id === product.categoryId);
     if (currentCat?.slug.includes('laptop') || currentCat?.slug.includes('desktop')) {
-      const accCat = categories.find(c => c.slug.includes('access') || c.slug.includes('peripheral'));
+      const accCat = categoryArray.find(c => c.slug.includes('access') || c.slug.includes('peripheral'));
       if (accCat) {
         crossSellCategoryId = accCat.id;
         crossSellTitle = "Recommended Accessories";
@@ -274,12 +277,16 @@ export default function ProductDetail() {
                   <button
                     onClick={() => setSelectedImage((i) => (i - 1 + images.length) % images.length)}
                     className="absolute left-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-background/80 backdrop-blur-sm border border-border flex items-center justify-center hover:bg-background transition-colors"
+                    title="Previous image"
+                    aria-label="Previous image"
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setSelectedImage((i) => (i + 1) % images.length)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-background/80 backdrop-blur-sm border border-border flex items-center justify-center hover:bg-background transition-colors"
+                    title="Next image"
+                    aria-label="Next image"
                   >
                     <ChevronRight className="w-4 h-4" />
                   </button>
@@ -295,6 +302,8 @@ export default function ProductDetail() {
                     className={`w-16 h-16 rounded-lg overflow-hidden border-2 shrink-0 transition-colors ${
                       selectedImage === i ? "border-[var(--brand)]" : "border-border hover:border-[var(--brand)]/50"
                     }`}
+                    title={`View image ${i + 1}`}
+                    aria-label={`View image ${i + 1}`}
                   >
                     <img src={img} alt="" className="w-full h-full object-cover" />
                   </button>
@@ -312,7 +321,14 @@ export default function ProductDetail() {
                 )}
                 <h1 className="font-display text-2xl sm:text-3xl font-bold leading-tight">{product.name}</h1>
               </div>
-              <Button variant="outline" size="icon" onClick={handleShare} className="shrink-0 rounded-full h-10 w-10 text-muted-foreground hover:text-foreground">
+              <Button 
+                variant="outline" 
+                size="icon" 
+                onClick={handleShare} 
+                className="shrink-0 rounded-full h-10 w-10 text-muted-foreground hover:text-foreground"
+                title="Share product"
+                aria-label="Share product"
+              >
                 <Share2 className="w-4 h-4" />
               </Button>
             </div>
@@ -391,6 +407,8 @@ export default function ProductDetail() {
                   onClick={() => setQuantity((q) => Math.max(1, q - 1))}
                   className="w-10 h-10 flex items-center justify-center hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   disabled={quantity <= 1}
+                  title="Decrease quantity"
+                  aria-label="Decrease quantity"
                 >
                   <Minus className="w-3.5 h-3.5" />
                 </button>
@@ -400,6 +418,8 @@ export default function ProductDetail() {
                   onClick={() => setQuantity((q) => Math.min(Number(product.stock || 1), q + 1))}
                   className="w-10 h-10 flex items-center justify-center hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   disabled={quantity >= Number(product.stock || 1)}
+                  title="Increase quantity"
+                  aria-label="Increase quantity"
                 >
                   <Plus className="w-3.5 h-3.5" />
                 </button>
@@ -486,6 +506,8 @@ export default function ProductDetail() {
                           type="button"
                           onClick={() => setReviewForm(prev => ({ ...prev, rating: star }))}
                           className="focus:outline-none"
+                          title={`Rate ${star} stars`}
+                          aria-label={`Rate ${star} stars`}
                         >
                           <Star className={`w-6 h-6 ${star <= reviewForm.rating ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30 hover:text-amber-400/50"}`} />
                         </button>
@@ -557,7 +579,7 @@ export default function ProductDetail() {
         {/* Cross-Navigation: Other Subcategories */}
         {crossNavCategories.length > 0 && (
           <div className="mb-12">
-            <h2 className="font-display text-xl font-bold mb-6">Explore More {categories?.find(c => c.id === targetParentId)?.name}</h2>
+            <h2 className="font-display text-xl font-bold mb-6">Explore More {categoryArray.find(c => c.id === targetParentId)?.name}</h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {crossNavCategories.slice(0, 4).map(subCat => (
                 <Link key={subCat.id} href={`/products?category=${subCat.slug}`}>

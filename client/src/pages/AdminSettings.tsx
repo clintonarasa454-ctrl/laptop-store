@@ -210,8 +210,9 @@ export default function AdminSettings() {
       return;
     }
 
+    let toastId;
     try {
-      const toastId = toast.loading("Uploading...");
+      toastId = toast.loading("Uploading...");
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
       
       if (uploadUrl && publicUrl) {
@@ -227,7 +228,7 @@ export default function AdminSettings() {
         };
         reader.readAsDataURL(file);
       }
-    } catch (err) { toast.error("Failed to upload file"); }
+    } catch (err) { toast.error("Failed to upload file", { id: toastId }); }
 
     if (key === 'logoUrl' && logoInputRef.current) logoInputRef.current.value = "";
     if (key === 'faviconUrl' && faviconInputRef.current) faviconInputRef.current.value = "";
@@ -247,8 +248,9 @@ export default function AdminSettings() {
       return;
     }
 
+    let toastId;
     try {
-      const toastId = toast.loading("Uploading...");
+      toastId = toast.loading("Uploading...");
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
       
       if (uploadUrl && publicUrl) {
@@ -264,7 +266,7 @@ export default function AdminSettings() {
         };
         reader.readAsDataURL(file);
       }
-    } catch (err) { toast.error("Failed to upload file"); }
+    } catch (err) { toast.error("Failed to upload file", { id: toastId }); }
 
     if (e.target) e.target.value = "";
   };

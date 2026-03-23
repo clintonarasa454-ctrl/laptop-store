@@ -161,8 +161,9 @@ export default function AdminProducts() {
         toast.error(`${file.name} is larger than 2MB.`);
         continue;
       }
+      let toastId;
       try {
-        const toastId = toast.loading(`Uploading ${file.name}...`);
+        toastId = toast.loading(`Uploading ${file.name}...`);
         const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
         
         if (uploadUrl && publicUrl) {
@@ -182,7 +183,7 @@ export default function AdminProducts() {
           });
         }
       } catch (error) {
-        toast.error(`Failed to upload ${file.name}`);
+        toast.error(`Failed to upload ${file.name}`, { id: toastId });
       }
     }
     
