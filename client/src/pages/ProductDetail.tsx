@@ -115,6 +115,45 @@ export default function ProductDetail() {
     });
   };
 
+  const images = product && Array.isArray(product.images) && product.images.length > 0 
+    ? [...product.images] 
+    : ["https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80"];
+
+  // --- SEO & Social Sharing ---
+  useEffect(() => {
+    if (!product) return;
+    const storeName = settings?.general?.storeName || 'Store';
+    document.title = `${product.name} | ${storeName}`;
+    
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    metaDesc.setAttribute("content", product.shortDescription || product.description || `Buy ${product.name} at ${storeName}`);
+
+    const ogTags = {
+      "og:title": product.name,
+      "og:description": product.shortDescription || product.description || "",
+      "og:image": images[0],
+      "og:url": window.location.href,
+      "og:type": "product"
+    };
+
+    Object.entries(ogTags).forEach(([property, content]) => {
+      let tag = document.querySelector(`meta[property="${property}"]`);
+      if (!tag) {
+        tag = document.createElement('meta');
+        tag.setAttribute('property', property);
+        document.head.appendChild(tag);
+      }
+      tag.setAttribute("content", content);
+    });
+
+    return () => { document.title = storeName; };
+  }, [product, settings, images]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex flex-col">
@@ -153,49 +192,11 @@ export default function ProductDetail() {
     );
   }
 
-  const images = Array.isArray(product.images) && product.images.length > 0 
-    ? [...product.images] 
-    : ["https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80"];
   const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
   const specs = (product.specifications as Record<string, string>) ?? {};
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
   const price = parseFloat(product.price);
   const discount = comparePrice > price ? Math.round((1 - price / comparePrice) * 100) : 0;
-
-  // --- SEO & Social Sharing ---
-  useEffect(() => {
-    if (!product) return;
-    const storeName = settings?.general?.storeName || 'Store';
-    document.title = `${product.name} | ${storeName}`;
-    
-    let metaDesc = document.querySelector('meta[name="description"]');
-    if (!metaDesc) {
-      metaDesc = document.createElement('meta');
-      metaDesc.setAttribute('name', 'description');
-      document.head.appendChild(metaDesc);
-    }
-    metaDesc.setAttribute("content", product.shortDescription || product.description || `Buy ${product.name} at ${storeName}`);
-
-    const ogTags = {
-      "og:title": product.name,
-      "og:description": product.shortDescription || product.description || "",
-      "og:image": images[0],
-      "og:url": window.location.href,
-      "og:type": "product"
-    };
-
-    Object.entries(ogTags).forEach(([property, content]) => {
-      let tag = document.querySelector(`meta[property="${property}"]`);
-      if (!tag) {
-        tag = document.createElement('meta');
-        tag.setAttribute('property', property);
-        document.head.appendChild(tag);
-      }
-      tag.setAttribute("content", content);
-    });
-
-    return () => { document.title = storeName; };
-  }, [product, settings, images]);
 
   const handleShare = async () => {
     if (navigator.share) {
