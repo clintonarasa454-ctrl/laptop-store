@@ -69,7 +69,10 @@ export default function Cart() {
     { limit: 50 },
     { enabled: !isAuthenticated && guestItems.length > 0 }
   );
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["shipping", "general"] });
+  const { data: settings } = trpc.settings.public.useQuery(
+    { keys: ["shipping", "general"] },
+    { staleTime: Infinity }
+  );
 
   useEffect(() => {
     if (!isAuthenticated) {

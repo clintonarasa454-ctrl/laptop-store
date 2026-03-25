@@ -389,14 +389,14 @@ export default function Auth() {
                   <Label htmlFor="firstName">First Name</Label>
                   <div className="relative">
                     <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input id="firstName" required placeholder="John" className="pl-10" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} />
+                    <Input id="firstName" required placeholder="First Name" className="pl-10" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} />
                   </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="lastName">Last Name</Label>
                   <div className="relative">
                     <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input id="lastName" required placeholder="Doe" className="pl-10" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
+                    <Input id="lastName" required placeholder="Last Name" className="pl-10" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
                   </div>
                 </div>
               </div>
@@ -406,7 +406,7 @@ export default function Auth() {
               <Label htmlFor="email">Email Address</Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input id="email" type="email" required placeholder="john@example.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                <Input id="email" type="email" required placeholder="email@example.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               </div>
             </div>
 

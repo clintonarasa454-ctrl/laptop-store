@@ -82,7 +82,10 @@ export default function Checkout() {
     enabled: isAuthenticated,
   });
 
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["payment_methods", "shipping", "general"] });
+  const { data: settings } = trpc.settings.public.useQuery(
+    { keys: ["payment_methods", "shipping", "general"] },
+    { staleTime: Infinity }
+  );
   const activePaymentMethods = settings?.payment_methods || { mpesa: true, paypal: true, stripe: true };
   
   const availableMethods = [
@@ -260,7 +263,7 @@ export default function Checkout() {
                         id="fullName"
                         value={shipping.fullName}
                         onChange={(e) => setShipping((s) => ({ ...s, fullName: e.target.value }))}
-                        placeholder="John Doe"
+                      placeholder="First Name Last Name (Optional Sire Name)"
                         required
                       />
                     </div>
@@ -739,7 +742,7 @@ function PaymentStep({
             <Input
               value={cardData.name}
               onChange={(e) => setCardData((d) => ({ ...d, name: e.target.value }))}
-              placeholder="John Doe"
+              placeholder="First Name Last Name (Optional Sire Name)"
             />
           </div>
           <div className="space-y-1.5">

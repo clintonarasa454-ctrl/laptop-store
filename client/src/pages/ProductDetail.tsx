@@ -36,10 +36,16 @@ export default function ProductDetail() {
   const { slug } = useParams<{ slug: string }>();
   const { isAuthenticated } = useAuth();
   const utils = trpc.useUtils();
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "shipping"] });
+  const { data: settings } = trpc.settings.public.useQuery(
+    { keys: ["general", "shipping"] },
+    { staleTime: Infinity }
+  );
 
-  const { data: product, isLoading } = trpc.products.bySlug.useQuery({ slug: slug! });
-  const { data: categories } = trpc.categories.list.useQuery();
+  const { data: product, isLoading } = trpc.products.bySlug.useQuery(
+    { slug: slug! },
+    { staleTime: 1000 * 60 * 5 } // Cache for 5 minutes
+  );
+  const { data: categories } = trpc.categories.list.useQuery(undefined, { staleTime: 1000 * 60 * 60 });
 
   const categoryArray = (categories as any[]) || [];
 
@@ -66,11 +72,11 @@ export default function ProductDetail() {
 
   const { data: relatedProducts } = trpc.products.list.useQuery(
     { categoryId: crossSellCategoryId, limit: 4 },
-    { enabled: !!product && !!categories }
+    { enabled: !!product && !!categories, staleTime: 1000 * 60 * 5 }
   );
   const { data: reviews, isLoading: loadingReviews } = trpc.products.reviews.useQuery(
     { productId: product?.id ?? 0 },
-    { enabled: !!product }
+    { enabled: !!product, staleTime: 1000 * 60 * 5 }
   );
 
   const { data: wishlist } = trpc.wishlist.get.useQuery(undefined, { enabled: isAuthenticated });

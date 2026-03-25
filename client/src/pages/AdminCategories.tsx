@@ -90,7 +90,7 @@ export default function AdminCategories() {
       return;
     }
 
-    let toastId;
+    let toastId: string | number | undefined;
     try {
       toastId = toast.loading(`Uploading ${file.name}...`);
       const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
@@ -197,8 +197,8 @@ export default function AdminCategories() {
                   <div className="p-4 sm:p-5 bg-muted/30 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="flex items-center gap-4">
                       <div className="flex flex-col gap-0.5">
-                        <Button type="button" variant="ghost" size="icon" className="h-5 w-6 text-muted-foreground hover:text-foreground" disabled={pIndex === 0} onClick={() => moveCategory(pIndex, 'up', rootCategories)}><ChevronUp size={14}/></Button>
-                        <Button type="button" variant="ghost" size="icon" className="h-5 w-6 text-muted-foreground hover:text-foreground" disabled={pIndex === rootCategories.length - 1} onClick={() => moveCategory(pIndex, 'down', rootCategories)}><ChevronDown size={14}/></Button>
+                        <Button type="button" variant="ghost" size="icon" className="h-5 w-6 text-muted-foreground hover:text-foreground" disabled={pIndex === 0} onClick={() => moveCategory(pIndex, 'up', rootCategories)} title="Move up" aria-label="Move up"><ChevronUp size={14}/></Button>
+                        <Button type="button" variant="ghost" size="icon" className="h-5 w-6 text-muted-foreground hover:text-foreground" disabled={pIndex === rootCategories.length - 1} onClick={() => moveCategory(pIndex, 'down', rootCategories)} title="Move down" aria-label="Move down"><ChevronDown size={14}/></Button>
                       </div>
                       <div className="w-14 h-14 rounded-lg bg-background border border-border flex items-center justify-center overflow-hidden shrink-0 shadow-sm">
                         {parent.imageUrl ? <img src={parent.imageUrl} className="w-full h-full object-cover" /> : <Layers className="text-muted-foreground opacity-50 w-6 h-6" />}
@@ -220,7 +220,7 @@ export default function AdminCategories() {
                       <Button size="sm" variant="outline" onClick={() => openForm(parent)}>
                         <Edit2 size={16} className="mr-1" /> Edit
                       </Button>
-                      <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive/10" onClick={() => handleDelete(parent.id)}>
+                      <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive/10" onClick={() => handleDelete(parent.id)} title="Delete category" aria-label="Delete category">
                         <Trash2 size={16} />
                       </Button>
                     </div>
@@ -236,8 +236,8 @@ export default function AdminCategories() {
                               {child.imageUrl ? <img src={child.imageUrl} className="w-full h-full object-cover" /> : <ImageIcon size={20} className="text-muted-foreground opacity-50" />}
                             </div>
                             <div className="flex gap-0.5 bg-muted/50 rounded-md p-0.5">
-                              <Button type="button" variant="ghost" size="icon" className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground" disabled={cIndex === 0} onClick={() => moveCategory(cIndex, 'up', children)}><ChevronUp size={14}/></Button>
-                              <Button type="button" variant="ghost" size="icon" className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground" disabled={cIndex === children.length - 1} onClick={() => moveCategory(cIndex, 'down', children)}><ChevronDown size={14}/></Button>
+                              <Button type="button" variant="ghost" size="icon" className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground" disabled={cIndex === 0} onClick={() => moveCategory(cIndex, 'up', children)} title="Move up" aria-label="Move up"><ChevronUp size={14}/></Button>
+                              <Button type="button" variant="ghost" size="icon" className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground" disabled={cIndex === children.length - 1} onClick={() => moveCategory(cIndex, 'down', children)} title="Move down" aria-label="Move down"><ChevronDown size={14}/></Button>
                             </div>
                           </div>
                           <div className="flex-1 mb-4">
@@ -252,7 +252,7 @@ export default function AdminCategories() {
                             <Button variant="outline" size="sm" className="flex-1 h-8 text-xs gap-1.5" onClick={() => openForm(child)}>
                               <Edit2 size={14} /> Edit
                             </Button>
-                            <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10 shrink-0" onClick={() => handleDelete(child.id)}>
+                            <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10 shrink-0" onClick={() => handleDelete(child.id)} title="Delete sub-category" aria-label="Delete sub-category">
                               <Trash2 size={14} />
                             </Button>
                           </div>
@@ -290,7 +290,7 @@ export default function AdminCategories() {
                   <h3 className="text-xl font-bold">
                     {formData.id ? "Edit Category" : formData.parentId ? "Add Sub-Category" : "Add Parent Category"}
                   </h3>
-                  <Button type="button" variant="ghost" size="sm" onClick={closeForm}>✕</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={closeForm} title="Close" aria-label="Close">✕</Button>
                 </div>
                 <div className="space-y-4">
                   <div className="p-4 bg-muted/40 border border-border rounded-xl mb-6">
@@ -328,8 +328,8 @@ export default function AdminCategories() {
                     )}
                   </div>
 
-                  <div className="space-y-2"><Label>Category Name *</Label><Input required value={formData.name || ""} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Laptops" /></div>
-                  <div className="space-y-2"><Label>Slug (URL friendly)</Label><Input value={formData.slug || ""} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} placeholder="e.g. laptops (auto-generated if empty)" /></div>
+                  <div className="space-y-2"><Label>Category Name *</Label><Input required value={formData.name || ""} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Laptops" title="Category Name" aria-label="Category Name" /></div>
+                  <div className="space-y-2"><Label>Slug (URL friendly)</Label><Input value={formData.slug || ""} onChange={(e) => setFormData({ ...formData, slug: e.target.value })} placeholder="e.g. laptops (auto-generated if empty)" title="Slug" aria-label="Slug" /></div>
                   <div className="space-y-2">
                     <Label>Category Image</Label>
                     <div 
@@ -342,6 +342,8 @@ export default function AdminCategories() {
                         ref={fileInputRef} 
                         accept="image/*" 
                         onChange={handleFileUpload} 
+                        title="Upload category image"
+                        aria-label="Upload category image"
                       />
                       {formData.imageUrl ? (
                         <div className="relative w-full h-32">
@@ -352,6 +354,8 @@ export default function AdminCategories() {
                             size="icon" 
                             className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
                             onClick={(e) => { e.stopPropagation(); setFormData({ ...formData, imageUrl: "" }); }}
+                            title="Remove image"
+                            aria-label="Remove image"
                           >
                             <X size={12} />
                           </Button>
@@ -389,13 +393,13 @@ export default function AdminCategories() {
                   </div>
                   <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                     <Label className="cursor-pointer">Featured on Homepage</Label>
-                    <Switch checked={formData.featured} onCheckedChange={(c) => setFormData({ ...formData, featured: c })} />
+                    <Switch checked={formData.featured} onCheckedChange={(c) => setFormData({ ...formData, featured: c })} title="Featured on Homepage" aria-label="Featured on Homepage" />
                   </div>
               <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                 <Label className="cursor-pointer">Active (Visible)</Label>
-                <Switch checked={formData.active ?? true} onCheckedChange={(c) => setFormData({ ...formData, active: c })} />
+                <Switch checked={formData.active ?? true} onCheckedChange={(c) => setFormData({ ...formData, active: c })} title="Active (Visible)" aria-label="Active (Visible)" />
               </div>
-                  <div className="space-y-2"><Label>Description</Label><Textarea value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Category description" rows={3}/></div>
+                  <div className="space-y-2"><Label>Description</Label><Textarea value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Category description" rows={3} title="Description" aria-label="Description" /></div>
                 </div>
                 <div className="flex justify-end gap-3 pt-2">
                   <Button type="button" variant="outline" onClick={closeForm}>Cancel</Button>

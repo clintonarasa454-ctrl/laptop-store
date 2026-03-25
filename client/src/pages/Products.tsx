@@ -39,8 +39,12 @@ export default function Products() {
   const [expandedCategories, setExpandedCategories] = useState<number[]>([]);
   const observerTarget = useRef<HTMLDivElement>(null);
 
-  const { data: categories } = trpc.categories.list.useQuery();
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] });
+  const { data: categories } = trpc.categories.list.useQuery(undefined, {
+    staleTime: 1000 * 60 * 60, // Cache for 1 hour
+  });
+  const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] }, {
+    staleTime: Infinity, // Settings rarely change
+  });
   const activeCategories = categories ? categories.filter(c => (c as any).active !== false) : [];
   const orderedCategories = [...activeCategories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
   const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
@@ -170,7 +174,10 @@ export default function Products() {
       maxPrice: maxPrice || undefined,
       sortBy: sortBy,
     },
-    { getNextPageParam: (lastPage) => lastPage.nextCursor }
+    { 
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+      staleTime: 1000 * 60 * 5, // Cache searches for 5 minutes
+    }
   );
 
   // Infinite Scroll Observer
