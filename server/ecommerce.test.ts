@@ -133,20 +133,3 @@ describe("addresses procedures", () => {
     await expect(caller.addresses.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 });
-
-// ─── Checkout ─────────────────────────────────────────────────────────────────
-describe("checkout procedures", () => {
-  it("checkout.placeOrder is protected - throws UNAUTHORIZED for unauthenticated user", async () => {
-    const caller = appRouter.createCaller(createPublicCtx());
-    await expect(
-      caller.checkout.placeOrder({
-        shippingFullName: "John Doe",
-        shippingPhone: "+1234567890",
-        shippingAddress: "123 Main St",
-        shippingCity: "Nairobi",
-        shippingCountry: "Kenya",
-        paymentMethod: "mpesa",
-      })
-    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-  });
-});

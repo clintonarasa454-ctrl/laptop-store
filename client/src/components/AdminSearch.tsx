@@ -22,9 +22,10 @@ export function AdminSearch() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  const { data, isLoading, isFetching } = trpc.admin.globalSearch.useQuery(
-    { query: debouncedQuery },
-    { enabled: debouncedQuery.trim().length > 0 }
+  const { data, isLoading, isFetching, hasNextPage, fetchNextPage } = trpc.admin.globalSearch.useInfiniteQuery(
+    { query: debouncedQuery, limit: 10 },
+    { enabled: debouncedQuery.trim().length > 0,
+      getNextPageParam: (lastPage) => lastPage.nextCursor }
   );
 
   useEffect(() => {
@@ -44,7 +45,12 @@ export function AdminSearch() {
     command();
   };
 
-  const hasResults = data && (data.products.length > 0 || data.orders.length > 0 || data.customers.length > 0 || data.categories.length > 0);
+  const products = data?.pages.flatMap((p) => p.products) || [];
+  const orders = data?.pages.flatMap((p) => p.orders) || [];
+  const customers = data?.pages.flatMap((p) => p.customers) || [];
+  const categories = data?.pages.flatMap((p) => p.categories) || [];
+
+  const hasResults = products.length > 0 || orders.length > 0 || customers.length > 0 || categories.length > 0;
 
   return (
     <>
@@ -83,9 +89,9 @@ export function AdminSearch() {
             </CommandItem>
           </CommandGroup>
           
-          {data?.products && data.products.length > 0 && (
+          {products.length > 0 && (
             <CommandGroup heading="Products">
-              {data.products.map((product) => (
+              {products.map((product) => (
                 <CommandItem key={`product-${product.id}`} onSelect={() => runCommand(() => navigate(`/admin/products?edit=${product.id}`))}>
                   <Package className="mr-2 h-4 w-4" />
                   <span>{product.name}</span>
@@ -95,9 +101,9 @@ export function AdminSearch() {
             </CommandGroup>
           )}
 
-          {data?.orders && data.orders.length > 0 && (
+          {orders.length > 0 && (
             <CommandGroup heading="Orders">
-              {data.orders.map((order) => (
+              {orders.map((order) => (
                 <CommandItem key={`order-${order.id}`} onSelect={() => runCommand(() => navigate(`/admin/orders/${order.id}`))}>
                   <ShoppingCart className="mr-2 h-4 w-4" />
                   <span>{order.orderNumber}</span>
@@ -107,9 +113,9 @@ export function AdminSearch() {
             </CommandGroup>
           )}
 
-          {data?.customers && data.customers.length > 0 && (
+          {customers.length > 0 && (
             <CommandGroup heading="Customers">
-              {data.customers.map((customer) => (
+              {customers.map((customer) => (
                 <CommandItem key={`customer-${customer.id}`} onSelect={() => runCommand(() => navigate(`/admin/customers`))}>
                   <Users className="mr-2 h-4 w-4" />
                   <span>{customer.name}</span>
@@ -119,14 +125,23 @@ export function AdminSearch() {
             </CommandGroup>
           )}
 
-          {data?.categories && data.categories.length > 0 && (
+          {categories.length > 0 && (
             <CommandGroup heading="Categories">
-              {data.categories.map((category) => (
+              {categories.map((category) => (
                 <CommandItem key={`category-${category.id}`} onSelect={() => runCommand(() => navigate(`/admin/categories`))}>
                   <Layers className="mr-2 h-4 w-4" />
                   <span>{category.name}</span>
                 </CommandItem>
               ))}
+            </CommandGroup>
+          )}
+
+          {hasResults && hasNextPage && (
+            <CommandGroup heading="More">
+              <CommandItem onSelect={() => fetchNextPage()} className="justify-center text-[var(--brand)] font-medium cursor-pointer">
+                {isFetching ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                {isFetching ? "Loading..." : "Load More Results"}
+              </CommandItem>
             </CommandGroup>
           )}
         </CommandList>

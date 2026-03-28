@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import {
@@ -27,14 +27,12 @@ import { toast } from "sonner";
 interface GuestCartDisplayItem {
   productId: number;
   quantity: number;
-  product?: {
-    id: number;
-    name: string;
-    price: string;
-    images: unknown;
-    brand?: string | null;
-    stock: number;
-  };
+  name?: string;
+  price?: string;
+  image?: string;
+  slug?: string;
+  stock?: number;
+  brand?: string | null;
 }
 
 export default function Cart() {
@@ -60,41 +58,29 @@ export default function Cart() {
   });
 
   // Guest cart
-  const [guestItems, setGuestItems] = useState<GuestCartDisplayItem[]>([]);
-  const [guestLoading, setGuestLoading] = useState(false);
-
-  const productIds = guestItems.map((i) => i.productId);
-  // We load guest product details via individual queries
-  const { data: guestProducts } = trpc.products.list.useQuery(
-    { limit: 50 },
-    { enabled: !isAuthenticated && guestItems.length > 0 }
-  );
+  const [guestDisplayItems, setGuestDisplayItems] = useState<GuestCartDisplayItem[]>([]);
   const { data: settings } = trpc.settings.public.useQuery(
     { keys: ["shipping", "general"] },
     { staleTime: Infinity }
   );
 
+  // This effect now becomes the single source for guest cart data
   useEffect(() => {
     if (!isAuthenticated) {
-      const raw = getGuestCart();
-      setGuestItems(raw.map((i) => ({ ...i })));
+      const guestCart = getGuestCart();
+      setGuestDisplayItems(guestCart);
     }
   }, [isAuthenticated]);
 
-  const guestDisplayItems = guestItems.map((gi) => ({
-    ...gi,
-    product: guestProducts?.find((p) => p.id === gi.productId),
-  }));
-
   const handleGuestQtyChange = (productId: number, qty: number) => {
     updateGuestCartItem(productId, qty);
-    setGuestItems(getGuestCart());
+    setGuestDisplayItems(getGuestCart());
     window.dispatchEvent(new Event("guestCartUpdated"));
   };
 
   const handleGuestRemove = (productId: number) => {
     removeFromGuestCart(productId);
-    setGuestItems(getGuestCart());
+    setGuestDisplayItems(getGuestCart());
     window.dispatchEvent(new Event("guestCartUpdated"));
     toast.success("Item removed");
   };
@@ -102,19 +88,26 @@ export default function Cart() {
   const isLoading = isAuthenticated ? authLoading : false;
 
   // Compute totals
-  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 500;
-  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 15;
+  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 50000;
+  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 50;
 
   const items = isAuthenticated
     ? (authCart ?? []).map((i) => ({
         productId: i.productId,
         quantity: i.quantity,
-        product: i.product,
+        name: i.product.name,
+        price: i.product.price,
+        image: (i.product.images as string[])?.[0],
+        slug: i.product.slug,
+        stock: i.product.stock,
+        brand: i.product.brand,
       }))
     : guestDisplayItems;
 
   const subtotal = items.reduce((sum, item) => {
-    const price = item.product ? parseFloat(item.product.price) : 0;
+    // Use the price from the cart item, which is a snapshot for guests
+    // or from the joined product for auth users.
+    const price = item.price ? parseFloat(item.price) : 0;
     return sum + price * item.quantity;
   }, 0);
   const shippingCost = items.length > 0 && subtotal < freeThreshold ? standardFee : 0;
@@ -169,26 +162,25 @@ export default function Cart() {
             {/* Cart items */}
             <div className="lg:col-span-2 space-y-3">
               {items.map((item) => {
-                const images = (item.product?.images as string[]) ?? [];
-                const image = images[0] ?? "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=200&q=80";
-                const price = item.product ? parseFloat(item.product.price) : 0;
+                const image = item.image ?? "/assets/placeholder.png";
+                const price = item.price ? parseFloat(item.price) : 0;
 
                 return (
                   <div key={item.productId} className="flex gap-4 p-4 rounded-xl border border-border bg-card hover:border-[var(--brand)]/20 transition-colors">
-                    <Link href={`/products/${item.product ? (item.product as any).slug ?? "" : ""}`}>
+                    <Link href={`/products/${item.slug ?? ""}`}>
                       <div className="w-20 h-20 rounded-lg overflow-hidden bg-muted shrink-0">
-                        <img src={image} alt={item.product?.name} className="w-full h-full object-cover" />
+                        <img src={image} alt={item.name} className="w-full h-full object-cover" />
                       </div>
                     </Link>
 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          {item.product?.brand && (
-                            <p className="text-xs text-[var(--brand)] font-medium uppercase tracking-wide">{item.product.brand}</p>
+                          {item.brand && (
+                            <p className="text-xs text-[var(--brand)] font-medium uppercase tracking-wide">{item.brand}</p>
                           )}
                           <h3 className="font-display font-semibold text-sm leading-snug line-clamp-2">
-                            {item.product?.name ?? `Product #${item.productId}`}
+                            {item.name ?? `Product #${item.productId}`}
                           </h3>
                         </div>
                         <button
@@ -227,7 +219,7 @@ export default function Cart() {
                             type="button"
                             onClick={() => {
                               const currentQty = Number(item.quantity);
-                              const newQty = Math.min(Number(item.product?.stock || 99), currentQty + 1);
+                              const newQty = Math.min(Number(item.stock || 99), currentQty + 1);
                               if (isAuthenticated) {
                                 upsertCart.mutate({ productId: item.productId, quantity: newQty });
                               } else {
@@ -235,7 +227,7 @@ export default function Cart() {
                               }
                             }}
                             className="w-8 h-8 flex items-center justify-center hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={(item.product && Number(item.quantity) >= Number(item.product.stock)) || upsertCart.isPending}
+                            disabled={(item.stock && Number(item.quantity) >= Number(item.stock)) || upsertCart.isPending}
                           >
                             <Plus className="w-3 h-3" />
                           </button>

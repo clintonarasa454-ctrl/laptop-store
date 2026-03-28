@@ -31,9 +31,9 @@ export default function Footer() {
   
   const storeName = general.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
   const storeDesc = general.storeDescription || "Your premier destination for cutting-edge computers, laptops, and accessories. Quality hardware for every need.";
-  const address = general.address || "123 Tech Avenue, Silicon Valley, CA 94025";
+  const address = general.address || "123 Innovation Drive, Suite 100, Tech City";
   const phone = general.phone || "+1 (555) 123-4567";
-  const email = general.contactEmail || "support@example.com";
+  const email = general.contactEmail || "support@company.com";
   const logoUrl = appearance.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
   
   const socialLinks = [
@@ -117,7 +117,7 @@ export default function Footer() {
               {[
                 { label: "My Dashboard", href: "/dashboard" },
                 { label: "My Orders", href: "/dashboard/orders" },
-                { label: "Track Order", href: "/dashboard/orders" },
+                { label: "Track Order", href: "/track-order" },
                 { label: "Saved Addresses", href: "/dashboard/addresses" },
                 { label: "Account Settings", href: "/dashboard" },
               ].map((link) => (

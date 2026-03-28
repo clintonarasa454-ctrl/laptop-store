@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import AdminLayout from "@/components/AdminLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import {
   SelectLabel,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2 } from "lucide-react";
+import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation, useSearch } from "wouter";
 import { formatPrice } from "@/lib/cart";
@@ -34,11 +34,25 @@ export default function AdminProducts() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [, setLocation] = useLocation();
   const searchString = useSearch();
+  const [page, setPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
     return () => clearTimeout(timer);
   }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, itemsPerPage, sortConfig]);
+
+  const handleSort = (key: string) => {
+    setSortConfig((current) => ({
+      key,
+      direction: current?.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
+  };
 
   const { data: products, isLoading } = trpc.admin.products.useQuery(
     { search: debouncedSearch || undefined },
@@ -116,6 +130,28 @@ export default function AdminProducts() {
   });
 
   const filteredProducts = products || [];
+  
+  const sortedProducts = useMemo(() => {
+    return [...filteredProducts].sort((a, b) => {
+      if (!sortConfig) return 0;
+      let aVal = a[sortConfig.key];
+      let bVal = b[sortConfig.key];
+      if (sortConfig.key === "price" || sortConfig.key === "stock") {
+        aVal = Number(aVal);
+        bVal = Number(bVal);
+      }
+      if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
+      if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [filteredProducts, sortConfig]);
+
+  const { totalPages, paginatedProducts } = useMemo(() => {
+    return {
+      totalPages: Math.ceil(sortedProducts.length / itemsPerPage),
+      paginatedProducts: sortedProducts.slice((page - 1) * itemsPerPage, page * itemsPerPage)
+    };
+  }, [sortedProducts, page, itemsPerPage]);
 
   const handleDelete = async (productId: number) => {
     if (confirm("Are you sure you want to delete this product?")) {
@@ -172,15 +208,7 @@ export default function AdminProducts() {
           newImages.push(publicUrl);
           toast.success(`${file.name} uploaded!`, { id: toastId });
         } else {
-          await new Promise<void>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-              newImages.push(event.target?.result as string);
-              toast.success(`${file.name} processed locally!`, { id: toastId });
-              resolve();
-            };
-            reader.readAsDataURL(file);
-          });
+          throw new Error("Failed to get presigned URL");
         }
       } catch (error) {
         toast.error(`Failed to upload ${file.name}`, { id: toastId });
@@ -267,11 +295,21 @@ export default function AdminProducts() {
               <thead className="border-b border-border">
                 <tr>
                   <th className="text-left py-3 px-4 font-semibold w-16">Image</th>
-                  <th className="text-left py-3 px-4 font-semibold">Product Name</th>
-                  <th className="text-left py-3 px-4 font-semibold">Category</th>
-                  <th className="text-left py-3 px-4 font-semibold">Brand</th>
-                  <th className="text-right py-3 px-4 font-semibold">Price</th>
-                  <th className="text-right py-3 px-4 font-semibold">Stock</th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('name')}>
+                    <div className="flex items-center gap-1">Product Name <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('categoryId')}>
+                    <div className="flex items-center gap-1">Category <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('brand')}>
+                    <div className="flex items-center gap-1">Brand <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-right py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('price')}>
+                    <div className="flex items-center justify-end gap-1">Price <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-right py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('stock')}>
+                    <div className="flex items-center justify-end gap-1">Stock <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
                   <th className="text-center py-3 px-4 font-semibold">Actions</th>
                 </tr>
               </thead>
@@ -282,8 +320,8 @@ export default function AdminProducts() {
                       Loading products...
                     </td>
                   </tr>
-                ) : filteredProducts.length > 0 ? (
-                  filteredProducts.map((product) => (
+                ) : paginatedProducts.length > 0 ? (
+                  paginatedProducts.map((product) => (
                     <tr key={product.id} className={`border-b border-border hover:bg-secondary transition-colors ${!product.active ? 'opacity-50' : ''}`}>
                       <td className="py-3 px-4">
                         <div className="w-10 h-10 rounded-lg overflow-hidden bg-muted flex items-center justify-center">
@@ -349,6 +387,36 @@ export default function AdminProducts() {
               </tbody>
             </table>
           </div>
+          {!isLoading && filteredProducts.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-border mt-4">
+              <p className="text-sm text-muted-foreground text-center sm:text-left">
+                Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, sortedProducts.length)} of {sortedProducts.length} entries
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground hidden sm:inline">Rows per page:</span>
+                  <Select value={itemsPerPage.toString()} onValueChange={(val) => setItemsPerPage(Number(val))}>
+                    <SelectTrigger className="h-8 w-[70px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
+                    Previous
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Product Form Modal */}

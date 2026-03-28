@@ -108,12 +108,7 @@ export default function AdminContent() {
         setFormData((prev: any) => ({ ...prev, image: publicUrl }));
         toast.success("Image uploaded successfully!", { id: toastId });
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setFormData((prev: any) => ({ ...prev, image: event.target?.result as string }));
-          toast.success("Image processed locally!", { id: toastId });
-        };
-        reader.readAsDataURL(file);
+        throw new Error("Failed to get presigned URL");
       }
     } catch (err) { toast.error("Failed to upload image.", { id: toastId }); }
 

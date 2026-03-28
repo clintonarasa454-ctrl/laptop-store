@@ -4,19 +4,40 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Search, Eye, Mail, Lock, Loader2 } from "lucide-react";
+import { Search, Eye, Mail, Lock, Loader2, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCustomers() {
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [page, setPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
     return () => clearTimeout(timer);
   }, [searchTerm]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, itemsPerPage, sortConfig]);
+
+  const handleSort = (key: string) => {
+    setSortConfig((current) => ({
+      key,
+      direction: current?.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
+  };
 
   const { data: customers, isLoading } = trpc.admin.customers.useQuery(
     { search: debouncedSearch || undefined }, 
@@ -29,6 +50,18 @@ export default function AdminCustomers() {
   });
 
   const filteredCustomers = customers || [];
+  
+  const sortedCustomers = [...filteredCustomers].sort((a, b) => {
+    if (!sortConfig) return 0;
+    let aVal = a[sortConfig.key] || "";
+    let bVal = b[sortConfig.key] || "";
+    if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedCustomers.length / itemsPerPage);
+  const paginatedCustomers = sortedCustomers.slice((page - 1) * itemsPerPage, page * itemsPerPage);
 
   return (
     <AdminLayout activeTab="customers">
@@ -80,11 +113,21 @@ export default function AdminCustomers() {
             <table className="w-full text-sm">
               <thead className="border-b border-border">
                 <tr>
-                  <th className="text-left py-3 px-4 font-semibold">Name</th>
-                  <th className="text-left py-3 px-4 font-semibold">Email</th>
-                  <th className="text-left py-3 px-4 font-semibold">Role</th>
-                  <th className="text-left py-3 px-4 font-semibold">Joined</th>
-                  <th className="text-left py-3 px-4 font-semibold">Last Seen</th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('name')}>
+                    <div className="flex items-center gap-1">Name <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('email')}>
+                    <div className="flex items-center gap-1">Email <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('role')}>
+                    <div className="flex items-center gap-1">Role <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('createdAt')}>
+                    <div className="flex items-center gap-1">Joined <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('lastSignedIn')}>
+                    <div className="flex items-center gap-1">Last Seen <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
                   <th className="text-center py-3 px-4 font-semibold">Actions</th>
                 </tr>
               </thead>
@@ -95,8 +138,8 @@ export default function AdminCustomers() {
                       Loading customers...
                     </td>
                   </tr>
-                ) : filteredCustomers.length > 0 ? (
-                  filteredCustomers.map((customer: any) => (
+                ) : paginatedCustomers.length > 0 ? (
+                  paginatedCustomers.map((customer: any) => (
                     <tr key={customer.id} className="border-b border-border hover:bg-secondary transition-colors">
                       <td className="py-3 px-4 font-medium">{customer.name || "-"}</td>
                       <td className="py-3 px-4 text-muted-foreground">{customer.email}</td>
@@ -140,6 +183,36 @@ export default function AdminCustomers() {
               </tbody>
             </table>
           </div>
+          {!isLoading && filteredCustomers.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-border mt-4">
+              <p className="text-sm text-muted-foreground text-center sm:text-left">
+                Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, sortedCustomers.length)} of {sortedCustomers.length} entries
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground hidden sm:inline">Rows per page:</span>
+                  <Select value={itemsPerPage.toString()} onValueChange={(val) => setItemsPerPage(Number(val))}>
+                    <SelectTrigger className="h-8 w-[70px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
+                    Previous
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Customer Details Modal */}

@@ -1,7 +1,9 @@
 import { config } from "dotenv";
 config(); // Load environment variables from .env
 
+import { randomBytes, scryptSync } from "crypto";
 import { getDb, upsertCategory, getCategoryBySlug, upsertProduct } from "./db";
+import { deliveryAgents } from "../drizzle/schema";
 
 async function seed() {
   console.log("⏳ Connecting to the database...");
@@ -68,6 +70,25 @@ async function seed() {
 
   for (const prod of products) {
     await upsertProduct(prod);
+  }
+
+  function hashPassword(password: string) {
+    const salt = randomBytes(16).toString("hex");
+    const derivedKey = scryptSync(password, salt, 64).toString("hex");
+    return `${salt}:${derivedKey}`;
+  }
+
+  console.log("🌱 Seeding Delivery Agents...");
+  const agents = [
+    { id: 1, name: "John Kamau", phone: "+254712345678", vehicleNumber: "KDA 123X", vehicleType: "bike", isAvailable: true, pin: hashPassword("1111") },
+    { id: 2, name: "Peter Ochieng", phone: "+254723456789", vehicleNumber: "KBC 456Y", vehicleType: "truck", isAvailable: true, pin: hashPassword("2222") },
+    { id: 3, name: "Sarah Wanjiku", phone: "+254734567890", vehicleNumber: "KCA 789Z", vehicleType: "bike", isAvailable: false, pin: hashPassword("3333") }
+  ];
+
+  for (const agent of agents) {
+    await db.insert(deliveryAgents)
+      .values(agent)
+      .onDuplicateKeyUpdate({ set: agent });
   }
 
   console.log("✅ Database seeded successfully!");

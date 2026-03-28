@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { addToGuestCart, formatPrice } from "@/lib/cart";
@@ -21,7 +21,8 @@ import {
   Share2,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { addRecentlyViewed, getRecentlyViewed } from "@/lib/ux";
 import { Link, useParams } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -50,25 +51,27 @@ export default function ProductDetail() {
   const categoryArray = (categories as any[]) || [];
 
   // Compute Cross-Navigation Categories (siblings or children)
-  const currentCategory = categoryArray.find((c) => c.id === product?.categoryId);
-  const targetParentId = currentCategory?.parentId || currentCategory?.id;
-  const crossNavCategories = targetParentId 
-    ? categoryArray.filter((c) => c.parentId === targetParentId && c.id !== currentCategory?.id && c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    : [];
-
-  // Smart Cross-Selling Logic
-  let crossSellCategoryId = product?.categoryId;
-  let crossSellTitle = "Related Products";
-  if (product && categoryArray.length > 0) {
-    const currentCat = categoryArray.find(c => c.id === product.categoryId);
-    if (currentCat?.slug.includes('laptop') || currentCat?.slug.includes('desktop')) {
+  const { crossNavCategories, crossSellCategoryId, crossSellTitle, targetParentId } = useMemo(() => {
+    const currentCat = categoryArray.find((c) => c.id === product?.categoryId);
+    const targetParentId = currentCat?.parentId || currentCat?.id;
+    
+    const navCats = targetParentId 
+      ? categoryArray.filter((c) => c.parentId === targetParentId && c.id !== currentCat?.id && c.active !== false).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      : [];
+      
+    let sellId = product?.categoryId;
+    let sellTitle = "Related Products";
+    
+    if (currentCat && (currentCat.slug.includes('laptop') || currentCat.slug.includes('desktop'))) {
       const accCat = categoryArray.find(c => c.slug.includes('access') || c.slug.includes('peripheral'));
       if (accCat) {
-        crossSellCategoryId = accCat.id;
-        crossSellTitle = "Recommended Accessories";
+        sellId = accCat.id;
+        sellTitle = "Recommended Accessories";
       }
     }
-  }
+    
+    return { crossNavCategories: navCats, crossSellCategoryId: sellId, crossSellTitle: sellTitle, targetParentId };
+  }, [categoryArray, product?.categoryId]);
 
   const { data: relatedProducts } = trpc.products.list.useQuery(
     { categoryId: crossSellCategoryId, limit: 4 },
@@ -121,14 +124,20 @@ export default function ProductDetail() {
     });
   };
 
+  const [recentProducts, setRecentProducts] = useState<any[]>([]);
+  useEffect(() => {
+    if (product) addRecentlyViewed(product);
+    setRecentProducts(getRecentlyViewed().filter((p: any) => p.id !== product?.id));
+  }, [product]);
+
   const images = product && Array.isArray(product.images) && product.images.length > 0 
     ? [...product.images] 
-    : ["https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=700&q=80"];
+    : ["/assets/placeholder.png"];
 
   // --- SEO & Social Sharing ---
   useEffect(() => {
     if (!product) return;
-    const storeName = settings?.general?.storeName || 'Store';
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
     document.title = `${product.name} | ${storeName}`;
     
     let metaDesc = document.querySelector('meta[name="description"]');
@@ -220,7 +229,7 @@ export default function ProductDetail() {
     if (isAuthenticated) {
       upsertCart.mutate({ productId: product.id, quantity });
     } else {
-      addToGuestCart(product.id, quantity);
+      addToGuestCart(product, quantity);
       window.dispatchEvent(new Event("guestCartUpdated"));
       toast.success(`${product.name} added to cart!`);
     }
@@ -278,6 +287,8 @@ export default function ProductDetail() {
                 src={images[selectedImage]}
                 alt={product.name}
                 className="w-full h-full object-cover"
+                fetchPriority="high"
+                decoding="async"
               />
               {images.length > 1 && (
                 <>
@@ -312,7 +323,7 @@ export default function ProductDetail() {
                     title={`View image ${i + 1}`}
                     aria-label={`View image ${i + 1}`}
                   >
-                    <img src={img} alt="" className="w-full h-full object-cover" />
+                    <img src={img} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
                   </button>
                 ))}
               </div>
@@ -593,7 +604,7 @@ export default function ProductDetail() {
                   <div className="group relative overflow-hidden rounded-xl border border-border bg-card hover:border-[var(--brand)]/40 hover:shadow-lg transition-all duration-300 cursor-pointer">
                     <div className="aspect-[16/9] sm:aspect-[2/1] bg-muted overflow-hidden flex items-center justify-center">
                       {subCat.imageUrl ? (
-                        <img src={subCat.imageUrl} alt={subCat.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                        <img src={subCat.imageUrl} alt={subCat.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" decoding="async" />
                       ) : (
                         <Package className="w-8 h-8 text-muted-foreground opacity-20 group-hover:scale-110 transition-transform duration-500" />
                       )}
@@ -620,6 +631,18 @@ export default function ProductDetail() {
                 .map((p) => (
                   <ProductCard key={p.id} product={p} />
                 ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recently Viewed */}
+        {recentProducts.length > 0 && (
+          <div className="mt-16">
+            <h2 className="font-display text-xl font-bold mb-6 text-muted-foreground">Recently Viewed</h2>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              {recentProducts.slice(0, 4).map((p) => (
+                <ProductCard key={p.id} product={p} />
+              ))}
             </div>
           </div>
         )}

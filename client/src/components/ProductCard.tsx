@@ -1,11 +1,13 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { trpc } from "@/lib/trpc";
 import { addToGuestCart, formatPrice } from "@/lib/cart";
-import { ShoppingCart, Star, Zap, Heart } from "lucide-react";
+import { ShoppingCart, Star, Zap, Scale } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { useState, useEffect } from "react";
+import { toggleCompare, getCompareList } from "@/lib/ux";
 
 interface Product {
   id: number;
@@ -50,8 +52,16 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
     }
   });
 
+  const [isComparing, setIsComparing] = useState(false);
+  useEffect(() => {
+    const check = () => setIsComparing(!!getCompareList().find((p: any) => p.id === product.id));
+    check();
+    window.addEventListener("compareUpdated", check);
+    return () => window.removeEventListener("compareUpdated", check);
+  }, [product.id]);
+
   const images = (product.images as string[]) ?? [];
-  const image = images[0] ?? "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=400&q=80";
+  const image = images[0] ?? "/assets/placeholder.png";
   const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
   const price = parseFloat(product.price);
@@ -64,7 +74,7 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
     if (isAuthenticated) {
       upsertCart.mutate({ productId: product.id, quantity: 1 });
     } else {
-      addToGuestCart(product.id, 1);
+      addToGuestCart(product, 1);
       window.dispatchEvent(new Event("guestCartUpdated"));
       toast.success("Added to cart!");
       onCartUpdate?.();
@@ -75,6 +85,7 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
     <Link href={`/products/${product.slug}`}>
       <div 
         className="group bg-card border border-border rounded-2xl overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-[var(--brand)]/40 transition-all duration-300 cursor-pointer h-full flex flex-col"
+        style={{ contentVisibility: 'auto', containIntrinsicSize: '0 400px' }}
         onMouseEnter={() => utils.products.bySlug.prefetch({ slug: product.slug })}
       >
         {/* Image */}
@@ -104,6 +115,28 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
               <span className="text-sm font-medium text-muted-foreground">Out of Stock</span>
             </div>
           )}
+          
+          {/* Compare Button */}
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const added = toggleCompare(product);
+              if (added === false && !isComparing) {
+                toast.error("You can only compare up to 4 products at once.");
+              } else if (added) {
+                toast.success("Added to comparison");
+              }
+            }}
+            className={`absolute top-2 right-2 p-1.5 rounded-lg backdrop-blur-md border transition-all z-10 ${
+              isComparing 
+                ? "bg-[var(--brand)] border-[var(--brand)] text-white shadow-md" 
+                : "bg-background/80 border-border text-muted-foreground hover:text-foreground hover:bg-background"
+            }`}
+            title={isComparing ? "Remove from Compare" : "Compare Product"}
+          >
+            <Scale className="w-3.5 h-3.5" />
+          </button>
         </div>
 
         {/* Content */}

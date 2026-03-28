@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
 import { useState, useEffect, useRef } from "react";
+import { getRecentlyViewed } from "@/lib/ux";
 import { Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -121,6 +122,11 @@ export default function Home() {
   const [touchEnd, setTouchEnd] = useState<number | null>(null);
   const mapSectionRef = useRef<HTMLElement>(null);
   const [isMapVisible, setIsMapVisible] = useState(false);
+  const [recentProducts, setRecentProducts] = useState<any[]>([]);
+
+  useEffect(() => {
+    setRecentProducts(getRecentlyViewed());
+  }, []);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -174,6 +180,23 @@ export default function Home() {
   const Badge1Icon = dynamicIconMap[badge1.icon] || Shield;
   const Badge2Icon = dynamicIconMap[badge2.icon] || Truck;
   
+  // --- SEO Metadata ---
+  useEffect(() => {
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
+    document.title = storeName;
+    
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    const storeDesc = settings?.general?.storeDescription || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_description") : null) || heroDescription;
+    metaDesc.setAttribute("content", storeDesc);
+
+    return () => { document.title = storeName; };
+  }, [settings, heroTitle, heroDescription]);
+
   const displayBrands = settings?.brands && settings.brands.length > 0 ? settings.brands : ["Samsung", "Dell", "HP", "Lenovo", "Asus", "Apple", "Acer"];
 
   const lifestyles = settings?.general?.lifestyles || fallbackLifestyles;
@@ -182,19 +205,25 @@ export default function Home() {
   const isPageLoading = loadingSettings || loadingBanners || loadingCategories;
 
   if (isPageLoading) {
-    return (
-      <div className="min-h-screen flex flex-col bg-background">
-        <Navbar />
-        <div className="flex-1 flex flex-col items-center justify-center">
-          <StoreLoader />
-        </div>
-        <Footer />
-      </div>
-    );
+    return <StoreLoader fullScreen />;
   }
+
+  // --- Schema.org JSON-LD ---
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": settings?.general?.storeName || "Store",
+    "url": typeof window !== "undefined" ? window.location.origin : "",
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": `${typeof window !== "undefined" ? window.location.origin : ""}/products?search={search_term_string}`,
+      "query-input": "required name=search_term_string"
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       <Navbar />
 
       {/* Custom Keyframes for the Floating Parallax Effect */}
@@ -359,7 +388,7 @@ export default function Home() {
         <div className="container py-6">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {(settings?.general?.features || [
-              { icon: "Truck", title: "Free Shipping", desc: `On orders over $${settings?.shipping?.freeShippingThreshold || 500}` },
+              { icon: "Truck", title: "Free Shipping", desc: `Orders over ${settings?.shipping?.freeShippingThreshold ? formatPrice(settings.shipping.freeShippingThreshold) : formatPrice(50000)}` },
               { icon: "Shield", title: "2-Year Warranty", desc: "On all products" },
               { icon: "RefreshCw", title: "30-Day Returns", desc: "Hassle-free returns" },
               { icon: "Award", title: "Certified Products", desc: "100% authentic hardware" },
@@ -391,7 +420,7 @@ export default function Home() {
           <div className="absolute right-0 top-0 bottom-0 w-24 bg-gradient-to-l from-background to-transparent z-10 pointer-events-none" />
           
           {/* Hover pauses the animation to let users read */}
-          <div className="flex w-max items-center animate-marquee hover:[animation-play-state:paused] py-4">
+          <div className="flex w-max items-center animate-marquee hover:[animation-play-state:paused] py-4" style={{ willChange: 'transform' }}>
             {/* Render the list 4 times so it loops perfectly seamlessly even on ultra-wide screens */}
             {[...displayBrands, ...displayBrands, ...displayBrands, ...displayBrands].map((brand, idx) => {
               const iconSlug = brand.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -406,6 +435,7 @@ export default function Home() {
                         className="w-full h-full object-contain opacity-40 grayscale contrast-0 dark:brightness-200 group-hover:opacity-100 group-hover:grayscale-0 group-hover:contrast-100 dark:group-hover:brightness-100 transition-all duration-500"
                         onError={(e) => { e.currentTarget.style.display = 'none'; }}
                         loading="lazy"
+                    decoding="async"
                       />
                     </div>
                     
@@ -440,7 +470,11 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
-            {(dbCategories || []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
+            {loadingCategories ? (
+              Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="w-full aspect-[16/9] rounded-3xl" />
+              ))
+            ) : (dbCategories || []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
               
               const Icon = cat.icon ? dynamicIconMap[cat.icon] || Package : (cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones);
@@ -449,10 +483,11 @@ export default function Home() {
                 <div className={`group relative overflow-hidden rounded-3xl bg-gradient-to-br ${style.gradient} border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer`}>
                   <div className="aspect-[16/9] overflow-hidden">
                     <img
-                      src={cat.imageUrl || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=600&q=80"}
+                      src={cat.imageUrl || "/assets/placeholder.png"}
                       alt={cat.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
                       loading="lazy"
+                      decoding="async"
                     />
                   </div>
                   <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/40 to-transparent" />
@@ -609,7 +644,7 @@ export default function Home() {
           <div className="text-center mb-10">
             <p className="text-sm font-medium text-[var(--brand)] mb-1">Come visit us</p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold">Our Store Location</h2>
-            <p className="text-muted-foreground mt-2">{settings?.general?.address || "123 Tech Avenue, Silicon Valley, CA 94025"}</p>
+            <p className="text-muted-foreground mt-2">{settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City"}</p>
           </div>
           
           <div className="grid lg:grid-cols-3 gap-8 items-start">
@@ -622,7 +657,7 @@ export default function Home() {
                 onMapReady={(map) => {
                   if (window.google) {
                     const geocoder = new window.google.maps.Geocoder();
-                    geocoder.geocode({ address: settings?.general?.address || "123 Tech Avenue, Silicon Valley, CA 94025" }, (results, status) => {
+                    geocoder.geocode({ address: settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City" }, (results, status) => {
                       if (status === "OK" && results?.[0]) {
                         map.setCenter(results[0].geometry.location);
                         
@@ -674,7 +709,7 @@ export default function Home() {
                  </ul>
               </div>
               <div className="border-t border-border pt-6 mt-6">
-                 <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings?.general?.address || "123 Tech Avenue, Silicon Valley, CA 94025")}`} target="_blank" rel="noopener noreferrer">
+                 <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City")}`} target="_blank" rel="noopener noreferrer">
                    <Button variant="outline" className="w-full gap-2 hover:bg-[var(--brand)] hover:text-white transition-colors">
                      Get Directions <ArrowRight className="w-4 h-4" />
                    </Button>
@@ -703,6 +738,25 @@ export default function Home() {
           </Link>
         </div>
       </section>
+
+      {/* ── Recently Viewed ──────────────────────────────────────────────── */}
+      {recentProducts.length > 0 && (
+        <section className="py-16 bg-muted/20 border-t border-border">
+          <div className="container">
+            <div className="flex items-end justify-between mb-8">
+              <div>
+                <p className="text-sm font-medium text-[var(--brand)] mb-1">Pick up where you left off</p>
+                <h2 className="font-display text-2xl sm:text-3xl font-bold">Recently Viewed</h2>
+              </div>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              {recentProducts.slice(0, 4).map((product) => (
+                <ProductCard key={`recent-${product.id}`} product={product} />
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ── Floating Announcement Sticker ─────────────────────────────────── */}
       {latestAnnouncement && !dismissedAnnouncements.includes(latestAnnouncement.id) && (

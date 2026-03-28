@@ -22,9 +22,9 @@ export default function AdminSettings() {
   const [generalSettings, setGeneralSettings] = useState({
     storeName: "Store",
     storeDescription: "Premium Computer & Laptop Store",
-    contactEmail: "contact@example.com",
-    phone: "+254 700 000 000",
-    address: "123 Tech Street, Nairobi, Kenya",
+    contactEmail: "support@company.com",
+    phone: "+1 (555) 000-0000",
+    address: "123 Innovation Drive, Suite 100, Tech City",
     currency: "USD",
     timezone: "Africa/Nairobi",
     heroTitle: "Premium Tech, Exceptional Performance",
@@ -60,11 +60,13 @@ export default function AdminSettings() {
   });
 
   const [appearanceSettings, setAppearanceSettings] = useState({
-    primaryColor: "#3b82f6",
-    secondaryColor: "#8b5cf6",
-    promoBannerColor: "#3b82f6",
+    primaryColor: "#0284c7",
+    secondaryColor: "#0ea5e9",
+    promoBannerColor: "#0369a1",
     logoUrl: "",
     faviconUrl: "",
+    userTheme: "light",
+    adminTheme: "light",
   });
 
   const [paymentSettings, setPaymentSettings] = useState({
@@ -81,9 +83,9 @@ export default function AdminSettings() {
   });
 
   const [shippingSettings, setShippingSettings] = useState({
-    standardFee: "10.00",
-    expressDelivery: "25.00",
-    freeShippingThreshold: "100.00",
+    standardFee: "50.00",
+    expressDelivery: "100.00",
+    freeShippingThreshold: "50000.00",
   });
 
   const [emailSettings, setEmailSettings] = useState({
@@ -96,6 +98,9 @@ export default function AdminSettings() {
     abandonedCartReminder: true,
     orderConfirmationMessage: "Thank you for your order. We are getting your items ready for shipment.",
     shippingNotificationMessage: "Great news! Your order has been shipped and is on its way to you.",
+    productImageWidth: "40",
+    emailBackgroundColor: "#ffffff",
+    emailButtonColor: "#3b82f6",
   });
 
   const [securitySettings, setSecuritySettings] = useState({
@@ -221,12 +226,7 @@ export default function AdminSettings() {
         setAppearanceSettings(prev => ({ ...prev, [key]: publicUrl }));
         toast.success("Uploaded successfully!", { id: toastId });
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setAppearanceSettings(prev => ({ ...prev, [key]: event.target?.result as string }));
-          toast.success("Processed locally!", { id: toastId });
-        };
-        reader.readAsDataURL(file);
+        throw new Error("Failed to get presigned URL");
       }
     } catch (err) { toast.error("Failed to upload file", { id: toastId }); }
 
@@ -259,12 +259,7 @@ export default function AdminSettings() {
         setGeneralSettings(prev => ({ ...prev, [key]: publicUrl }));
         toast.success("Uploaded successfully!", { id: toastId });
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setGeneralSettings(prev => ({ ...prev, [key]: event.target?.result as string }));
-          toast.success("Processed locally!", { id: toastId });
-        };
-        reader.readAsDataURL(file);
+        throw new Error("Failed to get presigned URL");
       }
     } catch (err) { toast.error("Failed to upload file", { id: toastId }); }
 
@@ -366,7 +361,7 @@ export default function AdminSettings() {
                       }
                     title="Contact Email"
                     aria-label="Contact Email"
-                    placeholder="contact@example.com"
+                  placeholder="support@company.com"
                     />
                   </div>
                   <div>
@@ -381,7 +376,7 @@ export default function AdminSettings() {
                       }
                     title="Phone Number"
                     aria-label="Phone Number"
-                    placeholder="+254..."
+                  placeholder="+1 (555)..."
                     />
                   </div>
                 </div>
@@ -397,7 +392,7 @@ export default function AdminSettings() {
                     }
                 title="Store Address"
                 aria-label="Store Address"
-                placeholder="123 Tech Street..."
+            placeholder="123 Innovation Drive..."
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -540,11 +535,11 @@ export default function AdminSettings() {
                           </Button>
                         </div>
                       ) : (
-                        <>
+                        <div className="py-2">
                           <Upload size={24} className="mx-auto mb-2 text-muted-foreground" />
                           <p className="text-sm text-muted-foreground">Click to upload or drag and drop</p>
                           <p className="text-xs text-muted-foreground mt-1">PNG, JPG, WEBP up to 2MB</p>
-                        </>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -917,6 +912,54 @@ export default function AdminSettings() {
                     </div>
                   </div>
                 </div>
+
+                <div className="mt-8 mb-6 border-t border-border pt-6">
+                  <label className="block text-sm font-medium mb-3">Live Theme Preview</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Light Mode Preview */}
+                    <div className="border border-border rounded-xl overflow-hidden shadow-sm flex flex-col bg-white text-zinc-900 pointer-events-none select-none">
+                      <div className="h-6 w-full flex items-center justify-center text-[10px] font-bold text-white tracking-widest" style={{ backgroundColor: appearanceSettings.promoBannerColor }}>
+                        PROMO BANNER
+                      </div>
+                      <div className="p-5 flex-1">
+                        <div className="flex items-center justify-between mb-5">
+                          <div className="font-black tracking-tight text-lg">STORE</div>
+                          <div className="flex gap-3 text-[10px] text-zinc-500 font-bold uppercase">
+                            <span>Shop</span><span>About</span>
+                          </div>
+                        </div>
+                        <h4 className="text-xl font-bold mb-1">Light Mode</h4>
+                        <p className="text-xs text-zinc-500 mb-5">Preview of your brand colors on light backgrounds.</p>
+                        <div className="flex gap-2">
+                          <div className="px-4 py-2 rounded-md text-[11px] font-semibold text-white shadow-sm" style={{ backgroundColor: appearanceSettings.primaryColor }}>Primary Action</div>
+                          <div className="px-4 py-2 rounded-md text-[11px] font-semibold text-white shadow-sm" style={{ backgroundColor: appearanceSettings.secondaryColor }}>Secondary</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dark Mode Preview */}
+                    <div className="border border-zinc-800 rounded-xl overflow-hidden shadow-sm flex flex-col bg-zinc-950 text-zinc-50 pointer-events-none select-none">
+                      <div className="h-6 w-full flex items-center justify-center text-[10px] font-bold text-white tracking-widest" style={{ backgroundColor: appearanceSettings.promoBannerColor }}>
+                        PROMO BANNER
+                      </div>
+                      <div className="p-5 flex-1">
+                        <div className="flex items-center justify-between mb-5">
+                          <div className="font-black tracking-tight text-lg text-white">STORE</div>
+                          <div className="flex gap-3 text-[10px] text-zinc-400 font-bold uppercase">
+                            <span>Shop</span><span>About</span>
+                          </div>
+                        </div>
+                        <h4 className="text-xl font-bold mb-1 text-white">Dark Mode</h4>
+                        <p className="text-xs text-zinc-400 mb-5">Preview of your brand colors on dark backgrounds.</p>
+                        <div className="flex gap-2">
+                          <div className="px-4 py-2 rounded-md text-[11px] font-semibold text-white shadow-sm" style={{ backgroundColor: appearanceSettings.primaryColor }}>Primary Action</div>
+                          <div className="px-4 py-2 rounded-md text-[11px] font-semibold text-white shadow-sm" style={{ backgroundColor: appearanceSettings.secondaryColor }}>Secondary</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium mb-2">Logo</label>
                   <div 
@@ -951,11 +994,11 @@ export default function AdminSettings() {
                         </Button>
                       </div>
                     ) : (
-                      <>
+                      <div className="py-2">
                         <Upload size={24} className="mx-auto mb-2 text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">Click to upload or drag and drop</p>
                         <p className="text-xs text-muted-foreground mt-1">PNG, JPG, SVG up to 2MB</p>
-                      </>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -993,14 +1036,59 @@ export default function AdminSettings() {
                         </Button>
                       </div>
                     ) : (
-                      <>
+                      <div className="py-2">
                         <Upload size={24} className="mx-auto mb-2 text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">Click to upload or drag and drop</p>
                         <p className="text-xs text-muted-foreground mt-1">.ico, .png, .svg up to 2MB</p>
-                      </>
+                      </div>
                     )}
                   </div>
                 </div>
+
+                <div className="border-t border-border pt-6 mt-4">
+                  <h4 className="font-medium mb-4">Theme Preferences</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Storefront Theme</label>
+                      <Select
+                        value={appearanceSettings.userTheme || "light"}
+                        onValueChange={(val) =>
+                          setAppearanceSettings({ ...appearanceSettings, userTheme: val })
+                        }
+                      >
+                        <SelectTrigger className="bg-background">
+                          <SelectValue placeholder="Select theme" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="light">Light</SelectItem>
+                          <SelectItem value="dark">Dark</SelectItem>
+                          <SelectItem value="system">System (Auto)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1.5">Default theme for your customers.</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Admin Panel Theme</label>
+                      <Select
+                        value={appearanceSettings.adminTheme || "light"}
+                        onValueChange={(val) =>
+                          setAppearanceSettings({ ...appearanceSettings, adminTheme: val })
+                        }
+                      >
+                        <SelectTrigger className="bg-background">
+                          <SelectValue placeholder="Select theme" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="light">Light</SelectItem>
+                          <SelectItem value="dark">Dark</SelectItem>
+                          <SelectItem value="system">System (Auto)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1.5">Default theme for the admin dashboard.</p>
+                    </div>
+                  </div>
+                </div>
+
                 <Button onClick={() => handleSave("appearance", appearanceSettings, "Appearance")} className="gap-2" disabled={updateSetting.isPending}>
                   {updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
                   Save Changes
@@ -1287,6 +1375,57 @@ export default function AdminSettings() {
                       />
                     </div>
                   )}
+              
+              <div className="flex items-center justify-between pb-3 pt-3">
+                <label className="text-sm font-medium">Product Image Width (px)</label>
+                <Input 
+                  type="number" 
+                  value={emailSettings.productImageWidth || "40"} 
+                  onChange={(e) => setEmailSettings({ ...emailSettings, productImageWidth: e.target.value })}
+                  className="w-24 h-9"
+                  title="Product Image Width"
+                  placeholder="40"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pb-3 pt-3 border-t border-border mt-4">
+                <label className="text-sm font-medium">Email Background Color</label>
+                <div className="flex gap-2">
+                  <Input 
+                    type="color" 
+                    value={emailSettings.emailBackgroundColor || "#ffffff"} 
+                    onChange={(e) => setEmailSettings({ ...emailSettings, emailBackgroundColor: e.target.value })}
+                    className="w-16 h-9 p-1"
+                  />
+                  <Input 
+                    type="text" 
+                    value={emailSettings.emailBackgroundColor || "#ffffff"} 
+                    onChange={(e) => setEmailSettings({ ...emailSettings, emailBackgroundColor: e.target.value })}
+                    className="w-24 h-9"
+                    placeholder="#ffffff"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pb-3 pt-3 border-t border-border mt-4">
+                <label className="text-sm font-medium">Email Button Color</label>
+                <div className="flex gap-2">
+                  <Input 
+                    type="color" 
+                    value={emailSettings.emailButtonColor || "#3b82f6"} 
+                    onChange={(e) => setEmailSettings({ ...emailSettings, emailButtonColor: e.target.value })}
+                    className="w-16 h-9 p-1"
+                  />
+                  <Input 
+                    type="text" 
+                    value={emailSettings.emailButtonColor || "#3b82f6"} 
+                    onChange={(e) => setEmailSettings({ ...emailSettings, emailButtonColor: e.target.value })}
+                    className="w-24 h-9"
+                    placeholder="#3b82f6"
+                  />
+                </div>
+              </div>
+
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium">Abandoned Checkout Reminders (after 24h)</label>
                     <Switch 

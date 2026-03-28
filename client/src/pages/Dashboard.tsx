@@ -1,4 +1,4 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { formatPrice, getOrderStatusColor, getOrderStatusLabel } from "@/lib/cart";
@@ -18,19 +18,25 @@ import {
   Heart,
   Trash2,
   Truck,
+  Phone,
   User,
+  XCircle,
+  RefreshCw,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import ProductCard from "@/components/ProductCard";
 import StoreLoader from "@/components/StoreLoader";
+import { MapView } from "@/components/Map";
 
 type Tab = "overview" | "orders" | "addresses" | "wishlist" | "account";
 
@@ -277,22 +283,86 @@ function OrdersList() {
 
 // ─── Order Detail ─────────────────────────────────────────────────────────────
 function OrderDetail({ orderId }: { orderId: number }) {
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const { data, isLoading } = trpc.orders.detail.useQuery({ orderId }, {
     refetchInterval: 5000, // Fast polling (5s) for live order tracking!
   });
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
 
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const markerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
+  const [driverLocation, setDriverLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
+
+  const cancelOrder = trpc.orders.cancel.useMutation({
+    onSuccess: () => {
+      toast.success("Order cancelled successfully.");
+      utils.orders.detail.invalidate({ orderId });
+      utils.orders.myOrders.invalidate();
+      setIsCancelModalOpen(false);
+      setCancellationReason("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const syncCart = trpc.cart.syncFromGuest.useMutation();
+
+  useEffect(() => {
+    if (!data?.order || (data.order.status !== "shipped" && data.order.status !== "out_for_delivery")) return;
+
+    // Adjust URL to point to your FastAPI backend
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/delivery/${orderId}`;
+    
+    const ws = new WebSocket(wsUrl);
+    
+    ws.onmessage = (event) => {
+      try {
+        const loc = JSON.parse(event.data);
+        if (loc.lat && loc.lng) {
+          const position = { lat: parseFloat(loc.lat), lng: parseFloat(loc.lng) };
+          setDriverLocation(position);
+          
+          if (mapRef.current && window.google) {
+            mapRef.current.panTo(position); // Auto-center map on the moving driver
+            
+            if (!markerRef.current) {
+              const truckIcon = document.createElement("div");
+              truckIcon.innerHTML = "🚚";
+              truckIcon.className = "bg-white p-2 rounded-full shadow-lg text-2xl border-2 border-[var(--brand)] flex items-center justify-center";
+              
+              markerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
+                map: mapRef.current,
+                position,
+                content: truckIcon,
+                title: "Delivery Driver"
+              });
+            } else {
+              markerRef.current.position = position;
+            }
+          }
+        }
+      } catch (e) {
+        console.error("WebSocket message error:", e);
+      }
+    };
+    
+    return () => ws.close();
+  }, [data?.order?.status, orderId]);
+
   if (isLoading) return <div className="flex items-center justify-center py-20"><StoreLoader /></div>;
   if (!data) return <div className="text-center py-20 text-muted-foreground">Order not found</div>;
 
-  const { order, items, history, payment } = data;
+  const { order, items, history, payment, agent } = data;
 
   const handleGenerateReceipt = () => {
     const storeName = settings?.general?.storeName || "Store";
     const logoUrl = settings?.appearance?.logoUrl;
-    const address = settings?.general?.address || "123 Tech Avenue, Silicon Valley, CA 94025";
-    const contactEmail = settings?.general?.contactEmail || "support@example.com";
+    const address = settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City";
+  const contactEmail = settings?.general?.contactEmail || "support@company.com";
     const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
     const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands.";
     
@@ -391,6 +461,23 @@ function OrderDetail({ orderId }: { orderId: number }) {
     printWindow.document.close();
   };
 
+  const handleReorder = async () => {
+    if (!data) return;
+    try {
+      if (isAuthenticated) {
+        await syncCart.mutateAsync(data.items.map((i: any) => ({
+          productId: i.productId,
+          quantity: i.quantity,
+        })));
+        utils.cart.get.invalidate();
+      }
+      toast.success("Items added to your cart!");
+      navigate("/cart");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to reorder items.");
+    }
+  };
+
   const trackingStages = [
     "pending",
     "payment_confirmed",
@@ -402,7 +489,7 @@ function OrderDetail({ orderId }: { orderId: number }) {
   const currentStageIndex = trackingStages.indexOf(order.status);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 relative">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <Link href="/dashboard/orders" className="text-sm text-muted-foreground hover:text-foreground">
@@ -411,9 +498,21 @@ function OrderDetail({ orderId }: { orderId: number }) {
           <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
           <span className="text-sm font-mono">{order.orderNumber}</span>
         </div>
-        <Button variant="outline" size="sm" onClick={handleGenerateReceipt} className="gap-2">
-          <Printer className="w-4 h-4" /> Print Receipt
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {["pending", "payment_confirmed", "processing"].includes(order.status) && (
+            <Button variant="destructive" size="sm" onClick={() => setIsCancelModalOpen(true)} disabled={cancelOrder.isPending} className="gap-2">
+              <XCircle className="w-4 h-4" /> {cancelOrder.isPending ? "Cancelling..." : "Cancel Order"}
+            </Button>
+          )}
+          {["delivered", "cancelled", "refunded"].includes(order.status) && (
+            <Button variant="default" size="sm" onClick={handleReorder} disabled={syncCart.isPending} className="gap-2 bg-[var(--brand)] text-white hover:opacity-90">
+              <RefreshCw className="w-4 h-4" /> {syncCart.isPending ? "Adding..." : "Reorder"}
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={handleGenerateReceipt} className="gap-2">
+            <Printer className="w-4 h-4" /> Print Receipt
+          </Button>
+        </div>
       </div>
 
       {/* Tracking timeline */}
@@ -459,6 +558,41 @@ function OrderDetail({ orderId }: { orderId: number }) {
         </div>
       </div>
 
+      {/* Live Delivery Tracking */}
+      {(order.status === "shipped" || order.status === "out_for_delivery") && (
+        <div className="bg-card border border-border rounded-xl p-5 mt-5 shadow-sm">
+          <h2 className="font-display font-semibold mb-4 flex items-center gap-2">
+            <MapPin className="w-4.5 h-4.5 text-[var(--brand)]" /> Live Delivery Tracking
+          </h2>
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="md:col-span-1 space-y-4">
+              <div className="p-4 bg-muted/40 rounded-lg border border-border">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Delivery Agent</p>
+                <p className="font-medium text-foreground">{agent?.name || "Assigned Driver"}</p>
+                <p className="text-sm text-muted-foreground mt-1">Vehicle: {agent?.vehicleNumber || "Pending"}</p>
+                <Button variant="outline" className="w-full mt-3 gap-2 hover:bg-[var(--brand)] hover:text-white transition-colors" onClick={() => window.open(`tel:${agent?.phone || ""}`)} disabled={!agent?.phone}>
+                  <Phone className="w-4 h-4" /> Call Agent
+                </Button>
+              </div>
+              <div className="p-4 bg-muted/40 rounded-lg border border-border">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Delivery OTP</p>
+                <p className="font-mono text-2xl font-bold tracking-widest text-[var(--brand)]">{order.deliveryOtp || "----"}</p>
+                <p className="text-xs text-muted-foreground mt-1">Provide this code to the agent upon arrival.</p>
+              </div>
+            </div>
+            <div className="md:col-span-2 rounded-lg overflow-hidden border border-border h-[280px] bg-muted relative">
+              <MapView 
+                initialZoom={14} 
+                onMapReady={(map) => {
+                  mapRef.current = map;
+                  if (driverLocation) map.setCenter(driverLocation);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Items */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="font-display font-semibold mb-4">Items</h2>
@@ -484,6 +618,37 @@ function OrderDetail({ orderId }: { orderId: number }) {
           <div className="flex justify-between font-display font-bold text-base pt-1 border-t border-border"><span>Total</span><span>{formatPrice(order.total)}</span></div>
         </div>
       </div>
+
+      {isCancelModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <Card className="w-full max-w-md shadow-2xl border-border overflow-hidden animate-in zoom-in-95 duration-200">
+            <form onSubmit={(e) => { e.preventDefault(); cancelOrder.mutate({ orderNumber: order.orderNumber, reason: cancellationReason }); }}>
+              <div className="p-6 space-y-4">
+                <h3 className="text-lg font-bold">Cancel Order</h3>
+                <p className="text-sm text-muted-foreground">Are you sure you want to cancel this order? This action cannot be undone.</p>
+                <div className="space-y-2">
+                  <Label htmlFor="cancellationReason">Reason for cancellation (optional)</Label>
+                  <Textarea
+                    id="cancellationReason"
+                    value={cancellationReason}
+                    onChange={(e) => setCancellationReason(e.target.value)}
+                    placeholder="e.g., Ordered by mistake, found a better price, etc."
+                    autoFocus
+                  />
+                </div>
+              </div>
+              <div className="p-4 bg-muted/40 border-t border-border flex justify-end gap-3">
+                <Button type="button" variant="outline" onClick={() => setIsCancelModalOpen(false)}>
+                  Back
+                </Button>
+                <Button type="submit" variant="destructive" disabled={cancelOrder.isPending}>
+                  {cancelOrder.isPending ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Cancelling...</> : "Confirm Cancellation"}
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,9 +1,16 @@
 // Guest cart stored in localStorage
 export const GUEST_CART_KEY = "nexus_guest_cart";
 
+// New, richer interface for guest cart items
 export interface GuestCartItem {
   productId: number;
   quantity: number;
+  // Snapshot data for instant UI rendering
+  name?: string;
+  price?: string;
+  image?: string;
+  slug?: string;
+  stock?: number;
 }
 
 export function getGuestCart(): GuestCartItem[] {
@@ -23,13 +30,22 @@ export function clearGuestCart(): void {
   localStorage.removeItem(GUEST_CART_KEY);
 }
 
-export function addToGuestCart(productId: number, quantity: number = 1): void {
+// Modify addToGuestCart to accept the full product snapshot
+export function addToGuestCart(product: any, quantity: number = 1): void {
   const cart = getGuestCart();
-  const existing = cart.find((i) => i.productId === productId);
+  const existing = cart.find((i) => i.productId === product.id);
   if (existing) {
-    existing.quantity += quantity;
+    existing.quantity = Math.min(product.stock, existing.quantity + quantity);
   } else {
-    cart.push({ productId, quantity });
+    cart.push({
+      productId: product.id,
+      quantity,
+      name: product.name,
+      price: product.price,
+      image: (product.images as string[])?.[0],
+      slug: product.slug,
+      stock: product.stock,
+    });
   }
   setGuestCart(cart);
 }
@@ -51,13 +67,25 @@ export function removeFromGuestCart(productId: number): void {
 
 export function formatPrice(price: string | number): string {
   const num = typeof price === "string" ? parseFloat(price) : price;
-  let currency = "USD";
+  if (isNaN(num)) return "Ksh0.00";
+
+  let currency = "KES";
+  let rates: Record<string, number> | null = null;
+
   try {
-    currency = localStorage.getItem("nexus_currency") || "USD";
+    currency = localStorage.getItem("nexus_currency") || "KES";
+    const ratesStr = localStorage.getItem("nexus_exchange_rates");
+    if (ratesStr) rates = JSON.parse(ratesStr);
   } catch (e) {
     // ignore localStorage errors in strict environments
   }
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(num);
+
+  let finalPrice = num;
+  if (rates && currency !== "KES" && rates[currency]) {
+    finalPrice = num * rates[currency];
+  }
+
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(finalPrice);
 }
 
 export function getOrderStatusLabel(status: string): string {

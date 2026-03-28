@@ -6,15 +6,185 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
-import { Loader2, Lock, Mail, User, Eye, EyeOff } from "lucide-react";
+import { Loader2, Lock, Mail, User, Eye, EyeOff, Phone } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 
+function ResetPasswordForm({ resetData, resetPassword, resendCode, onBackToLogin }: any) {
+  const [otpCode, setOtpCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [resendTimer, setResendTimer] = useState(60);
+
+  useEffect(() => {
+    if (resendTimer > 0) {
+      const timer = setTimeout(() => setResendTimer((prev) => prev - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendTimer]);
+
+  const validatePassword = (pwd: string) => {
+    if (pwd.length < 8) return "Password must be at least 8 characters long";
+    if (!/[A-Z]/.test(pwd)) return "Password must contain an uppercase letter";
+    if (!/[a-z]/.test(pwd)) return "Password must contain a lowercase letter";
+    if (!/[0-9]/.test(pwd)) return "Password must contain a number";
+    if (!/[^A-Za-z0-9]/.test(pwd)) return "Password must contain a symbol";
+    return null;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <div className="relative w-28 h-28 mx-auto mb-6 flex items-center justify-center">
+          <div className="absolute inset-0 bg-[var(--brand)]/10 rounded-full blur-2xl animate-pulse" />
+          <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground relative z-10">
+            <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" className="text-[var(--brand)]" fill="currentColor" fillOpacity="0.1" />
+            <path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7V11" stroke="currentColor" strokeWidth="1.5" />
+            <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="currentColor" strokeWidth="1" />
+            <path d="M15 3.5l1.5-1.5M9 3.5L7.5 2" stroke="currentColor" strokeWidth="1.5" className="text-[var(--brand)] animate-pulse" />
+          </svg>
+        </div>
+        <h1 className="text-2xl font-bold font-display">Reset Password</h1>
+        <p className="text-muted-foreground text-sm mt-2">
+          Enter the 6-digit code sent to <strong>{resetData.email}</strong> and your new password.
+        </p>
+      </div>
+
+      <form onSubmit={(e) => { 
+        e.preventDefault(); 
+        if (password !== confirmPassword) return toast.error("Passwords do not match");
+        const passwordError = validatePassword(password);
+        if (passwordError) return toast.error(passwordError);
+        resetPassword.mutate({ token: resetData.token, code: otpCode, newPassword: password }); 
+      }} className="space-y-6">
+        
+        <div className="space-y-2 text-center">
+          <Label htmlFor="resetOtpCode">Reset Code</Label>
+          <div className="relative flex justify-center gap-2 mt-2">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div
+                key={i}
+                className={`w-12 h-14 border-2 rounded-lg flex items-center justify-center text-2xl font-bold font-mono transition-all ${
+                  otpCode.length === i ? "border-[var(--brand)] ring-4 ring-[var(--brand)]/20" : otpCode.length > i ? "border-foreground" : "border-border bg-muted/30"
+                }`}
+              >
+                {otpCode[i] || ""}
+              </div>
+            ))}
+            <input id="resetOtpCode" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="newPassword">New Password</Label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+              <Input id="newPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground transition-colors">
+                {showPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirmNewPassword">Confirm New Password</Label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+              <Input id="confirmNewPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+            </div>
+          </div>
+        </div>
+        <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={otpCode.length !== 6}>Update Password</Button>
+      </form>
+      
+      <div className="text-center mt-6 space-y-4">
+        {resendTimer > 0 ? (
+          <p className="text-sm text-muted-foreground">Resend code in <span className="font-medium text-foreground">{resendTimer}s</span></p>
+        ) : (
+          <button type="button" onClick={() => { resendCode.mutate({ email: resetData.email }); setResendTimer(60); }} className="text-sm font-medium text-[var(--brand)] hover:underline" disabled={resendCode.isPending}>Resend Code</button>
+        )}
+        <div>
+          <button type="button" onClick={onBackToLogin} className="text-sm text-muted-foreground hover:underline">← Back to Login</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VerifyEmailForm({ verificationData, verifyEmail, resendVerification, onBackToLogin }: any) {
+  const [otpCode, setOtpCode] = useState("");
+  const [resendTimer, setResendTimer] = useState(60);
+
+  useEffect(() => {
+    if (resendTimer > 0) {
+      const timer = setTimeout(() => setResendTimer((prev) => prev - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendTimer]);
+
+  return (
+    <div className="space-y-6">
+      <div className="text-center mb-8">
+        <div className="relative w-28 h-28 mx-auto mb-6 flex items-center justify-center">
+          <div className="absolute inset-0 bg-[var(--brand)]/10 rounded-full blur-2xl animate-pulse" />
+          <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground relative z-10">
+            <path d="M4 7.00005L10.2 11.65C11.2667 12.45 12.7333 12.45 13.8 11.65L20 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-[var(--brand)]" fill="currentColor" fillOpacity="0.05" />
+            <circle cx="18" cy="19" r="4.5" fill="var(--background)" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M18 17v4m-2-2h4" className="text-[var(--brand)]" strokeWidth="1.5" />
+          </svg>
+        </div>
+        <h1 className="text-2xl font-bold font-display">Check your email</h1>
+        <p className="text-muted-foreground text-sm mt-2">
+          We've sent a 6-digit verification code to <strong>{verificationData.email}</strong>.
+        </p>
+      </div>
+
+      <form onSubmit={(e) => { e.preventDefault(); verifyEmail.mutate({ token: verificationData.token, code: otpCode }); }} className="space-y-6">
+        <div className="space-y-2 text-center">
+          <Label htmlFor="otpCode">Verification Code</Label>
+          <div className="relative flex justify-center gap-2 mt-2">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div
+                key={i}
+                className={`w-12 h-14 border-2 rounded-lg flex items-center justify-center text-2xl font-bold font-mono transition-all ${
+                  otpCode.length === i ? "border-[var(--brand)] ring-4 ring-[var(--brand)]/20" : otpCode.length > i ? "border-foreground" : "border-border bg-muted/30"
+                }`}
+              >
+                {otpCode[i] || ""}
+              </div>
+            ))}
+            <input id="otpCode" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
+          </div>
+        </div>
+        <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={verifyEmail.isPending || otpCode.length !== 6}>
+          Verify Account
+        </Button>
+      </form>
+      
+      <div className="text-center mt-6 space-y-4">
+        {resendTimer > 0 ? (
+          <p className="text-sm text-muted-foreground">Resend code in <span className="font-medium text-foreground">{resendTimer}s</span></p>
+        ) : (
+          <button type="button" onClick={() => { resendVerification.mutate({ email: verificationData.email }); setResendTimer(60); }} className="text-sm font-medium text-[var(--brand)] hover:underline" disabled={resendVerification.isPending}>Resend Code</button>
+        )}
+        <div>
+          <button type="button" onClick={onBackToLogin} className="text-sm text-muted-foreground hover:underline">← Back to Login</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Auth() {
+  const [, navigate] = useLocation();
   const params = new URLSearchParams(window.location.search);
   const redirectUrl = params.get("redirect") || "/dashboard";
   const oauthError = params.get("error");
   const mode = params.get("mode");
+  const prefillEmail = params.get("email") || "";
+  const claimOrderNumber = params.get("claimOrder") || undefined;
 
   const [isLogin, setIsLogin] = useState(mode !== "register");
   const [isForgotPassword, setIsForgotPassword] = useState(false);
@@ -35,20 +205,13 @@ export default function Auth() {
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [verificationData, setVerificationData] = useState<{ token: string; email: string } | null>(null);
   const [resetData, setResetData] = useState<{ token: string; email: string } | null>(null);
-  const [otpCode, setOtpCode] = useState("");
-  const [resendTimer, setResendTimer] = useState(0);
   const [oauthLoading, setOauthLoading] = useState<"google" | "facebook" | null>(null);
-
-  useEffect(() => {
-    if (resendTimer > 0) {
-      const timer = setTimeout(() => setResendTimer((prev) => prev - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [resendTimer]);
   const [form, setForm] = useState({ 
     firstName: "", 
     lastName: "", 
-    email: "", 
+    surname: "",
+    phone: "",
+    email: prefillEmail, 
     password: "", 
     confirmPassword: "", 
     acceptTerms: false, 
@@ -56,36 +219,12 @@ export default function Auth() {
   });
   const utils = trpc.useUtils();
 
-  const syncCart = trpc.cart.syncFromGuest.useMutation();
-
-  const handleSuccess = (message: string) => {
-    toast.success(message);
-    
-    let parsedItems = [];
-    try {
-      const guestItems = localStorage.getItem("nexus_guest_cart");
-      parsedItems = guestItems ? JSON.parse(guestItems) : [];
-    } catch (e) {
-      parsedItems = [];
-    }
-    
-    if (parsedItems.length > 0) {
-      syncCart.mutate(parsedItems, {
-        onSuccess: () => {
-          localStorage.removeItem("nexus_guest_cart");
-          window.location.href = redirectUrl;
-        },
-        onError: () => {
-          window.location.href = redirectUrl;
-        }
-      });
-    } else {
-      window.location.href = redirectUrl;
-    }
-  };
-
   const login = trpc.auth.login.useMutation({
-    onSuccess: () => handleSuccess("Successfully logged in"),
+    onSuccess: () => {
+      toast.success("Successfully logged in");
+      window.dispatchEvent(new Event("userAuthChanged"));
+      navigate(redirectUrl, { replace: true });
+    },
     onError: (err) => {
       toast.error(err.message);
       if (err.message.toLowerCase().includes("verify your email")) {
@@ -99,7 +238,6 @@ export default function Auth() {
       toast.success("Account created! Please check your email for the verification code.");
       setVerificationData({ token: data.token, email: data.email });
       setForm(prev => ({ ...prev, password: "", confirmPassword: "" }));
-      setResendTimer(60);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -110,7 +248,6 @@ export default function Auth() {
       setResetData({ token: data.token, email: data.email });
       setIsForgotPassword(false);
       setForm({ ...form, email: "" });
-      setResendTimer(60);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -119,7 +256,6 @@ export default function Auth() {
     onSuccess: () => {
       toast.success("Password updated successfully! Please sign in.");
       setResetData(null);
-      setOtpCode("");
       setForm({ ...form, password: "", confirmPassword: "" });
       setIsLogin(true);
     },
@@ -131,7 +267,6 @@ export default function Auth() {
       toast.success("Verification email resent! Please check your inbox.");
       setUnverifiedEmail(null);
       setVerificationData({ token: data.token, email: data.email });
-      setResendTimer(60);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -140,7 +275,6 @@ export default function Auth() {
     onSuccess: () => {
       toast.success("Email verified successfully! You can now sign in.");
       setVerificationData(null);
-      setOtpCode("");
       setIsLogin(true);
     },
     onError: (err) => toast.error(err.message),
@@ -152,6 +286,26 @@ export default function Auth() {
     if (!/[a-z]/.test(password)) return "Password must contain a lowercase letter";
     if (!/[0-9]/.test(password)) return "Password must contain a number";
     if (!/[^A-Za-z0-9]/.test(password)) return "Password must contain a symbol";
+    return null;
+  };
+
+  const formatPhone = (value: string) => {
+    const numbers = value.replace(/\D/g, "");
+    if (numbers.length === 0) return "";
+    const cc = numbers.slice(0, 1);
+    const area = numbers.slice(1, 4);
+    const prefix = numbers.slice(4, 7);
+    const line = numbers.slice(7, 11);
+    let res = `+${cc}`;
+    if (numbers.length > 1) res += ` (${area}`;
+    if (numbers.length > 4) res += `) ${prefix}`;
+    if (numbers.length > 7) res += `-${line}`;
+    return res;
+  };
+
+  const validatePhone = (phone: string) => {
+    const phoneRegex = /^\+\d{1,3}\s\(\d{3}\)\s\d{3}-\d{4}$/;
+    if (!phoneRegex.test(phone)) return "Phone number must follow the format: +1 (555) 123-4567";
     return null;
   };
 
@@ -168,14 +322,20 @@ export default function Auth() {
       }
       const passwordError = validatePassword(form.password);
       if (passwordError) return toast.error(passwordError);
+
+      const phoneError = validatePhone(form.phone);
+      if (phoneError) return toast.error(phoneError);
+
       if (!form.acceptTerms) {
         return toast.error("Please accept the Terms & Conditions");
       }
-      register.mutate({ name: `${form.firstName} ${form.lastName}`.trim(), email: form.email, password: form.password });
+
+      const fullName = [form.firstName, form.lastName, form.surname].filter(Boolean).join(" ");
+      register.mutate({ name: fullName, email: form.email, password: form.password, phone: form.phone, claimOrderNumber } as any);
     }
   };
 
-  const isPending = login.isPending || register.isPending || syncCart.isPending || forgotPassword.isPending || resetPassword.isPending || resendVerification.isPending || verifyEmail.isPending;
+  const isPending = login.isPending || register.isPending || forgotPassword.isPending || resetPassword.isPending || resendVerification.isPending || verifyEmail.isPending;
 
   return (
     <div className="min-h-screen flex flex-col bg-muted/30">
@@ -191,183 +351,19 @@ export default function Auth() {
           )}
 
           {resetData ? (
-            <div className="space-y-6">
-              <div className="text-center mb-8">
-                <div className="relative w-28 h-28 mx-auto mb-6 flex items-center justify-center">
-                  <div className="absolute inset-0 bg-[var(--brand)]/10 rounded-full blur-2xl animate-pulse" />
-                  <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground relative z-10">
-                    <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" className="text-[var(--brand)]" fill="currentColor" fillOpacity="0.1" />
-                    <path d="M8 11V7C8 4.79086 9.79086 3 12 3C14.2091 3 16 4.79086 16 7V11" stroke="currentColor" strokeWidth="1.5" />
-                    <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="currentColor" strokeWidth="1" />
-                    <path d="M15 3.5l1.5-1.5M9 3.5L7.5 2" stroke="currentColor" strokeWidth="1.5" className="text-[var(--brand)] animate-pulse" />
-                  </svg>
-                </div>
-                <h1 className="text-2xl font-bold font-display">Reset Password</h1>
-                <p className="text-muted-foreground text-sm mt-2">
-                  Enter the 6-digit code sent to <strong>{resetData.email}</strong> and your new password.
-                </p>
-              </div>
-
-              <form onSubmit={(e) => { 
-                e.preventDefault(); 
-                if (form.password !== form.confirmPassword) {
-                  return toast.error("Passwords do not match");
-                }
-                const passwordError = validatePassword(form.password);
-                if (passwordError) return toast.error(passwordError);
-                resetPassword.mutate({ token: resetData.token, code: otpCode, newPassword: form.password }); 
-              }} className="space-y-6">
-                
-                <div className="space-y-2 text-center">
-                  <Label htmlFor="resetOtpCode">Reset Code</Label>
-                  <div className="relative flex justify-center gap-2 mt-2">
-                    {[0, 1, 2, 3, 4, 5].map((i) => (
-                      <div
-                        key={i}
-                        className={`w-12 h-14 border-2 rounded-lg flex items-center justify-center text-2xl font-bold font-mono transition-all ${
-                          otpCode.length === i
-                            ? "border-[var(--brand)] ring-4 ring-[var(--brand)]/20"
-                            : otpCode.length > i
-                            ? "border-foreground"
-                            : "border-border bg-muted/30"
-                        }`}
-                      >
-                        {otpCode[i] || ""}
-                      </div>
-                    ))}
-                    <input
-                      id="resetOtpCode"
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-text"
-                      maxLength={6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      autoFocus
-                      autoComplete="one-time-code"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="newPassword">New Password</Label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                      <Input id="newPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-                      <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground transition-colors">
-                        {showPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="confirmNewPassword">Confirm New Password</Label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                      <Input id="confirmNewPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
-                    </div>
-                  </div>
-                </div>
-
-                <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={otpCode.length !== 6}>
-                  Update Password
-                </Button>
-              </form>
-              
-              <div className="text-center mt-6 space-y-4">
-                {resendTimer > 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    Resend code in <span className="font-medium text-foreground">{resendTimer}s</span>
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => forgotPassword.mutate({ email: resetData.email })}
-                    className="text-sm font-medium text-[var(--brand)] hover:underline"
-                    disabled={forgotPassword.isPending}
-                  >
-                    Resend Code
-                  </button>
-                )}
-                <div>
-                  <button type="button" onClick={() => { setResetData(null); setOtpCode(""); setIsLogin(true); }} className="text-sm text-muted-foreground hover:underline">
-                    ← Back to Login
-                  </button>
-                </div>
-              </div>
-            </div>
+            <ResetPasswordForm 
+              resetData={resetData} 
+              resetPassword={resetPassword} 
+              resendCode={forgotPassword} 
+              onBackToLogin={() => { setResetData(null); setIsLogin(true); }} 
+            />
           ) : verificationData ? (
-            <div className="space-y-6">
-              <div className="text-center mb-8">
-                <div className="relative w-28 h-28 mx-auto mb-6 flex items-center justify-center">
-                  <div className="absolute inset-0 bg-[var(--brand)]/10 rounded-full blur-2xl animate-pulse" />
-                  <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground relative z-10">
-                    <path d="M4 7.00005L10.2 11.65C11.2667 12.45 12.7333 12.45 13.8 11.65L20 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-[var(--brand)]" fill="currentColor" fillOpacity="0.05" />
-                    <circle cx="18" cy="19" r="4.5" fill="var(--background)" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M18 17v4m-2-2h4" className="text-[var(--brand)]" strokeWidth="1.5" />
-                  </svg>
-                </div>
-                <h1 className="text-2xl font-bold font-display">Check your email</h1>
-                <p className="text-muted-foreground text-sm mt-2">
-                  We've sent a 6-digit verification code to <strong>{verificationData.email}</strong>.
-                </p>
-              </div>
-
-              <form onSubmit={(e) => { e.preventDefault(); verifyEmail.mutate({ token: verificationData.token, code: otpCode }); }} className="space-y-6">
-                <div className="space-y-2 text-center">
-                  <Label htmlFor="otpCode">Verification Code</Label>
-                  <div className="relative flex justify-center gap-2 mt-2">
-                    {[0, 1, 2, 3, 4, 5].map((i) => (
-                      <div
-                        key={i}
-                        className={`w-12 h-14 border-2 rounded-lg flex items-center justify-center text-2xl font-bold font-mono transition-all ${
-                          otpCode.length === i
-                            ? "border-[var(--brand)] ring-4 ring-[var(--brand)]/20"
-                            : otpCode.length > i
-                            ? "border-foreground"
-                            : "border-border bg-muted/30"
-                        }`}
-                      >
-                        {otpCode[i] || ""}
-                      </div>
-                    ))}
-                    <input
-                      id="otpCode"
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-text"
-                      maxLength={6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      autoFocus
-                      autoComplete="one-time-code"
-                    />
-                  </div>
-                </div>
-                <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={isPending || otpCode.length !== 6}>
-                  Verify Account
-                </Button>
-              </form>
-              
-              <div className="text-center mt-6 space-y-4">
-                {resendTimer > 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    Resend code in <span className="font-medium text-foreground">{resendTimer}s</span>
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => resendVerification.mutate({ email: verificationData.email })}
-                    className="text-sm font-medium text-[var(--brand)] hover:underline"
-                    disabled={resendVerification.isPending}
-                  >
-                    Resend Code
-                  </button>
-                )}
-                <div>
-                  <button type="button" onClick={() => { setVerificationData(null); setOtpCode(""); setIsLogin(true); }} className="text-sm text-muted-foreground hover:underline">
-                    ← Back to Login
-                  </button>
-                </div>
-              </div>
-            </div>
+            <VerifyEmailForm 
+              verificationData={verificationData} 
+              verifyEmail={verifyEmail} 
+              resendVerification={resendVerification} 
+              onBackToLogin={() => { setVerificationData(null); setIsLogin(true); }} 
+            />
           ) : (
             <>
           <div className="text-center mb-8">
@@ -384,7 +380,7 @@ export default function Auth() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {!isLogin && !isForgotPassword && (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="firstName">First Name</Label>
                   <div className="relative">
@@ -399,14 +395,31 @@ export default function Auth() {
                     <Input id="lastName" required placeholder="Last Name" className="pl-10" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
                   </div>
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="surname">Surname (Optional)</Label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input id="surname" placeholder="Surname" className="pl-10" value={form.surname} onChange={(e) => setForm({ ...form, surname: e.target.value })} />
+                  </div>
+                </div>
               </div>
             )}
             
+            {!isLogin && !isForgotPassword && (
+              <div className="space-y-2">
+                <Label htmlFor="phone">Phone Number</Label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Input id="phone" required placeholder="+1 (555) 123-4567" className="pl-10" value={form.phone} onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })} />
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="email">Email Address</Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input id="email" type="email" required placeholder="email@example.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                <Input id="email" type="email" required placeholder="name@company.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               </div>
             </div>
 

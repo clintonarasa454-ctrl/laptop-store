@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useState, useEffect, useRef } from "react";
+import { useAuth } from "@/pages/useAuth";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -25,16 +25,40 @@ import {
   Loader2,
   Eye,
   EyeOff,
-  ShieldAlert
+  ShieldAlert,
+  Truck,
+  Sparkles,
+  RotateCcw,
+  Mic,
+  Volume2,
+  VolumeX
 } from "lucide-react";
 import { AdminSearch } from "@/components/AdminSearch";
 import { trpc } from "@/lib/trpc";
+import { useAIWorkflow, RecordedAction } from "@/contexts/AIWorkflowContext";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
   activeTab?: string;
+}
+
+function TypewriterText({ text, onComplete, renderContent }: { text: string, onComplete: () => void, renderContent: (content: string) => any }) {
+  const [displayed, setDisplayed] = useState("");
+  useEffect(() => {
+    let i = 0;
+    const timer = setInterval(() => {
+      i += 3;
+      setDisplayed(text.slice(0, i));
+      if (i >= text.length) {
+        clearInterval(timer);
+        onComplete();
+      }
+    }, 15);
+    return () => clearInterval(timer);
+  }, [text, onComplete]);
+  return <>{renderContent(displayed)}<span className="inline-block w-1.5 h-3.5 ml-1 align-middle bg-[var(--brand)] animate-pulse" /></>;
 }
 
 export default function AdminLayout({ children, activeTab = "dashboard" }: AdminLayoutProps) {
@@ -51,6 +75,168 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     newPassword: "",
   });
 
+  // --- AI Assistant Hooks ---
+  const [aiChatOpen, setAiChatOpen] = useState(() => {
+    try { return sessionStorage.getItem("nexus_admin_ai_open") === "true"; } catch { return false; }
+  });
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [chatPosition, setChatPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const { logAction } = useAIWorkflow();
+  const [streamingMessageIndex, setStreamingMessageIndex] = useState<number | null>(null);
+
+  // Voice Search State
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const [isMuted, setIsMuted] = useState(true);
+
+  const speakResponse = (text: string) => {
+    if (isMuted || typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const cleanText = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1').replace(/[*_#`]/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.onresult = (event: any) => {
+          const transcript = Array.from(event.results)
+            .map((result: any) => result[0].transcript)
+            .join("");
+          setChatInput(transcript);
+        };
+        recognition.onerror = () => setIsListening(false);
+        recognition.onend = () => setIsListening(false);
+        recognitionRef.current = recognition;
+      }
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) { recognitionRef.current?.stop(); setIsListening(false); } 
+    else { if (recognitionRef.current) { recognitionRef.current.start(); setIsListening(true); toast.info("Listening..."); } else { toast.error("Voice input is not supported in your browser."); } }
+  };
+
+  const executeCommands = (commands: RecordedAction[]) => {
+    if (!commands || commands.length === 0) return;
+
+    toast.info(`Starting workflow execution...`);
+
+    commands.forEach((command, index) => {
+      // Stagger execution to make it observable
+      setTimeout(() => {
+        toast(`Step ${index + 1}: ${command.description}`);
+        if (command.type === 'navigate') {
+          setLocation(command.payload.path);
+        } else if (command.type === 'click') {
+          const el = document.querySelector(command.payload.selector) as HTMLElement;
+          if (el) el.click();
+          else toast.error(`Action failed: Could not find ${command.payload.selector}`);
+        }
+      }, (index + 1) * 1500); // 1.5s delay between steps
+    });
+  };
+
+  const aiMutation = trpc.ai.chat.useMutation({
+    onSuccess: (data) => {
+      setChatMessages(prev => {
+        const next = [...prev, { role: 'assistant' as const, content: data.reply }];
+        setStreamingMessageIndex(next.length - 1);
+        return next as { role: "user" | "assistant"; content: string }[];
+      });
+      speakResponse(data.reply);
+    },
+    onError: (error) => {
+      let errorMessage = "Sorry, I ran into a network error. Please try again.";
+      if (error.message.includes('quota') || error.message.includes('429')) {
+        errorMessage = "The AI is currently unavailable due to high traffic or billing issues. Please check your plan and billing details, then try again later.";
+      }
+      setChatMessages(prev => [...prev, { role: 'assistant' as const, content: errorMessage }] as { role: "user" | "assistant"; content: string }[]);
+    }
+  });
+
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages, aiChatOpen]);
+
+  // Auto-scroll actively while streaming
+  useEffect(() => {
+    if (streamingMessageIndex !== null) {
+      const interval = setInterval(() => {
+        if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [streamingMessageIndex]);
+
+  useEffect(() => { sessionStorage.setItem("nexus_admin_ai_open", String(aiChatOpen)); }, [aiChatOpen]);
+  useEffect(() => { sessionStorage.setItem("nexus_admin_ai_messages", JSON.stringify(chatMessages)); }, [chatMessages]);
+
+  const handleAiSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || aiMutation.isPending) return;
+    const userMsg = chatInput.trim();
+    setChatInput("");
+    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: userMsg }];
+    setChatMessages(newMessages);
+    aiMutation.mutate({ message: userMsg, history: newMessages.slice(1) });
+  };
+
+  const handleNewChat = () => {
+    const displayName = user?.name || "Admin";
+    setChatMessages([{ role: 'assistant', content: `Hi, ${displayName}! I'm your admin assistant. How can I help?` }]);
+    setChatInput("");
+    toast.success("New chat started!");
+  };
+
+  const adminSuggestedPrompts = [
+    "Summarize today's revenue",
+    "Are there any low stock items?",
+    "Show pending orders",
+  ];
+
+  const handleSuggestedPrompt = (prompt: string) => {
+    if (aiMutation.isPending) return;
+    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: prompt }];
+    setChatMessages(newMessages);
+    aiMutation.mutate({ message: prompt, history: newMessages.slice(1) });
+  };
+
+  const renderMessageContent = (content: string) => {
+    const linkParts = content.split(/\[([^\]]+)\]\(([^)]+)\)/g);
+    const elements = [];
+    for (let i = 0; i < linkParts.length; i += 3) {
+      const textPart = linkParts[i];
+      const boldParts = textPart.split(/(\*\*.*?\*\*)/g);
+      boldParts.forEach((part, j) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          elements.push(<strong key={`bold-${i}-${j}`}>{part.slice(2, -2)}</strong>);
+        } else if (part) {
+          const lines = part.split('\n');
+          lines.forEach((line, k) => {
+            elements.push(<span key={`text-${i}-${j}-${k}`}>{line}</span>);
+            if (k < lines.length - 1) elements.push(<br key={`br-${i}-${j}-${k}`} />);
+          });
+        }
+      });
+      if (i + 1 < linkParts.length) {
+        elements.push(<Link key={`link-${i}`} href={linkParts[i + 2]} onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }} className="text-[var(--brand)] hover:underline font-semibold transition-colors">{linkParts[i + 1]}</Link>);
+      }
+    }
+    return elements;
+  };
+
   useEffect(() => {
     if (user) {
       setProfileForm(prev => {
@@ -59,6 +245,13 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
         if (prev.name === name && prev.email === email) return prev;
         return { ...prev, name, email };
       });
+      // Initialize AI chat
+      const saved = sessionStorage.getItem("nexus_admin_ai_messages");
+      if (saved) {
+        try { setChatMessages(JSON.parse(saved)); } catch {}
+      } else {
+        setChatMessages([{ role: 'assistant', content: `Hi, ${user.name || 'Admin'}! I'm your admin assistant. How can I help?` }]);
+      }
     }
   }, [user]);
 
@@ -132,17 +325,18 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
             <div className="space-y-2">
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input type="email" required placeholder="Enter email" className="pl-10" value={adminLoginForm.email} onChange={(e) => setAdminLoginForm({ ...adminLoginForm, email: e.target.value })} />
+                <Input type="email" aria-label="Email address" required placeholder="Enter email" className="pl-10" value={adminLoginForm.email} onChange={(e) => setAdminLoginForm({ ...adminLoginForm, email: e.target.value })} />
               </div>
             </div>
             <div className="space-y-2">
               <div className="relative">
                 <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input type={showPassword ? "text" : "password"} required placeholder="Enter password" className="pl-10 pr-10" value={adminLoginForm.password} onChange={(e) => setAdminLoginForm({ ...adminLoginForm, password: e.target.value })} />
+                <Input type={showPassword ? "text" : "password"} aria-label="Password" required placeholder="Enter password" className="pl-10 pr-10" value={adminLoginForm.password} onChange={(e) => setAdminLoginForm({ ...adminLoginForm, password: e.target.value })} />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -208,7 +402,9 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     { id: "orders", label: "Orders", icon: ShoppingCart, href: "/admin/orders" },
     { id: "payments", label: "Payments", icon: CreditCard, href: "/admin/payments" },
     { id: "customers", label: "Customers", icon: Users, href: "/admin/customers" },
+    { id: "drivers", label: "Drivers", icon: Truck, href: "/admin/drivers" },
     { id: "content", label: "Content", icon: FileText, href: "/admin/content" },
+    { id: "ai", label: "AI Settings", icon: Sparkles, href: "/admin/ai" },
     { id: "settings", label: "Settings", icon: Settings, href: "/admin/settings" },
   ];
 
@@ -233,6 +429,7 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="p-1 hover:bg-secondary rounded-lg transition-colors"
+            aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
           >
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
@@ -246,7 +443,10 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
             return (
               <button
                 key={item.id}
-                onClick={() => setLocation(item.href)}
+                onClick={() => {
+                  logAction({ type: 'navigate', payload: { path: item.href }, description: `Navigated to ${item.label} page` });
+                  setLocation(item.href);
+                }}
                 className={`relative w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
                   isActive
                     ? "bg-[var(--brand)]/10 text-[var(--brand)] font-bold shadow-sm"
@@ -275,7 +475,11 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
           )}
           
           <Button
-            onClick={() => setShowEditProfile(true)}
+            id="edit-profile-btn"
+            onClick={() => {
+              logAction({ type: 'click', payload: { selector: '#edit-profile-btn' }, description: "Opened 'Edit Profile' modal" });
+              setShowEditProfile(true);
+            }}
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
@@ -285,7 +489,11 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
           </Button>
 
           <Button
-            onClick={handleLogout}
+            id="sign-out-btn"
+            onClick={() => {
+              logAction({ type: 'click', payload: { selector: '#sign-out-btn' }, description: "Clicked 'Sign Out' button" });
+              handleLogout();
+            }}
             variant="outline"
             size="sm"
             className="w-full justify-start gap-2 text-muted-foreground hover:text-destructive"
@@ -295,7 +503,10 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
           </Button>
           
           <Button
-            onClick={() => setLocation("/")}
+            onClick={() => {
+              logAction({ type: 'navigate', payload: { path: '/' }, description: "Navigated back to the main store" });
+              setLocation("/");
+            }}
             variant="ghost"
             size="sm"
             className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
@@ -315,6 +526,9 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
           </h1>
           <div className="flex items-center gap-4">
             <AdminSearch />
+            <Button variant="ghost" size="icon" onClick={() => setAiChatOpen(!aiChatOpen)} title="Toggle AI Assistant">
+              <Sparkles className="w-5 h-5 text-[var(--brand)]" />
+            </Button>
             <div className="text-sm text-muted-foreground hidden md:block">
               {new Date().toLocaleDateString("en-US", {
                 weekday: "long",
@@ -352,7 +566,7 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                   <h3 className="text-xl font-bold font-display">Admin Profile</h3>
                   <p className="text-xs text-muted-foreground mt-1">Manage your personal information and security.</p>
                 </div>
-                <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setShowEditProfile(false)}>
+                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted shrink-0" onClick={() => setAiChatOpen(false)} aria-label="Close chat">
                   <X size={16} />
                 </Button>
               </div>
@@ -364,12 +578,12 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                   </h4>
                   <div className="space-y-3">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Full Name</label>
-                      <Input value={profileForm.name} onChange={e => setProfileForm({...profileForm, name: e.target.value})} required placeholder="e.g. Jane Doe" className="bg-background" />
+                      <label htmlFor="profile-name" className="text-xs font-medium text-muted-foreground">Full Name</label>
+                      <Input id="profile-name" value={profileForm.name} onChange={e => setProfileForm({...profileForm, name: e.target.value})} required placeholder="e.g. Jane Doe" className="bg-background" />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Email Address</label>
-                      <Input type="email" value={profileForm.email} onChange={e => setProfileForm({...profileForm, email: e.target.value})} required placeholder="admin@example.com" className="bg-background" />
+                      <label htmlFor="profile-email" className="text-xs font-medium text-muted-foreground">Email Address</label>
+                      <Input id="profile-email" type="email" value={profileForm.email} onChange={e => setProfileForm({...profileForm, email: e.target.value})} required placeholder="admin@example.com" className="bg-background" />
                     </div>
                   </div>
                 </div>
@@ -380,25 +594,118 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                   </h4>
                   <div className="p-4 bg-secondary/30 rounded-lg border border-border/50 space-y-3">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">Current Password</label>
-                      <Input type="password" placeholder="Required to save any changes" value={profileForm.currentPassword} onChange={e => setProfileForm({...profileForm, currentPassword: e.target.value})} className="bg-background" required />
+                      <label htmlFor="profile-current-password" className="text-xs font-medium text-muted-foreground">Current Password</label>
+                      <Input id="profile-current-password" type="password" placeholder="Required to save any changes" value={profileForm.currentPassword} onChange={e => setProfileForm({...profileForm, currentPassword: e.target.value})} className="bg-background" required />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-muted-foreground">New Password</label>
-                      <Input type="password" placeholder="Leave blank to keep current password" value={profileForm.newPassword} onChange={e => setProfileForm({...profileForm, newPassword: e.target.value})} className="bg-background" />
+                      <label htmlFor="profile-new-password" className="text-xs font-medium text-muted-foreground">New Password</label>
+                      <Input id="profile-new-password" type="password" placeholder="Leave blank to keep current password" value={profileForm.newPassword} onChange={e => setProfileForm({...profileForm, newPassword: e.target.value})} className="bg-background" />
                     </div>
                   </div>
                 </div>
               </div>
 
               <div className="p-6 bg-muted/40 border-t border-border flex justify-end gap-3">
-                <Button type="button" variant="outline" onClick={() => setShowEditProfile(false)}>Cancel</Button>
-                <Button type="submit" className="bg-primary text-primary-foreground hover:opacity-90 min-w-[120px]" disabled={updateProfileMutation?.isPending}>
+                <Button id="cancel-profile-btn" type="button" variant="outline" onClick={() => {
+                  logAction({ type: 'click', payload: { selector: '#cancel-profile-btn' }, description: "Closed 'Edit Profile' modal" });
+                  setShowEditProfile(false);
+                }}>Cancel</Button>
+                <Button id="save-profile-btn" onClick={() => logAction({ type: 'click', payload: { selector: '#save-profile-btn' }, description: "Clicked 'Save Changes' on Profile" })} type="submit" className="bg-primary text-primary-foreground hover:opacity-90 min-w-[120px]" disabled={updateProfileMutation?.isPending}>
                   {updateProfileMutation?.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : "Save Changes"}
                 </Button>
               </div>
             </form>
           </Card>
+        </div>
+      )}
+
+      {/* Floating AI Chat Card */}
+      {aiChatOpen && (
+        <div 
+          className="fixed bottom-6 right-6 z-[100] transition-opacity duration-300 opacity-100"
+          style={{ transform: `translate3d(${chatPosition.x}px, ${chatPosition.y}px, 0)` }}
+        >
+          <div className="w-80 sm:w-96 h-[30rem] bg-card border border-border shadow-2xl rounded-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div 
+              className={`p-4 border-b border-border bg-[var(--brand)]/5 flex items-center justify-between select-none touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              onPointerDown={(e) => {
+                if ((e.target as HTMLElement).closest('button')) return;
+                setIsDragging(true);
+                dragStartRef.current = { x: e.clientX - chatPosition.x, y: e.clientY - chatPosition.y };
+                (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (!isDragging) return;
+                setChatPosition({ x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y });
+              }}
+              onPointerUp={(e) => {
+                setIsDragging(false);
+                (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+              }}
+            >
+              <div className="flex items-center gap-3 pointer-events-none">
+                <Sparkles className="w-5 h-5 text-[var(--brand)]" />
+                <h3 className="font-semibold text-foreground">Admin Assistant</h3>
+              </div>
+              <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
+                  {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted shrink-0" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }}>
+                  <X size={16} />
+                </Button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3" ref={chatScrollRef}>
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`p-3 rounded-lg text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-[var(--brand)] text-white rounded-br-none' : 'bg-muted text-foreground rounded-tl-none'}`}>
+                    {msg.role === 'assistant' ? (
+                      streamingMessageIndex === i ? (
+                        <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
+                      ) : renderMessageContent(msg.content)
+                    ) : msg.content}
+                  </div>
+                </div>
+              ))}
+              {chatMessages.length === 1 && !aiMutation.isPending && (
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {adminSuggestedPrompts.map(prompt => (
+                    <button 
+                      key={prompt}
+                      onClick={() => handleSuggestedPrompt(prompt)}
+                      className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border rounded-full px-3 py-1.5 transition-colors text-left shadow-sm"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {aiMutation.isPending && (
+                <div className="flex justify-start">
+                  <div className="bg-muted p-3 rounded-lg rounded-tl-none flex items-center gap-1.5 h-10 w-16 justify-center">
+                      <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce" />
+                      <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:150ms]" />
+                      <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:300ms]" />
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-3 border-t border-border bg-background">
+              <form className="flex gap-2" onSubmit={handleAiSubmit}>
+                <div className="relative flex-1">
+                  <Input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about orders, products..."} className="w-full h-9 pl-3 pr-8 text-sm" />
+                  <button type="button" onClick={toggleListening} className={`absolute right-1.5 top-2 transition-colors ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
+                    <Mic className="w-4 h-4" />
+                  </button>
+                </div>
+                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
+              </form>
+            </div>
+          </div>
         </div>
       )}
     </div>

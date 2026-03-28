@@ -1,47 +1,39 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
-import { trpc } from "@/lib/trpc";
-import { clearGuestCart, getGuestCart } from "@/lib/cart";
 import { Lock, Package, ShieldCheck, User } from "lucide-react";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
+import { useCartSync } from "@/components/CartSyncContext";
 
 export default function CheckoutAuth() {
   const { isAuthenticated, loading } = useAuth();
+  const { isSyncing } = useCartSync();
   const [, navigate] = useLocation();
-  const utils = trpc.useUtils();
-
-  const syncCart = trpc.cart.syncFromGuest.useMutation({
-    onSuccess: () => {
-      clearGuestCart();
-      utils.cart.get.invalidate();
-      navigate("/checkout");
-    },
-  });
 
   useEffect(() => {
-    if (!loading && isAuthenticated) {
-      // User just logged in — sync guest cart then proceed
-      const guestCart = getGuestCart();
-      if (guestCart.length > 0) {
-        syncCart.mutate(guestCart);
-      } else {
-        navigate("/checkout");
-      }
+    // If authenticated and not syncing, proceed to checkout.
+    // The AuthProvider handles the sync in the background.
+    // We wait for `isSyncing` to be false to ensure a smooth transition
+    // if a sync was in progress.
+    if (!loading && isAuthenticated && !isSyncing) {
+      navigate("/checkout", { replace: true });
     }
-  }, [isAuthenticated, loading]);
+  }, [isAuthenticated, loading, isSyncing, navigate]);
 
-  if (loading || syncCart.isPending) {
+  // Show a loading screen while auth state is loading, or if a cart sync is in progress.
+  if (loading || (isAuthenticated && isSyncing)) {
     return (
       <div className="min-h-screen flex flex-col">
         <Navbar />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-3">
             <div className="w-10 h-10 rounded-full border-2 border-[var(--brand)] border-t-transparent animate-spin mx-auto" />
-            <p className="text-sm text-muted-foreground">Setting up your checkout...</p>
+            <p className="text-sm text-muted-foreground">
+              {isSyncing ? "Syncing your cart..." : "Setting up your checkout..."}
+            </p>
           </div>
         </div>
         <Footer />
@@ -49,6 +41,7 @@ export default function CheckoutAuth() {
     );
   }
 
+  // If not loading and not authenticated, show the prompt page.
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
@@ -94,7 +87,7 @@ export default function CheckoutAuth() {
             <Button
               variant="outline"
               className="w-full h-11"
-              onClick={() => (window.location.href = getLoginUrl("/checkout"))}
+              onClick={() => (window.location.href = getLoginUrl("/checkout", "register"))}
             >
               Create New Account
             </Button>
@@ -104,6 +97,12 @@ export default function CheckoutAuth() {
               onClick={() => navigate("/cart")}
             >
               ← Back to Cart
+            </Button>
+          </div>
+
+          <div className="mt-8 pt-6 border-t border-border/50">
+            <Button variant="ghost" className="w-full text-muted-foreground hover:text-foreground" onClick={() => navigate("/checkout")}>
+              Continue as Guest
             </Button>
           </div>
 

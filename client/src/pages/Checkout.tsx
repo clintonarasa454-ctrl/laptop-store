@@ -1,6 +1,6 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { trpc } from "@/lib/trpc";
-import { formatPrice, clearGuestCart } from "@/lib/cart";
+import { formatPrice, clearGuestCart, getGuestCart } from "@/lib/cart";
 import {
   Check,
   ChevronRight,
@@ -9,6 +9,7 @@ import {
   MapPin,
   Package,
   Smartphone,
+  Truck,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -24,15 +25,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { KENYA_COUNTIES } from "@/lib/kenya-locations";
 
 type Step = "shipping" | "review" | "payment";
 type PaymentMethod = "mpesa" | "paypal" | "stripe";
 
 interface ShippingForm {
-  fullName: string;
+  firstName: string;
+  lastName: string;
+  email: string;
   phone: string;
   address: string;
+  county: string;
   city: string;
   postalCode: string;
   country: string;
@@ -63,17 +69,39 @@ export default function Checkout() {
   const utils = trpc.useUtils();
   const [step, setStep] = useState<Step>("shipping");
   const [shipping, setShipping] = useState<ShippingForm>({
-    fullName: "",
+    firstName: "",
+    lastName: "",
+    email: "",
     phone: "",
     address: "",
+  county: "",
     city: "",
     postalCode: "",
     country: "United States",
     saveAddress: false,
   });
+
+  const formatPhone = (value: string) => {
+    const numbers = value.replace(/\D/g, "");
+    if (numbers.length === 0) return "";
+    const cc = numbers.slice(0, 1);
+    const area = numbers.slice(1, 4);
+    const prefix = numbers.slice(4, 7);
+    const line = numbers.slice(7, 11);
+    let res = `+${cc}`;
+    if (numbers.length > 1) res += ` (${area}`;
+    if (numbers.length > 4) res += `) ${prefix}`;
+    if (numbers.length > 7) res += `-${line}`;
+    return res;
+  };
+
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("stripe");
   const [orderId, setOrderId] = useState<number | null>(null);
   const [orderNumber, setOrderNumber] = useState<string | null>(null);
+  
+  const [isExpress, setIsExpress] = useState(false);
+  const [discountCode, setDiscountCode] = useState("");
+  const [appliedDiscount, setAppliedDiscount] = useState<{code: string, amount: number} | null>(null);
 
   const { data: cartItems, isLoading: cartLoading } = trpc.cart.get.useQuery(undefined, {
     enabled: isAuthenticated,
@@ -98,14 +126,13 @@ export default function Checkout() {
     onSuccess: (data) => {
       setOrderId(data.orderId);
       setOrderNumber(data.orderNumber);
+      if (!isAuthenticated) {
+        clearGuestCart();
+      }
       setStep("payment");
     },
     onError: (err) => toast.error(err.message),
   });
-
-  useEffect(() => {
-    if (!authLoading && !isAuthenticated) navigate("/checkout/auth");
-  }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
     if (availableMethods.length > 0 && !availableMethods.find((m) => m.id === paymentMethod)) {
@@ -144,18 +171,21 @@ export default function Checkout() {
     );
   }
 
-  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 500;
-  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 15;
+  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 50000;
+  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 50;
+  const expressFee = settings?.shipping?.expressDelivery ? parseFloat(settings.shipping.expressDelivery) : 100;
 
   const subtotal = cartItems.reduce((s, i) => s + parseFloat(i.product.price) * i.quantity, 0);
-  const shippingCost = subtotal >= freeThreshold ? 0 : standardFee;
-  const total = subtotal + shippingCost;
+  const baseShipping = subtotal >= freeThreshold ? 0 : standardFee;
+  const shippingCost = isExpress ? expressFee : baseShipping;
+  const discountAmount = appliedDiscount ? subtotal * 0.1 : 0; // 10% discount logic
+  const total = Math.max(0, subtotal + shippingCost - discountAmount);
 
   const stepIndex = STEPS.findIndex((s) => s.id === step);
 
   const handleShippingSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!shipping.fullName || !shipping.phone || !shipping.address || !shipping.city || !shipping.country) {
+    if (!shipping.firstName || !shipping.lastName || (!isAuthenticated && !shipping.email) || !shipping.phone || !shipping.address || !shipping.city || !shipping.country) {
       toast.error("Please fill in all required fields");
       return;
     }
@@ -164,23 +194,31 @@ export default function Checkout() {
 
   const handlePlaceOrder = () => {
     placeOrder.mutate({
-      shippingFullName: shipping.fullName,
+      shippingFullName: `${shipping.firstName} ${shipping.lastName}`.trim(),
       shippingPhone: shipping.phone,
       shippingAddress: shipping.address,
+      shippingCounty: shipping.country === "Kenya" ? shipping.county : undefined,
       shippingCity: shipping.city,
       shippingPostalCode: shipping.postalCode || undefined,
       shippingCountry: shipping.country,
+      shippingEmail: isAuthenticated ? undefined : shipping.email,
+      guestCartItems: isAuthenticated ? undefined : getGuestCart(),
       paymentMethod,
+      isExpress,
+      discountCode: appliedDiscount?.code,
       saveAddress: shipping.saveAddress,
     });
   };
 
   const loadAddress = (addr: typeof savedAddresses extends (infer T)[] | undefined ? T : never) => {
     if (!addr) return;
+    const parts = addr.fullName.split(" ");
     setShipping((s) => ({
       ...s,
-      fullName: addr.fullName,
+      firstName: parts[0] || "",
+      lastName: parts.slice(1).join(" "),
       phone: addr.phone,
+      county: (addr as any).county || "",
       address: addr.addressLine,
       city: addr.city,
       postalCode: addr.postalCode ?? "",
@@ -258,63 +296,114 @@ export default function Checkout() {
                 <form onSubmit={handleShippingSubmit} className="space-y-4">
                   <div className="grid sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <Label htmlFor="fullName">Full Name *</Label>
+                      <Label htmlFor="firstName">First Name *</Label>
                       <Input
-                        id="fullName"
-                        value={shipping.fullName}
-                        onChange={(e) => setShipping((s) => ({ ...s, fullName: e.target.value }))}
-                      placeholder="First Name Last Name (Optional Sire Name)"
+                        id="firstName"
+                        value={shipping.firstName}
+                        onChange={(e) => setShipping((s) => ({ ...s, firstName: e.target.value }))}
+                        placeholder="First Name"
                         required
                       />
                     </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="lastName">Last Name *</Label>
+                      <Input
+                        id="lastName"
+                        value={shipping.lastName}
+                        onChange={(e) => setShipping((s) => ({ ...s, lastName: e.target.value }))}
+                        placeholder="Last Name"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {!isAuthenticated && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="email">Email Address *</Label>
+                      <Input
+                        id="email"
+                        type="email"
+                        value={shipping.email}
+                        onChange={(e) => setShipping((s) => ({ ...s, email: e.target.value }))}
+                        placeholder="For order receipts and tracking"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div className="grid sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label htmlFor="phone">Phone Number *</Label>
                       <Input
                         id="phone"
                         value={shipping.phone}
-                        onChange={(e) => setShipping((s) => ({ ...s, phone: e.target.value }))}
-                        placeholder="+1 555 123 4567"
+                        onChange={(e) => setShipping((s) => ({ ...s, phone: formatPhone(e.target.value) }))}
+                        placeholder="e.g. +1 (555) 123-4567"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="address">Delivery Address *</Label>
+                      <Input
+                        id="address"
+                        value={shipping.address}
+                        onChange={(e) => setShipping((s) => ({ ...s, address: e.target.value }))}
+                        placeholder="e.g. 123 Business Parkway, Suite 200"
                         required
                       />
                     </div>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <Label htmlFor="address">Delivery Address *</Label>
-                    <Input
-                      id="address"
-                      value={shipping.address}
-                      onChange={(e) => setShipping((s) => ({ ...s, address: e.target.value }))}
-                      placeholder="123 Main Street, Apt 4B"
-                      required
-                    />
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="country">Country *</Label>
+                      <Select
+                        value={shipping.country}
+                        onValueChange={(val) => setShipping((s) => ({ ...s, country: val, county: "", city: "" }))}
+                      >
+                        <SelectTrigger id="country"><SelectValue placeholder="Select country" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Kenya">Kenya</SelectItem>
+                          <SelectItem value="United States">United States</SelectItem>
+                          <SelectItem value="United Kingdom">United Kingdom</SelectItem>
+                          <SelectItem value="Canada">Canada</SelectItem>
+                          <SelectItem value="Australia">Australia</SelectItem>
+                          <SelectItem value="South Africa">South Africa</SelectItem>
+                          <SelectItem value="Nigeria">Nigeria</SelectItem>
+                          <SelectItem value="Germany">Germany</SelectItem>
+                          <SelectItem value="France">France</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {shipping.country === "Kenya" && (
+                      <div className="space-y-1.5">
+                        <Label htmlFor="county">County *</Label>
+                        <Select value={shipping.county} onValueChange={(val) => setShipping((s) => ({ ...s, county: val, city: "" }))} required>
+                          <SelectTrigger id="county"><SelectValue placeholder="Select county" /></SelectTrigger>
+                          <SelectContent>
+                            {Object.keys(KENYA_COUNTIES).sort().map((county) => (
+                              <SelectItem key={county} value={county}>{county}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                   </div>
 
-                  <div className="grid sm:grid-cols-3 gap-4">
+                  <div className="grid sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <Label htmlFor="city">City *</Label>
-                      {availableCities.length > 0 ? (
-                        <Select
-                          value={shipping.city}
-                          onValueChange={(val) => setShipping((s) => ({ ...s, city: val }))}
-                        >
-                          <SelectTrigger id="city">
-                            <SelectValue placeholder="Select city" />
-                          </SelectTrigger>
+                      <Label htmlFor="city">City / Town *</Label>
+                      {shipping.country === "Kenya" && shipping.county && KENYA_COUNTIES[shipping.county] ? (
+                        <Select value={shipping.city} onValueChange={(val) => setShipping((s) => ({ ...s, city: val }))} required>
+                          <SelectTrigger id="city"><SelectValue placeholder="Select city/town" /></SelectTrigger>
                           <SelectContent>
-                            {availableCities.map((city) => (
+                            {KENYA_COUNTIES[shipping.county].map((city) => (
                               <SelectItem key={city} value={city}>{city}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
                       ) : (
-                        <Input
-                          id="city"
-                          value={shipping.city}
-                          onChange={(e) => setShipping((s) => ({ ...s, city: e.target.value }))}
-                          placeholder="City name"
-                          required
-                        />
+                        <Input id="city" value={shipping.city} onChange={(e) => setShipping((s) => ({ ...s, city: e.target.value }))} placeholder="e.g. Westlands" required />
                       )}
                     </div>
                     <div className="space-y-1.5">
@@ -325,28 +414,6 @@ export default function Checkout() {
                         onChange={(e) => setShipping((s) => ({ ...s, postalCode: e.target.value }))}
                         placeholder="10001"
                       />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="country">Country *</Label>
-                      <Select
-                        value={shipping.country}
-                        onValueChange={(val) => setShipping((s) => ({ ...s, country: val, city: "" }))}
-                      >
-                        <SelectTrigger id="country">
-                          <SelectValue placeholder="Select country" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="United States">United States</SelectItem>
-                          <SelectItem value="Kenya">Kenya</SelectItem>
-                          <SelectItem value="United Kingdom">United Kingdom</SelectItem>
-                          <SelectItem value="Canada">Canada</SelectItem>
-                          <SelectItem value="Australia">Australia</SelectItem>
-                          <SelectItem value="South Africa">South Africa</SelectItem>
-                          <SelectItem value="Nigeria">Nigeria</SelectItem>
-                          <SelectItem value="Germany">Germany</SelectItem>
-                          <SelectItem value="France">France</SelectItem>
-                        </SelectContent>
-                      </Select>
                     </div>
                   </div>
 
@@ -380,7 +447,7 @@ export default function Checkout() {
                     <p className="text-sm font-semibold">Shipping To</p>
                     <button onClick={() => setStep("shipping")} className="text-xs text-[var(--brand)] hover:underline">Edit</button>
                   </div>
-                  <p className="text-sm">{shipping.fullName}</p>
+                  <p className="text-sm">{shipping.firstName} {shipping.lastName}</p>
                   <p className="text-sm text-muted-foreground">{shipping.address}, {shipping.city}{shipping.postalCode ? `, ${shipping.postalCode}` : ""}, {shipping.country}</p>
                   <p className="text-sm text-muted-foreground">{shipping.phone}</p>
                 </div>
@@ -393,7 +460,7 @@ export default function Checkout() {
                       <div key={item.productId} className="flex gap-3 items-center">
                         <div className="w-12 h-12 rounded-lg overflow-hidden bg-muted shrink-0">
                           <img
-                            src={images[0] ?? "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=100&q=80"}
+                            src={images[0] ?? "/assets/placeholder.png"}
                             alt={item.product.name}
                             className="w-full h-full object-cover"
                           />
@@ -408,6 +475,22 @@ export default function Checkout() {
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Express Delivery Toggle */}
+                <div className="mb-6 p-4 border border-[var(--brand)]/30 rounded-xl bg-[var(--brand)]/5 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-[var(--brand)]/10 flex items-center justify-center shrink-0">
+                      <Truck className="w-5 h-5 text-[var(--brand)]" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-sm">Express Delivery</p>
+                      <p className="text-xs text-muted-foreground">
+                        Get your order faster for {formatPrice(expressFee)}
+                      </p>
+                    </div>
+                  </div>
+                  <Switch checked={isExpress} onCheckedChange={setIsExpress} />
                 </div>
 
                 {/* Payment method selection */}
@@ -500,12 +583,52 @@ export default function Checkout() {
                     <span className="text-muted-foreground">Shipping</span>
                     <span className={shippingCost === 0 ? "text-green-600" : ""}>{shippingCost === 0 ? "Free" : formatPrice(shippingCost)}</span>
                   </div>
+                  {appliedDiscount && (
+                    <div className="flex justify-between text-green-600 font-medium">
+                      <span>Discount ({appliedDiscount.code})</span>
+                      <span>-{formatPrice(discountAmount)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between font-display font-bold text-base pt-1 border-t border-border">
                     <span>Total</span>
                     <span>{formatPrice(total)}</span>
                   </div>
                 </div>
               </div>
+
+              {/* Discount Code Input */}
+              <div className="border-t border-border pt-4 mt-4">
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="Promo code (e.g. WELCOME10)" 
+                    value={discountCode} 
+                    onChange={(e) => setDiscountCode(e.target.value.toUpperCase())} 
+                    disabled={!!appliedDiscount}
+                    className="h-10 text-sm"
+                  />
+                  <Button 
+                    variant={appliedDiscount ? "destructive" : "secondary"} 
+                    className="h-10 px-4"
+                    onClick={() => {
+                      if (appliedDiscount) {
+                        setAppliedDiscount(null);
+                        setDiscountCode("");
+                        toast.info("Discount removed");
+                      } else {
+                        if (discountCode === "WELCOME10") {
+                          setAppliedDiscount({ code: "WELCOME10", amount: subtotal * 0.1 });
+                          toast.success("Discount applied!");
+                        } else {
+                          toast.error("Invalid or expired discount code");
+                        }
+                      }
+                    }}
+                  >
+                    {appliedDiscount ? "Remove" : "Apply"}
+                  </Button>
+                </div>
+              </div>
+              
             </div>
           </div>
         </div>
@@ -534,7 +657,7 @@ function PaymentStep({
 }) {
   const [mpesaPhone, setMpesaPhone] = useState(shippingPhone);
   const [mpesaCheckoutId, setMpesaCheckoutId] = useState<string | null>(null);
-  const [cardData, setCardData] = useState({ number: "", expiry: "", cvv: "", name: "" });
+  const [cardData, setCardData] = useState({ number: "", expiry: "", cvv: "", firstName: "", lastName: "" });
   const [processing, setProcessing] = useState(false);
   const [paypalOrderId, setPaypalOrderId] = useState<string | null>(null);
   const [paypalUrl, setPaypalUrl] = useState<string | null>(null);
@@ -737,13 +860,23 @@ function PaymentStep({
       {/* Stripe / Card */}
       {paymentMethod === "stripe" && (
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label>Cardholder Name</Label>
-            <Input
-              value={cardData.name}
-              onChange={(e) => setCardData((d) => ({ ...d, name: e.target.value }))}
-              placeholder="First Name Last Name (Optional Sire Name)"
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>First Name</Label>
+              <Input
+                value={cardData.firstName}
+                onChange={(e) => setCardData((d) => ({ ...d, firstName: e.target.value }))}
+                placeholder="First Name"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Last Name</Label>
+              <Input
+                value={cardData.lastName}
+                onChange={(e) => setCardData((d) => ({ ...d, lastName: e.target.value }))}
+                placeholder="Last Name"
+              />
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>Card Number</Label>
@@ -782,10 +915,10 @@ function PaymentStep({
                 cardNumber: cardData.number.replace(/\s/g, ""),
                 expiry: cardData.expiry,
                 cvv: cardData.cvv,
-                cardholderName: cardData.name,
+                cardholderName: `${cardData.firstName} ${cardData.lastName}`.trim(),
               })
             }
-            disabled={isLoading || !cardData.number || !cardData.expiry || !cardData.cvv || !cardData.name}
+            disabled={isLoading || !cardData.number || !cardData.expiry || !cardData.cvv || !cardData.firstName || !cardData.lastName}
             className="w-full bg-[var(--brand)] text-white hover:opacity-90 gap-2"
           >
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}

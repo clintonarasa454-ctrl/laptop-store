@@ -10,6 +10,7 @@ import {
   json,
   longtext,
   index,
+  serial,
 } from "drizzle-orm/mysql-core";
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -50,6 +51,8 @@ export const categories = mysqlTable("categories", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({
   activeIdx: index("active_idx").on(table.active),
+  slugIdx: index("slug_idx").on(table.slug),
+  parentIdIdx: index("parent_id_idx").on(table.parentId),
 }));
 
 export type Category = typeof categories.$inferSelect;
@@ -83,6 +86,8 @@ export const products = mysqlTable("products", {
   skuIdx: index("sku_idx").on(table.sku),
   activeIdx: index("active_idx").on(table.active),
   categoryIdIdx: index("category_id_idx").on(table.categoryId),
+  createdAtIdx: index("created_at_idx").on(table.createdAt),
+  featuredIdx: index("featured_idx").on(table.featured),
 }));
 
 export type Product = typeof products.$inferSelect;
@@ -125,7 +130,7 @@ export type InsertCartItem = typeof cartItems.$inferInsert;
 export const orders = mysqlTable("orders", {
   id: int("id").autoincrement().primaryKey(),
   orderNumber: varchar("orderNumber", { length: 64 }).notNull().unique(),
-  userId: int("userId").notNull(),
+  userId: int("userId"),
   status: mysqlEnum("status", [
     "pending",
     "payment_confirmed",
@@ -138,9 +143,11 @@ export const orders = mysqlTable("orders", {
   ]).default("pending").notNull(),
   // Shipping snapshot
   shippingFullName: varchar("shippingFullName", { length: 256 }).notNull(),
+  shippingEmail: varchar("shippingEmail", { length: 320 }),
   shippingPhone: varchar("shippingPhone", { length: 32 }).notNull(),
   shippingAddress: text("shippingAddress").notNull(),
   shippingCity: varchar("shippingCity", { length: 128 }).notNull(),
+  shippingCounty: varchar("shippingCounty", { length: 128 }),
   shippingPostalCode: varchar("shippingPostalCode", { length: 32 }),
   shippingCountry: varchar("shippingCountry", { length: 128 }).notNull(),
   // Financials
@@ -156,12 +163,15 @@ export const orders = mysqlTable("orders", {
   estimatedDelivery: timestamp("estimatedDelivery"),
   notes: text("notes"),
   abandonedEmailSent: boolean("abandonedEmailSent").default(false).notNull(),
+  deliveryAgentId: int("delivery_agent_id"),
+  deliveryOtp: varchar("delivery_otp", { length: 10 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, (table) => ({
   userIdIdx: index("user_id_idx").on(table.userId),
   statusIdx: index("status_idx").on(table.status),
   createdAtIdx: index("created_at_idx").on(table.createdAt),
+  orderNumberIdx: index("order_number_idx").on(table.orderNumber),
 }));
 
 export type Order = typeof orders.$inferSelect;
@@ -220,7 +230,10 @@ export const payments = mysqlTable("payments", {
   providerResponse: json("providerResponse"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  orderIdIdx: index("order_id_idx").on(table.orderId),
+  transactionIdIdx: index("transaction_id_idx").on(table.transactionId),
+}));
 
 export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = typeof payments.$inferInsert;
@@ -295,3 +308,107 @@ export const announcements = mysqlTable("announcements", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+
+// ─── Delivery Agents ──────────────────────────────────────────────────────────
+export const deliveryAgents = mysqlTable("delivery_agents", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  phone: varchar("phone", { length: 20 }).notNull(),
+  vehicleNumber: varchar("vehicle_number", { length: 50 }).notNull(),
+  vehicleType: varchar("vehicle_type", { length: 50 }).default("bike"),
+  isAvailable: boolean("is_available").default(true),
+  pin: varchar("pin", { length: 256 }).notNull(),
+});
+
+export type DeliveryAgent = typeof deliveryAgents.$inferSelect;
+export type InsertDeliveryAgent = typeof deliveryAgents.$inferInsert;
+
+// ─── Delivery Payouts ───────────────────────────────────────────────────────
+export const deliveryPayouts = mysqlTable('delivery_payouts', {
+  id: int('id').autoincrement().primaryKey(),
+  agentId: int('agent_id').notNull(),
+  amount: decimal('amount', { precision: 10, scale: 2 }).notNull(),
+  status: mysqlEnum('status', ['pending', 'completed', 'failed']).default('pending').notNull(),
+  requestedAt: timestamp('requested_at').defaultNow().notNull(),
+  processedAt: timestamp('processed_at'),
+  transactionId: varchar('transaction_id', { length: 255 }),
+  notes: varchar('notes', { length: 255 }),
+  mpesaConversationId: varchar('mpesa_conversation_id', { length: 255 }),
+  mpesaOriginatorConversationId: varchar('mpesa_originator_conversation_id', { length: 255 }),
+});
+
+export type DeliveryPayout = typeof deliveryPayouts.$inferSelect;
+export type InsertDeliveryPayout = typeof deliveryPayouts.$inferInsert;
+
+// ─── Product Views (Personalization) ───────────────────────────────────────────
+export const productViews = mysqlTable("product_views", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId"),
+  sessionId: varchar("sessionId", { length: 128 }),
+  productId: int("productId").notNull(),
+  viewedAt: timestamp("viewedAt").defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+  productIdIdx: index("product_id_idx").on(table.productId),
+  viewedAtIdx: index("viewed_at_idx").on(table.viewedAt),
+}));
+
+export type ProductView = typeof productViews.$inferSelect;
+export type InsertProductView = typeof productViews.$inferInsert;
+
+// ─── AI Conversations (Analytics) ──────────────────────────────────────────────
+export const aiConversations = mysqlTable("ai_conversations", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId"),
+  userEmail: varchar("userEmail", { length: 320 }),
+  role: mysqlEnum("role", ["user", "assistant"]).notNull(),
+  message: text("message").notNull(),
+  messageType: mysqlEnum("messageType", ["chat", "product_recommendation", "order_tracking", "admin_query"]).default("chat").notNull(),
+  sentiment: varchar("sentiment", { length: 32 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+  createdAtIdx: index("created_at_idx").on(table.createdAt),
+  messageTypeIdx: index("message_type_idx").on(table.messageType),
+}));
+
+export type AIConversation = typeof aiConversations.$inferSelect;
+export type InsertAIConversation = typeof aiConversations.$inferInsert;
+
+// ─── User Preferences (Personalization) ─────────────────────────────────────────
+export const userPreferences = mysqlTable("user_preferences", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique(),
+  preferredBrands: json("preferredBrands").$type<string[]>().default([]),
+  preferredCategories: json("preferredCategories").$type<number[]>().default([]),
+  budgetMin: decimal("budgetMin", { precision: 10, scale: 2 }),
+  budgetMax: decimal("budgetMax", { precision: 10, scale: 2 }),
+  viewCount: int("viewCount").default(0),
+  purchaseCount: int("purchaseCount").default(0),
+  lastInteractionAt: timestamp("lastInteractionAt"),
+  customerSegment: varchar("customerSegment", { length: 64 }),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("user_id_idx").on(table.userId),
+}));
+
+export type UserPreference = typeof userPreferences.$inferSelect;
+export type InsertUserPreference = typeof userPreferences.$inferInsert;
+
+// ─── Product Price History (Dynamic Pricing) ──────────────────────────────────
+export const productPriceHistory = mysqlTable("product_price_history", {
+  id: int("id").autoincrement().primaryKey(),
+  productId: int("productId").notNull(),
+  oldPrice: decimal("oldPrice", { precision: 10, scale: 2 }).notNull(),
+  newPrice: decimal("newPrice", { precision: 10, scale: 2 }).notNull(),
+  reason: varchar("reason", { length: 256 }),
+  sales7d: int("sales7d").default(0),
+  demand: varchar("demand", { length: 64 }),
+  changedAt: timestamp("changedAt").defaultNow().notNull(),
+}, (table) => ({
+  productIdIdx: index("product_id_idx").on(table.productId),
+  changedAtIdx: index("changed_at_idx").on(table.changedAt),
+}));
+
+export type ProductPriceHistory = typeof productPriceHistory.$inferSelect;
+export type InsertProductPriceHistory = typeof productPriceHistory.$inferInsert;

@@ -29,6 +29,7 @@ import {
   getOrderStatusHistory,
   getOrdersByUser,
   getPaymentByOrder,
+  getProductsByIds,
   getProductById,
   getProductBySlug,
   getProductReviews,
@@ -57,9 +58,19 @@ import {
   getAnnouncements,
   upsertAnnouncement,
   deleteAnnouncement,
+  logProductView,
+  getUserProductViews,
+  logAIConversation,
+  getAIConversationStats,
+  getUserPreferences,
+  updateUserPreferences,
+  getUserSegments,
+  logPriceChange,
+  getPricingSuggestions,
+  getDemandPrediction,
 } from "./db";
-import { eq, and, lt } from "drizzle-orm";
-import { users, categories as categoriesSchema, banners as bannersSchema, orders, payments } from "../drizzle/schema";
+import { eq, and, lt, or, like, sql, inArray, desc } from "drizzle-orm";
+import { users, categories as categoriesSchema, banners as bannersSchema, orders, payments, deliveryAgents, products, deliveryPayouts } from "../drizzle/schema";
 import nodemailer from "nodemailer";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -67,8 +78,9 @@ import { SignJWT, jwtVerify } from "jose";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import Stripe from "stripe";
 import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmationEmailHtml, getShippingNotificationEmailHtml, getAbandonedCartEmailHtml } from "./emailTemplates";
-import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone } from "./paymentUtils";
+import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone, initiateB2CPayout } from "./paymentUtils";
 import { makeRequest } from "./_core/map";
+import OpenAI from "openai";
 
 // ─── Simple In-Memory Cache ───────────────────────────────────────────────────
 const serverCache = new Map<string, { data: any, expires: number }>();
@@ -110,10 +122,499 @@ function verifyPassword(password: string, hash: string) {
   return timingSafeEqual(keyBuffer, derivedKey);
 }
 
+// ─── Natural Language Search Parser ──────────────────────────────────────────
+async function parseNaturalLanguageQuery(query: string) {
+  let search = query;
+  let minPrice: string | undefined;
+  let maxPrice: string | undefined;
+  let brand: string | undefined;
+  let categoryId: number | undefined;
+  let sortBy: "newest" | "price_asc" | "price_desc" | undefined;
+  let featured: boolean | undefined;
+
+  // Extract "between X and Y"
+  const betweenMatch = search.match(/between\s*\$?(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:and|to|-)\s*\$?(\d+(?:,\d{3})*(?:\.\d+)?)/i);
+  if (betweenMatch) {
+    minPrice = betweenMatch[1].replace(/,/g, '');
+    maxPrice = betweenMatch[2].replace(/,/g, '');
+    search = search.replace(betweenMatch[0], '');
+  }
+
+  // Extract max prices ("under 1000", "less than $500", "< 2000")
+  const maxMatch = search.match(/(?:under|less than|below|cheaper than|<)\s*\$?(\d+(?:,\d{3})*(?:\.\d+)?)/i);
+  if (maxMatch) {
+    maxPrice = maxMatch[1].replace(/,/g, '');
+    search = search.replace(maxMatch[0], '');
+  }
+
+  // Extract min prices ("over 1000", "more than $500", "> 2000")
+  const minMatch = search.match(/(?:over|more than|above|expensive than|>)\s*\$?(\d+(?:,\d{3})*(?:\.\d+)?)/i);
+  if (minMatch) {
+    minPrice = minMatch[1].replace(/,/g, '');
+    search = search.replace(minMatch[0], '');
+  }
+
+  // Extract Sort Intent
+  if (/(?:cheap|affordable|budget|lowest price)/i.test(search)) {
+    sortBy = "price_asc";
+    search = search.replace(/\b(cheap|affordable|budget|lowest price)\b/gi, '');
+  } else if (/(?:expensive|premium|highest price)/i.test(search)) {
+    sortBy = "price_desc";
+    search = search.replace(/\b(expensive|premium|highest price)\b/gi, '');
+  } else if (/(?:new|latest|recent)/i.test(search)) {
+    sortBy = "newest";
+    search = search.replace(/\b(new|latest|recent)\b/gi, '');
+  }
+
+  // Extract Deals/Featured Intent
+  if (/(?:deal|sale|discount|offer)s?\b/i.test(search)) {
+    featured = true;
+    search = search.replace(/\b(deal|sale|discount|offer)s?\b/gi, '');
+  }
+
+  // Extract Categories
+  const allCats = await getCategories();
+  for (const c of allCats) {
+    const regex = new RegExp(`\\b${c.name.replace(/s$/i, '')}s?\\b|\\b${c.slug}\\b`, 'i');
+    if (regex.test(search)) {
+      categoryId = c.id;
+      search = search.replace(regex, '');
+      break;
+    }
+  }
+
+  // Extract known brands
+  const brandsSetting = await getSetting("brands");
+  const availableBrands = Array.isArray(brandsSetting) ? brandsSetting : ["Samsung", "Dell", "HP", "Lenovo", "Asus", "Apple", "Acer", "MSI", "Razer", "Alienware", "Microsoft"];
+  
+  for (const b of availableBrands) {
+    const regex = new RegExp(`\\b${b}\\b`, 'i');
+    if (regex.test(search)) {
+      brand = b;
+      search = search.replace(regex, '');
+      break; 
+    }
+  }
+
+  // Clean up empty terms and leftover conjunctions
+  search = search.replace(/\s+/g, ' ').trim();
+  search = search.replace(/^(for|with|and|the|a|in|on)\b|\b(for|with|and|the|a|in|on)$/gi, '').trim();
+  
+  return { search: search || undefined, minPrice, maxPrice, brand, categoryId, sortBy, featured };
+}
+
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "default_jwt_secret_for_development_only");
 
 export const appRouter = router({
   system: systemRouter,
+
+  // ─── AI Assistant ──────────────────────────────────────────────────────────
+  ai: router({
+    chat: publicProcedure
+      .input(z.object({
+        message: z.string().min(1),
+        history: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string() })).default([]),
+        cartContext: z.array(z.object({ productId: z.number(), quantity: z.number() })).optional(),
+        userId: z.number().optional(),
+        userEmail: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        if (!process.env.GROQ_API_KEY) {
+          return { reply: "I'm offline right now! Please ask the store administrator to configure the `GROQ_API_KEY` in the environment variables." };
+        }
+        
+        const groq = new OpenAI({ 
+          apiKey: process.env.GROQ_API_KEY,
+          baseURL: "https://api.groq.com/openai/v1"
+        });
+        const db = await getDb();
+
+        // ─── Detect message type ───
+        let messageType: "product_recommendation" | "order_tracking" | "chat" = "chat";
+        if (input.message.toLowerCase().includes("order") || input.message.toLowerCase().includes("track")) {
+          messageType = "order_tracking";
+        } else if (input.message.toLowerCase().includes("find") || input.message.toLowerCase().includes("recommend") || input.message.toLowerCase().includes("laptop")) {
+          messageType = "product_recommendation";
+        }
+
+        // ─── Detect deep search request ───
+        const enableDeepSearch = /deep\s+search|broader\s+search|external\s+search|research|compare\s+market|market\s+comparison|what\s+else|similar\s+alternatives|industry\s+options/i.test(input.message);
+        let deepSearchNotice = "";
+        if (enableDeepSearch) {
+          deepSearchNotice = "\n\n[Deep search mode enabled - I can reference external sources and broader market options]";
+        }
+
+        // ─── Build cart context ───
+        let cartInfo = "";
+        const cartProductIds = new Set<number>();
+        if (db && input.cartContext && input.cartContext.length > 0) {
+          const productIds = input.cartContext.map(i => i.productId);
+          productIds.forEach(id => cartProductIds.add(id));
+          const cartProds = await db.select({ id: products.id, name: products.name }).from(products).where(inArray(products.id, productIds));
+          const cartDetails = input.cartContext.map(item => {
+            const p = cartProds.find(cp => cp.id === item.productId);
+            return p ? `${item.quantity}x ${p.name}` : null;
+          }).filter(Boolean);
+          if (cartDetails.length > 0) {
+            cartInfo = `\n\nThe user currently has these items in their cart: ${cartDetails.join(", ")}. Do not recommend these exact items again unless specifically asked.`;
+          }
+        }
+
+        // ─── Personalization Context ───
+        let personalizationContext = "";
+        if (db && input.userId) {
+          try {
+            const userPrefs = await getUserPreferences(input.userId);
+            if (userPrefs?.preferredBrands?.length > 0 || userPrefs?.preferredCategories?.length > 0) {
+              const brandStr = userPrefs.preferredBrands?.join(", ") || "";
+              const budgetStr = userPrefs.budgetMin && userPrefs.budgetMax 
+                ? `KES ${parseFloat(userPrefs.budgetMin as any).toLocaleString()} - KES ${parseFloat(userPrefs.budgetMax as any).toLocaleString()}`
+                : "";
+              personalizationContext = `\n\nBased on ${userPrefs.viewCount || 0} product views, this user prefers: ${[brandStr, budgetStr].filter(Boolean).join(", ")}. Tailor recommendations accordingly.`;
+            }
+          } catch (e) {
+            // Silent fail
+          }
+        }
+
+        // ─── Store Context (Categories & Brands) ───
+        let storeContext = "";
+        if (db) {
+          try {
+            const allCats = await getCategories();
+            const catNames = allCats.filter(c => c.active !== false).map(c => c.name).join(", ");
+            const brandsSetting = await getSetting("brands");
+            const brandNames = Array.isArray(brandsSetting) ? brandsSetting.join(", ") : "Samsung, Dell, HP, Lenovo, Asus, Apple, Acer";
+            storeContext = `\n\n**Store Catalog Info:**\nWe sell products in these categories: ${catNames}.\nAvailable brands include: ${brandNames}.`;
+          } catch(e) {}
+        }
+
+        // ─── Intelligent Product Search ───
+        let productContext = "";
+        if (db) {
+          try {
+            const parsedQuery = await parseNaturalLanguageQuery(input.message);
+            
+            if (messageType === "product_recommendation" || parsedQuery.search || parsedQuery.brand || parsedQuery.categoryId) {
+              let recommendations = await getProducts({ 
+                search: parsedQuery.search,
+                categoryId: parsedQuery.categoryId,
+                limit: 20
+              });
+
+              // Apply Node-side filtering for price and brand
+              if (parsedQuery.minPrice) recommendations = recommendations.filter((p: any) => parseFloat(p.price as any) >= parseFloat(parsedQuery.minPrice!));
+              if (parsedQuery.maxPrice) recommendations = recommendations.filter((p: any) => parseFloat(p.price as any) <= parseFloat(parsedQuery.maxPrice!));
+              if (parsedQuery.brand) recommendations = recommendations.filter((p: any) => p.brand?.toLowerCase() === parsedQuery.brand!.toLowerCase());
+
+              // Fallback if no direct match but they want recommendations
+              if (recommendations.length === 0 && messageType === "product_recommendation") {
+                recommendations = await getProducts({ featured: true, limit: 10 });
+                if (recommendations.length === 0) recommendations = await getProducts({ limit: 10 });
+              }
+
+              // Prioritize products with high stock levels
+              recommendations.sort((a: any, b: any) => (b.stock || 0) - (a.stock || 0));
+
+              if (recommendations.length > 0) {
+                const relevantProducts = recommendations
+                  .filter(p => !cartProductIds.has(p.id))
+                  .map(p => {
+                    const specs = p.specifications 
+                      ? Object.entries(p.specifications).map(([k, v]) => `${k}: ${v}`).join(", ")
+                      : "";
+                    return {
+                      id: p.id,
+                      name: p.name,
+                      brand: p.brand,
+                      price: p.price,
+                      rating: p.rating,
+                      specs: specs,
+                      slug: p.slug,
+                      stock: p.stock,
+                    };
+                  });
+
+                if (relevantProducts.length > 0) {
+                  productContext = `\n\nWe have these matching products available:\n${relevantProducts.slice(0, 5).map((p, idx) => 
+                    `${idx + 1}. **${p.name}** by ${p.brand || "Unknown"}\n` +
+                    `   Price: KES ${parseFloat(p.price as any).toLocaleString()}\n` +
+                    `   Rating: ${p.rating ? parseFloat(p.rating as any).toFixed(1) + "★" : "New"}\n` +
+                    `   Specs: ${p.specs || "Standard specs"}\n` +
+                    `   In Stock: ${p.stock > 0 ? "Yes" : "Out of Stock"}\n` +
+                    `   View Details`
+                  ).join("\n")}`;
+                }
+              }
+            }
+          } catch(e) {}
+        }
+
+        // ─── Order Tracking Context ───
+        let orderContext = "";
+        const messageLower = input.message.toLowerCase();
+        if (db && (messageLower.includes("order") || messageLower.includes("track") || messageLower.includes("delivery") || messageLower.includes("ship"))) {
+          const orderMatch = input.message.match(/(?:order\s+)?([A-Z]{0,3}[-]?[0-9]{4,8})/i);
+          if (orderMatch) {
+            try {
+              const order = await getOrderByNumber(orderMatch[1]);
+              if (order) {
+                const statusDescriptions: Record<string, string> = {
+                  pending: "Your order has been received and is being processed",
+                  payment_confirmed: "Payment confirmed! Your order is being prepared",
+                  processing: "Your order is being prepared for shipment",
+                  shipped: "Your order has been shipped!",
+                  out_for_delivery: "Your order is out for delivery today",
+                  delivered: "Your order has been delivered",
+                  cancelled: "This order has been cancelled",
+                  refunded: "This order has been refunded"
+                };
+                orderContext = `\n\n**Order Status Lookup:**\nOrder #${order.orderNumber}\nStatus: ${order.status}\nUpdate: ${statusDescriptions[order.status as any] || "No information available"}\nShipping to: ${order.shippingCity || order.shippingAddress}\nEstimated delivery: 3-5 business days from shipment`;
+              }
+            } catch (e) {
+              // Silent fail
+            }
+          }
+        }
+
+        // ─── Demand Prediction Context (for high-demand products) ───
+        let demandContext = "";
+        if (db && messageType === "product_recommendation") {
+          try {
+            const predictions = await getDemandPrediction(7);
+            if (predictions.length > 0) {
+              const topDemand = predictions.slice(0, 2);
+              demandContext = `\n\n**Currently In High Demand:**\n${topDemand.map(p => `- ${p.productName} (${p.salesCount} sold this week)`).join("\n")}`;
+            }
+          } catch (e) {
+            // Silent fail
+          }
+        }
+
+        // ─── Pricing Suggestions Context ───
+        let pricingContext = "";
+        if (db && messageLower.includes("price") || messageLower.includes("discount")) {
+          try {
+            const suggestions = await getPricingSuggestions();
+            if (suggestions.length > 0) {
+              pricingContext = `\n\nCurrent strong sellers: ${suggestions.slice(0, 3).map((s: any) => s.name).join(", ")}`;
+            }
+          } catch (e) {
+            // Silent fail
+          }
+        }
+
+        let baseRules = `⚠️ CRITICAL RULES - FOLLOW STRICTLY:
+- ONLY recommend products from the list provided below in "We have these matching products available"
+- NEVER mention products not in our database or from other stores/websites
+- NEVER make up product names or specifications
+- NEVER tell customers to search the internet for products
+- If asked about a product not in our list, say: "I don't have that specific model in stock, but I can recommend similar alternatives from our inventory"
+- When NO products match the search, offer to help them narrow down their requirements`;
+
+        let deepSearchRules = `⚠️ DEEP SEARCH MODE - RULES:
+- You can reference external sources, market comparisons, and broader industry options
+- When mentioning external products, clearly distinguish them from our catalog with "➜ From other markets:" prefix
+- Prioritize our database products first, then suggest external alternatives if requested
+- Always emphasize products we have in stock before suggesting external options
+- Format external product mentions clearly so users know they're not in our inventory`;
+
+        const systemPrompt = `You are an expert AI sales assistant for a tech store specializing in laptops and accessories. Your role is to:
+1. Help customers find the perfect laptop or accessory from our catalog
+2. Answer technical questions clearly and accurately
+3. Provide honest recommendations based on budget and needs
+4. Help track orders and deliveries
+5. Help admins upload and manage bulk products (detect when user says "upload", "bulk add", "add products")
+6. Reference specific products when relevant
+7. Be concise, friendly, and professional
+
+${enableDeepSearch ? deepSearchRules : baseRules}
+
+IMPORTANT: When you mention a specific product, format as a clickable link using [Product Name](/products/slug-name) format.
+For product uploads: When asked to help add products, ask for CSV data or descriptions and help structure the data.
+Keep responses under 3 sentences unless asked for more detail.${cartInfo}${personalizationContext}${storeContext}${productContext}${demandContext}${pricingContext}${orderContext}`;
+
+        let messages: any[] = [
+          { role: "system", content: systemPrompt },
+          ...input.history,
+          { role: "user", content: input.message }
+        ];
+
+        // Call Groq API
+        const response = await groq.chat.completions.create({
+          model: "llama-3.3-70b-versatile",
+          messages,
+          temperature: 0.7,
+          max_tokens: 1024,
+        });
+
+        let reply = response.choices[0].message.content || "I couldn't process that right now. Please try again.";
+        
+        // ─── Validate response: Ensure AI only recommended products from our database ───
+        if (db && productContext && productContext.includes("matching products")) {
+          try {
+            // Extract all product names that were provided to the AI
+            const allProducts = await getProducts({ limit: 1000 });
+            const productNames = new Set(allProducts.map(p => p.name.toLowerCase()));
+            
+            // Check if response mentions any product-like terms that aren't in our database
+            const possibleProductMatches = reply.match(/\*\*([^*]+)\*\*/g) || [];
+            for (const match of possibleProductMatches) {
+              const productName = match.replace(/\*\*/g, "").toLowerCase().trim();
+              if (productName.length > 3 && !productNames.has(productName)) {
+                // This looks like a product name that's not in our database
+                const foundInContext = productContext.toLowerCase().includes(productName);
+                if (!foundInContext) {
+                  // Remove this product reference and warn the user
+                  reply = reply.replace(match, "_[Product not currently available]_");
+                }
+              }
+            }
+          } catch (e) {
+            // Silent fail - validation error shouldn't break the response
+          }
+        }
+        
+        // ─── Log conversation to database ───
+        if (db) {
+          try {
+            await logAIConversation(input.userId || null, input.userEmail || null, "user", input.message, messageType);
+            await logAIConversation(input.userId || null, input.userEmail || null, "assistant", reply, messageType);
+            
+            // Update user preferences (track interactions)
+            if (input.userId) {
+              const userPrefs = await getUserPreferences(input.userId);
+              if (userPrefs) {
+                await updateUserPreferences(input.userId, {
+                  viewCount: (userPrefs.viewCount || 0) + 1,
+                  lastInteractionAt: new Date(),
+                });
+              } else {
+                await updateUserPreferences(input.userId, {
+                  viewCount: 1,
+                  lastInteractionAt: new Date(),
+                  customerSegment: messageType === "product_recommendation" ? "browser" : "shopper"
+                });
+              }
+            }
+          } catch (e) {
+            // Silent fail - don't break the chat if logging fails
+          }
+        }
+
+        return { reply: reply + deepSearchNotice };
+      }),
+
+    // ─── Admin Chat for Dashboard ───
+    adminChat: adminProcedure
+      .input(z.object({
+        message: z.string().min(1),
+        history: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string() })).default([]),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        if (!process.env.GROQ_API_KEY) {
+          return { reply: "Admin AI is offline. Please configure GROQ_API_KEY." };
+        }
+        
+        const groq = new OpenAI({ 
+          apiKey: process.env.GROQ_API_KEY,
+          baseURL: "https://api.groq.com/openai/v1"
+        });
+        const db = await getDb();
+
+        // ─── Admin Context: Sales Stats ───
+        let statsContext = "";
+        try {
+          if (db) {
+            const totalOrdersResult = await db.select({ count: sql<number>`COUNT(*)` }).from(orders);
+            const totalOrders = totalOrdersResult[0]?.count || 0;
+            
+            const totalRevenueResult = await db.select({ sum: sql<number>`SUM(CAST(${orders.totalAmount} AS DECIMAL(10,2)))` }).from(orders).where(eq(orders.status, 'delivered'));
+            const totalRevenue = totalRevenueResult[0]?.sum || 0;
+            
+            const topProductsResult = await db.select({ name: products.name, count: sql<number>`COUNT(*)` })
+              .from(orderItems)
+              .leftJoin(products, eq(orderItems.productId, products.id))
+              .groupBy(orderItems.productId)
+              .orderBy(desc(sql<number>`COUNT(*)`))
+              .limit(3);
+            
+            statsContext = `\n\n**Store Analytics:**\nTotal Orders: ${totalOrders}\nTotal Revenue: KES ${parseFloat(totalRevenue).toLocaleString()}\nTop Products: ${topProductsResult.map(p => p.name).join(", ")}`;
+          }
+        } catch (e) {
+          // Silent fail
+        }
+
+        // ─── Admin Context: Store Catalog ───
+        let storeContext = "";
+        try {
+          if (db) {
+            const allCats = await getCategories();
+            const catNames = allCats.filter(c => c.active !== false).map(c => c.name).join(", ");
+            const brandsSetting = await getSetting("brands");
+            const brandNames = Array.isArray(brandsSetting) ? brandsSetting.join(", ") : "Samsung, Dell, HP, Lenovo, Asus, Apple, Acer";
+            storeContext = `\n\n**Store Catalog Info:**\nCategories: ${catNames}\nBrands: ${brandNames}`;
+          }
+        } catch (e) {}
+
+        // ─── Admin Context: Recent Orders ───
+        let recentOrdersContext = "";
+        try {
+          if (db) {
+            const recentOrders = await db.select({ 
+              orderNumber: orders.orderNumber, 
+              status: orders.status, 
+              totalAmount: orders.totalAmount,
+              customerName: orders.shippingFullName
+            })
+              .from(orders)
+              .orderBy(desc(orders.createdAt))
+              .limit(5);
+            
+            if (recentOrders.length > 0) {
+              recentOrdersContext = `\n\n**Recent Orders:**\n${recentOrders.map(o => 
+                `${o.orderNumber}: ${o.customerName} - KES ${parseFloat(o.totalAmount as any).toLocaleString()} (${o.status})`
+              ).join("\n")}`;
+            }
+          }
+        } catch (e) {
+          // Silent fail
+        }
+
+        const systemPrompt = `You are an expert AI assistant for store management. Your role is to:
+1. Help manage inventory and product catalog (ONLY from our database)
+2. Assist with store analytics and reporting
+3. Provide insights on sales trends and customer behavior
+4. Help with order management and customer support
+5. Provide actionable recommendations for business growth
+6. Answer questions about store operations
+
+⚠️ CRITICAL: 
+- ONLY reference products that exist in our database catalog
+- NEVER suggest products from external sources
+- When discussing products, use ONLY the products listed in our system
+
+When users ask to update products or prices, acknowledge the action and ask for confirmation details first.
+Be professional, concise, and data-driven.${statsContext}${storeContext}${recentOrdersContext}`;
+
+        let messages: any[] = [
+          { role: "system", content: systemPrompt },
+          ...input.history,
+          { role: "user", content: input.message }
+        ];
+
+        // Call Groq API
+        const response = await groq.chat.completions.create({
+          model: "llama-3.3-70b-versatile",
+          messages,
+          temperature: 0.7,
+          max_tokens: 1024,
+        });
+
+        const reply = response.choices[0].message.content || "I couldn't process that right now. Please try again.";
+        return { reply };
+      }),
+  }),
 
   // ─── Public Store Stats ──────────────────────────────────────────────────────
   store: router({
@@ -149,7 +650,7 @@ export const appRouter = router({
             result[k] = await getSetting(k);
           }
         }
-        setCache(cacheKey, result, 300); // Cache for 5 minutes
+        setCache(cacheKey, result, 86400); // Cache for 24 hours (cleared automatically on admin update)
         return result;
       }),
   }),
@@ -159,21 +660,21 @@ export const appRouter = router({
       const cached = getCache("banners-active");
       if (cached) return cached;
       const data = await getBanners({ activeOnly: true });
-      setCache("banners-active", data, 300);
+      setCache("banners-active", data, 86400); // Cache for 24 hours
       return data;
     }),
     promotions: publicProcedure.query(async () => {
       const cached = getCache("promotions-active");
       if (cached) return cached;
       const data = await getPromotions({ activeOnly: true });
-      setCache("promotions-active", data, 300);
+      setCache("promotions-active", data, 86400); // Cache for 24 hours
       return data;
     }),
     announcements: publicProcedure.query(async () => {
       const cached = getCache("announcements-active");
       if (cached) return cached;
       const data = await getAnnouncements({ activeOnly: true });
-      setCache("announcements-active", data, 300);
+      setCache("announcements-active", data, 86400); // Cache for 24 hours
       return data;
     }),
   }),
@@ -205,6 +706,7 @@ export const appRouter = router({
             .regex(/[a-z]/, "Password must contain a lowercase letter")
             .regex(/[0-9]/, "Password must contain a number")
             .regex(/[^A-Za-z0-9]/, "Password must contain a symbol"),
+          claimOrderNumber: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -234,6 +736,10 @@ export const appRouter = router({
         const user = await getUserByEmail(input.email);
         if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
+        if (input.claimOrderNumber) {
+          await db.update(orders).set({ userId: user.id }).where(eq(orders.orderNumber, input.claimOrderNumber));
+        }
+
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const token = await new SignJWT({ email: input.email, purpose: "verify", otp })
           .setProtectedHeader({ alg: "HS256" })
@@ -247,7 +753,7 @@ export const appRouter = router({
           
           const storeName = general?.storeName || "Store";
           const logoUrl = appearance?.logoUrl;
-          const primaryColor = appearance?.primaryColor || "#3b82f6";
+          const primaryColor = emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6";
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@example.com";
           
@@ -365,7 +871,7 @@ export const appRouter = router({
           
           const storeName = general?.storeName || "NexusTech Store";
           const logoUrl = appearance?.logoUrl;
-          const primaryColor = appearance?.primaryColor || "#3b82f6";
+          const primaryColor = emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6";
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@nexustech.com";
           
@@ -470,7 +976,7 @@ export const appRouter = router({
           
           const storeName = general?.storeName || "Store";
           const logoUrl = appearance?.logoUrl;
-          const primaryColor = appearance?.primaryColor || "#3b82f6";
+          const primaryColor = emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6";
           const storePhone = general?.phone || "";
           const contactEmail = general?.contactEmail || "support@example.com";
           
@@ -530,7 +1036,7 @@ export const appRouter = router({
       const cached = getCache("categories");
       if (cached) return cached;
       const data = await getCategories();
-      setCache("categories", data, 3600); // Cache for 1 hour
+      setCache("categories", data, 86400); // Cache for 24 hours
       return data;
     }),
     bySlug: publicProcedure.input(z.object({ slug: z.string() })).query(({ input }) =>
@@ -540,6 +1046,26 @@ export const appRouter = router({
 
   // ─── Products ──────────────────────────────────────────────────────────────
   products: router({
+    facets: publicProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) return { brands: {} as Record<string, number>, categories: {} as Record<number, number> };
+      
+      const allProducts = await db.select({
+        categoryId: products.categoryId,
+        brand: products.brand,
+      }).from(products).where(eq(products.active, true));
+
+      const brands: Record<string, number> = {};
+      const categories: Record<number, number> = {};
+
+      allProducts.forEach(p => {
+        if (p.brand) brands[p.brand] = (brands[p.brand] || 0) + 1;
+        categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
+      });
+
+      return { brands, categories };
+    }),
+
     list: publicProcedure
       .input(
         z.object({
@@ -556,16 +1082,35 @@ export const appRouter = router({
         }).optional()
       )
       .query(async ({ input }) => {
-        let products = await getProducts(input ?? {});
+        let finalSearch = input?.search;
+        let finalMinPrice = input?.minPrice;
+        let finalMaxPrice = input?.maxPrice;
+        let finalBrand = input?.brand;
+        let finalCategoryId = input?.categoryId;
+        let finalSortBy = input?.sortBy;
+        let finalFeatured = input?.featured;
+
+        if (finalSearch) {
+          const parsed = await parseNaturalLanguageQuery(finalSearch);
+          finalSearch = parsed.search;
+          if (parsed.minPrice && !finalMinPrice) finalMinPrice = parsed.minPrice;
+          if (parsed.maxPrice && !finalMaxPrice) finalMaxPrice = parsed.maxPrice;
+          if (parsed.brand && !finalBrand) finalBrand = parsed.brand;
+          if (parsed.categoryId && !finalCategoryId) finalCategoryId = parsed.categoryId;
+          if (parsed.sortBy && (!finalSortBy || finalSortBy === 'newest')) finalSortBy = parsed.sortBy;
+          if (parsed.featured !== undefined && finalFeatured === undefined) finalFeatured = parsed.featured;
+        }
+
+        let products = await getProducts({ ...(input ?? {}), search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured });
         
         // Server-side filtering before returning to the client
-        if (input?.minPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(input.minPrice!));
-        if (input?.maxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(input.maxPrice!));
-        if (input?.brand) products = products.filter((p: any) => p.brand?.toLowerCase() === input.brand!.toLowerCase());
-        if (input?.sortBy) {
+        if (finalMinPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(finalMinPrice!));
+        if (finalMaxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(finalMaxPrice!));
+        if (finalBrand) products = products.filter((p: any) => p.brand?.toLowerCase() === finalBrand!.toLowerCase());
+        if (finalSortBy) {
           products = products.sort((a: any, b: any) => {
-            if (input.sortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
-            if (input.sortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
+            if (finalSortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
+            if (finalSortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
             return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
           });
         }
@@ -591,16 +1136,35 @@ export const appRouter = router({
         const limit = input.limit ?? 12;
         const offset = input.cursor ?? 0;
         
-        let products = await getProducts({ ...input, limit: 1000, offset: 0 }); // Allow ample room for Node filtering
+        let finalSearch = input?.search;
+        let finalMinPrice = input?.minPrice;
+        let finalMaxPrice = input?.maxPrice;
+        let finalBrand = input?.brand;
+        let finalCategoryId = input?.categoryId;
+        let finalSortBy = input?.sortBy;
+        let finalFeatured = input?.featured;
+
+        if (finalSearch) {
+          const parsed = await parseNaturalLanguageQuery(finalSearch);
+          finalSearch = parsed.search;
+          if (parsed.minPrice && !finalMinPrice) finalMinPrice = parsed.minPrice;
+          if (parsed.maxPrice && !finalMaxPrice) finalMaxPrice = parsed.maxPrice;
+          if (parsed.brand && !finalBrand) finalBrand = parsed.brand;
+          if (parsed.categoryId && !finalCategoryId) finalCategoryId = parsed.categoryId;
+          if (parsed.sortBy && (!finalSortBy || finalSortBy === 'newest')) finalSortBy = parsed.sortBy;
+          if (parsed.featured !== undefined && finalFeatured === undefined) finalFeatured = parsed.featured;
+        }
+        
+        let products = await getProducts({ ...input, search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured, limit: 1000, offset: 0 }); // Allow ample room for Node filtering
         
         // Server-side filtering & sorting
-        if (input.minPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(input.minPrice!));
-        if (input.maxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(input.maxPrice!));
-        if (input.brand) products = products.filter((p: any) => p.brand?.toLowerCase() === input.brand!.toLowerCase());
-        if (input.sortBy) {
+        if (finalMinPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(finalMinPrice!));
+        if (finalMaxPrice) products = products.filter((p: any) => parseFloat(p.price) <= parseFloat(finalMaxPrice!));
+        if (finalBrand) products = products.filter((p: any) => p.brand?.toLowerCase() === finalBrand!.toLowerCase());
+        if (finalSortBy) {
           products = products.sort((a: any, b: any) => {
-            if (input.sortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
-            if (input.sortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
+            if (finalSortBy === "price_asc") return parseFloat(a.price) - parseFloat(b.price);
+            if (finalSortBy === "price_desc") return parseFloat(b.price) - parseFloat(a.price);
             return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
           });
         }
@@ -676,7 +1240,7 @@ export const appRouter = router({
         for (const item of input) {
           await upsertCartItem(ctx.user.id, item.productId, item.quantity);
         }
-        return { success: true };
+        return { success: true, mergedItems: input.length, conflicts: [] };
       }),
   }),
 
@@ -746,43 +1310,65 @@ export const appRouter = router({
 
   // ─── Checkout ──────────────────────────────────────────────────────────────
   checkout: router({
-    placeOrder: protectedProcedure
+    placeOrder: publicProcedure
       .input(
         z.object({
           shippingFullName: z.string().min(1),
+          shippingEmail: z.string().email().optional(),
           shippingPhone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
           shippingAddress: z.string().min(1),
           shippingCity: z.string().min(1),
+          shippingCounty: z.string().optional(),
           shippingPostalCode: z.string().regex(/^(?:[A-Za-z0-9\s\-]{3,12})?$/, "Please enter a valid postal code").optional(),
           shippingCountry: z.string().min(1),
           paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card", "cod"]),
           saveAddress: z.boolean().optional(),
+          isExpress: z.boolean().optional(),
+          discountCode: z.string().optional(),
           notes: z.string().optional(),
+          guestCartItems: z.array(z.object({ productId: z.number(), quantity: z.number() })).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const cartData = await getCartItems(ctx.user.id);
+        let cartData: any[] = [];
+        if (ctx.user) {
+          cartData = await getCartItems(ctx.user.id);
+        } else {
+          if (!input.guestCartItems || input.guestCartItems.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Cart is empty" });
+          for (const item of input.guestCartItems) {
+            const product = await getProductById(item.productId);
+            if (product) cartData.push({ productId: item.productId, quantity: item.quantity, product });
+          }
+        }
         if (cartData.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Cart is empty" });
 
         const shippingSettings = await getSetting("shipping");
-        const freeThreshold = shippingSettings?.freeShippingThreshold ? parseFloat(shippingSettings.freeShippingThreshold) : 500;
-        const standardFee = shippingSettings?.standardFee ? parseFloat(shippingSettings.standardFee) : 15;
+        const freeThreshold = shippingSettings?.freeShippingThreshold ? parseFloat(shippingSettings.freeShippingThreshold) : 50000;
+        const standardFee = shippingSettings?.standardFee ? parseFloat(shippingSettings.standardFee) : 50;
+        const expressFee = shippingSettings?.expressDelivery ? parseFloat(shippingSettings.expressDelivery) : 100;
 
         const subtotal = cartData.reduce(
           (sum, item) => sum + parseFloat(item.product.price) * item.quantity,
           0
         );
-        const shippingCost = subtotal >= freeThreshold ? 0 : standardFee;
-        const total = subtotal + shippingCost;
+        const baseShipping = subtotal >= freeThreshold ? 0 : standardFee;
+        const shippingCost = input.isExpress ? expressFee : baseShipping;
+        
+        let discountAmount = 0;
+        if (input.discountCode === "WELCOME10") discountAmount = subtotal * 0.1;
+
+        const total = Math.max(0, subtotal + shippingCost - discountAmount);
 
         const orderNumber = `ORD-${Date.now()}-${nanoid(6).toUpperCase()}`;
         const orderId = await createOrder({
           orderNumber,
-          userId: ctx.user.id,
+          userId: ctx.user?.id,
           shippingFullName: input.shippingFullName,
+          shippingEmail: input.shippingEmail,
           shippingPhone: input.shippingPhone,
           shippingAddress: input.shippingAddress,
           shippingCity: input.shippingCity,
+          shippingCounty: input.shippingCounty,
           shippingPostalCode: input.shippingPostalCode,
           shippingCountry: input.shippingCountry,
           subtotal: subtotal.toFixed(2),
@@ -817,7 +1403,7 @@ export const appRouter = router({
         await updateOrderStatus(orderId, "pending", "Order placed successfully");
 
         // Save address if requested
-        if (input.saveAddress) {
+        if (input.saveAddress && ctx.user) {
           await createAddress({
             userId: ctx.user.id,
             fullName: input.shippingFullName,
@@ -830,46 +1416,8 @@ export const appRouter = router({
         }
 
         // --- Order Confirmation Email Generation ---
-        try {
-          const emailSettings = await getSetting("email");
-          // Only generate if the setting is enabled by the Admin
-          if (emailSettings?.orderConfirmation) {
-            const appearance = await getSetting("appearance");
-            const general = await getSetting("general");
-            
-            const storeName = general?.storeName || "Store";
-            const storeCurrency = general?.currency || "USD";
-            const logoUrl = appearance?.logoUrl;
-            const primaryColor = appearance?.primaryColor || "#3b82f6";
-            const storePhone = general?.phone || "";
-            const contactEmail = general?.contactEmail || "support@example.com";
-
-            const emailHtml = getOrderConfirmationEmailHtml({
-              storeName, logoUrl, primaryColor, contactEmail, storePhone, storeCurrency,
-              shippingFullName: input.shippingFullName,
-              orderNumber, cartData, subtotal, shippingCost, total,
-              customMessage: emailSettings.orderConfirmationMessage
-            });
-            
-            if (emailSettings?.smtpHost && emailSettings.smtpUser) {
-              const transporter = nodemailer.createTransport({ 
-                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), 
-                secure: Number(emailSettings.smtpPort) === 465,
-                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
-                connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 10000
-              });
-              await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: ctx.user.email || input.shippingFullName, subject: `Order Confirmation #${orderNumber}`, html: emailHtml });
-              console.log(`[Email] Order confirmation sent to ${ctx.user.email || input.shippingFullName}`);
-            } else {
-              console.log("\n=== SIMULATED OUTBOUND EMAIL ===");
-              console.log("To:", ctx.user.email || input.shippingFullName);
-              console.log("Subject: Your Order #" + orderNumber + " is confirmed!");
-              console.log("==================================\n");
-            }
-          }
-        } catch (error) {
-          console.error("Error generating confirmation email:", error);
-        }
+        // (Email generation logic is now handled in the payment success handlers: 
+        // verifyMpesa, confirmPaypal, and processCard)
 
         return { orderId, orderNumber, total: total.toFixed(2) };
       }),
@@ -912,9 +1460,9 @@ export const appRouter = router({
         const timestamp = getMpesaTimestamp();
         const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString("base64");
 
-        let callbackUrl = "https://sandbox.safaricom.co.ke/dummy_callback"; // Mpesa requires a valid URL here even though we poll for results
-        const host = ctx.req.headers.host;
-        if (host && !host.includes("localhost")) callbackUrl = `https://${host}/api/webhooks/mpesa`;
+        const host = ctx.req.headers.host || "localhost:3000";
+        const protocol = host.includes("localhost") ? "http" : "https";
+        const callbackUrl = process.env.PUBLIC_URL ? `${process.env.PUBLIC_URL}/api/webhooks/mpesa` : `${protocol}://${host}/api/webhooks/mpesa`;
 
         const payload = {
           BusinessShortCode: shortcode,
@@ -952,7 +1500,7 @@ export const appRouter = router({
 
     verifyMpesa: protectedProcedure
       .input(z.object({ orderId: z.number(), checkoutRequestId: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const paymentSettings = await getSetting("payment");
         const consumerKey = paymentSettings?.mpesaKey;
         const consumerSecret = paymentSettings?.mpesaSecret;
@@ -991,6 +1539,51 @@ export const appRouter = router({
           paymentStatus: "paid",
           paymentReference: transactionId,
         });
+        // --- Order Confirmation Email on Successful Payment ---
+        try {
+          const emailSettings = await getSetting("email");
+          if (emailSettings?.orderConfirmation) {
+            const order = await getOrderById(input.orderId);
+            if (order) {
+              const items = await getOrderItems(order.id);
+              const productIds = items.map(i => i.productId);
+              const productsFromDb = await getProductsByIds(productIds);
+              const appearance = await getSetting("appearance");
+              const general = await getSetting("general");
+              const storeName = general?.storeName || "Store";
+              const host = ctx.req.headers.host || "localhost:3000";
+              const protocol = host.includes("localhost") ? "http" : "https";
+              const fullHost = `${protocol}://${host}`;
+              const emailHtml = getOrderConfirmationEmailHtml({
+                storeName,
+                logoUrl: appearance?.logoUrl,
+                primaryColor: emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6",
+                contactEmail: general?.contactEmail || "support@example.com",
+                orderLink: `${fullHost}/dashboard/orders/${order.id}`,
+                storePhone: general?.phone || "",
+                storeCurrency: general?.currency || "USD",
+                shippingFullName: order.shippingFullName,
+                orderNumber: order.orderNumber,
+                cartData: items.map(i => {
+                  const product = productsFromDb.find(p => p.id === i.productId);
+                  return { name: i.productName, slug: product?.slug, price: i.price, quantity: i.quantity, image: (product?.images as string[])?.[0] || null };
+                }),
+                subtotal: parseFloat(order.subtotal),
+                shippingCost: parseFloat(order.shippingCost),
+                total: parseFloat(order.total),
+                customMessage: emailSettings.orderConfirmationMessage,
+                host: fullHost,
+                productImageWidth: emailSettings.productImageWidth,
+                emailBackgroundColor: emailSettings.emailBackgroundColor,
+              });
+              const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+              const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+              if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
+            }
+          }
+        } catch (error) {
+          console.error("Failed to send order confirmation email:", error);
+        }
         const order = await getOrderById(input.orderId);
         if (order) {
           const items = await getOrderItems(order.id);
@@ -1087,7 +1680,7 @@ export const appRouter = router({
 
     confirmPaypal: protectedProcedure
       .input(z.object({ orderId: z.number(), paypalOrderId: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const paymentSettings = await getSetting("payment");
         if (!paymentSettings?.paypalClientId || !paymentSettings?.paypalSecret) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "PayPal is not configured." });
@@ -1134,6 +1727,51 @@ export const appRouter = router({
             paymentStatus: "paid",
             paymentReference: transactionId,
           });
+          // --- Order Confirmation Email on Successful Payment ---
+          try {
+            const emailSettings = await getSetting("email");
+            if (emailSettings?.orderConfirmation) {
+              const order = await getOrderById(input.orderId);
+              if (order) {
+                const items = await getOrderItems(order.id);
+                const productIds = items.map(i => i.productId);
+                const productsFromDb = await getProductsByIds(productIds);
+                const appearance = await getSetting("appearance");
+                const general = await getSetting("general");
+                const storeName = general?.storeName || "Store";
+                const host = ctx.req.headers.host || "localhost:3000";
+                const protocol = host.includes("localhost") ? "http" : "https";
+                const fullHost = `${protocol}://${host}`;
+                const emailHtml = getOrderConfirmationEmailHtml({
+                  storeName,
+                  logoUrl: appearance?.logoUrl,
+                  primaryColor: emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6",
+                  contactEmail: general?.contactEmail || "support@example.com",
+                  orderLink: `${fullHost}/dashboard/orders/${order.id}`,
+                  storePhone: general?.phone || "",
+                  storeCurrency: general?.currency || "USD",
+                  shippingFullName: order.shippingFullName,
+                  orderNumber: order.orderNumber,
+                  cartData: items.map(i => {
+                    const product = productsFromDb.find(p => p.id === i.productId);
+                    return { name: i.productName, slug: product?.slug, price: i.price, quantity: i.quantity, image: (product?.images as string[])?.[0] || null };
+                  }),
+                  subtotal: parseFloat(order.subtotal),
+                  shippingCost: parseFloat(order.shippingCost),
+                  total: parseFloat(order.total),
+                  customMessage: emailSettings.orderConfirmationMessage,
+                  host: fullHost,
+                  productImageWidth: emailSettings.productImageWidth,
+                  emailBackgroundColor: emailSettings.emailBackgroundColor,
+                });
+                const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+                const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+                if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
+              }
+            }
+          } catch (error) {
+            console.error("Failed to send order confirmation email:", error);
+          }
           const order = await getOrderById(input.orderId);
           if (order) {
             const items = await getOrderItems(order.id);
@@ -1161,7 +1799,7 @@ export const appRouter = router({
           cardholderName: z.string().min(1),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
           const paymentSettings = await getSetting("payment");
           if (!paymentSettings?.stripeSecret) {
@@ -1202,6 +1840,50 @@ export const appRouter = router({
           if (intent.status === "succeeded") {
             await updatePaymentStatus(input.orderId, "completed", intent.id, { provider: "stripe" });
             await updateOrderStatus(input.orderId, "payment_confirmed", "Card payment confirmed via Stripe", { paymentStatus: "paid", paymentReference: intent.id });
+            // --- Order Confirmation Email on Successful Payment ---
+            try {
+              const emailSettings = await getSetting("email");
+              if (emailSettings?.orderConfirmation) {
+                const order = await getOrderById(input.orderId);
+                if (order) {
+                  const items = await getOrderItems(order.id);
+                  const productIds = items.map(i => i.productId);
+                  const productsFromDb = await getProductsByIds(productIds);
+                  const appearance = await getSetting("appearance");
+                  const general = await getSetting("general");
+                  const storeName = general?.storeName || "Store";
+                  const host = ctx.req.headers.host || "localhost:3000";
+                  const protocol = host.includes("localhost") ? "http" : "https";
+                  const fullHost = `${protocol}://${host}`;
+                  const emailHtml = getOrderConfirmationEmailHtml({
+                    storeName,
+                    logoUrl: appearance?.logoUrl,
+                    primaryColor: emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6",
+                    contactEmail: general?.contactEmail || "support@example.com",
+                    storePhone: general?.phone || "",
+                    storeCurrency: general?.currency || "USD",
+                    shippingFullName: order.shippingFullName,
+                    orderNumber: order.orderNumber,
+                    cartData: items.map(i => {
+                      const product = productsFromDb.find(p => p.id === i.productId);
+                      return { name: i.productName, slug: product?.slug, price: i.price, quantity: i.quantity, image: (product?.images as string[])?.[0] || null };
+                    }),
+                    subtotal: parseFloat(order.subtotal),
+                    shippingCost: parseFloat(order.shippingCost),
+                    total: parseFloat(order.total),
+                    customMessage: emailSettings.orderConfirmationMessage,
+                    host: fullHost,
+                    productImageWidth: emailSettings.productImageWidth,
+                    emailBackgroundColor: emailSettings.emailBackgroundColor,
+                  });
+                  const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+                  const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+                  if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
+                }
+              }
+            } catch (error) {
+              console.error("Failed to send order confirmation email:", error);
+            }
             const items = await getOrderItems(order.id);
             for (const item of items) { await updateProductStock(item.productId, -item.quantity); }
             await clearCart(order.userId);
@@ -1250,21 +1932,142 @@ export const appRouter = router({
         const items = await getOrderItems(input.orderId);
         const history = await getOrderStatusHistory(input.orderId);
         const payment = await getPaymentByOrder(input.orderId);
-        return { order, items, history, payment };
+        let agent = null;
+        if (order.deliveryAgentId) {
+          const db = await getDb();
+          if (db) {
+            [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, order.deliveryAgentId)).limit(1);
+          }
+        }
+        return { order, items, history, payment, agent };
       }),
 
-    byNumber: protectedProcedure
+    byNumber: publicProcedure
       .input(z.object({ orderNumber: z.string() }))
       .query(async ({ ctx, input }) => {
         const order = await getOrderByNumber(input.orderNumber);
         if (!order) throw new TRPCError({ code: "NOT_FOUND" });
-        if (order.userId !== ctx.user.id && ctx.user.role !== "admin") {
+        // If the order is claimed by an account, ensure only that user (or an admin) can see it
+        if (order.userId && order.userId !== ctx.user?.id && ctx.user?.role !== "admin" && !ctx.user) {
           throw new TRPCError({ code: "FORBIDDEN" });
         }
         const items = await getOrderItems(order.id);
         const history = await getOrderStatusHistory(order.id);
         const payment = await getPaymentByOrder(order.id);
         return { order, items, history, payment };
+      }),
+
+    cancel: publicProcedure
+      .input(z.object({ orderNumber: z.string(), reason: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const order = await getOrderByNumber(input.orderNumber);
+        if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+        
+        // If the order is claimed by an account, ensure only that user (or an admin) can cancel it
+        if (order.userId && order.userId !== ctx.user?.id && ctx.user?.role !== "admin" && !ctx.user) {
+          throw new TRPCError({ code: "FORBIDDEN" });
+        }
+        if (!["pending", "payment_confirmed", "processing"].includes(order.status)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Order cannot be cancelled at this stage." });
+        }
+
+        // Prevent cancellation if the order is older than 24 hours (admins are exempt)
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        if (ctx.user?.role !== "admin" && new Date(order.createdAt) < twentyFourHoursAgo) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Orders cannot be cancelled after 24 hours." });
+        }
+        
+        const cancelNote = input.reason 
+          ? `Cancelled via tracking page. Reason: ${input.reason}`
+          : "Cancelled by customer via tracking page";
+          
+        await updateOrderStatus(order.id, "cancelled", cancelNote);
+        
+        if (order.paymentStatus === "paid" || order.status !== "pending") {
+          const items = await getOrderItems(order.id);
+          for (const item of items) { await updateProductStock(item.productId, item.quantity); }
+        }
+
+        // --- SEND EMAIL NOTIFICATION TO ADMIN ---
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          
+          if (emailSettings?.smtpHost && generalSettings?.contactEmail) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost,
+              port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: {
+                user: emailSettings.smtpUser,
+                pass: emailSettings.smtpPassword,
+              },
+            });
+
+            const currency = generalSettings.currency || "USD";
+            const formattedTotal = new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(parseFloat(order.total));
+
+            await transporter.sendMail({
+              from: `"${generalSettings.storeName || 'Store System'}" <${emailSettings.smtpUser}>`,
+              to: generalSettings.contactEmail,
+              subject: `🚨 Order Cancelled - #${order.orderNumber}`,
+              html: `
+                <h3>Order Cancelled by Customer</h3>
+                <p>A customer has just cancelled their order via the tracking page.</p>
+                <ul>
+                  <li><strong>Order Number:</strong> ${order.orderNumber}</li>
+                  <li><strong>Customer:</strong> ${order.shippingFullName} (${order.shippingEmail || 'N/A'})</li>
+                  <li><strong>Total:</strong> ${formattedTotal}</li>
+                  <li><strong>Previous Payment Status:</strong> ${order.paymentStatus}</li>
+                  <li><strong>Reason:</strong> ${input.reason || "None provided"}</li>
+                </ul>
+                <p>Please log in to the Admin Panel > Orders to review this cancellation and process any necessary refunds.</p>
+              `,
+            });
+            console.log(`[Email] Admin cancellation notification sent to ${generalSettings.contactEmail}`);
+          }
+        } catch (err) {
+          console.error("Failed to send admin cancellation notification email:", err);
+        }
+
+        // --- SEND CANCELLATION CONFIRMATION TO CUSTOMER ---
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          const appearanceSettings = await getSetting("appearance");
+          const customerEmail = order.shippingEmail || (order.userId ? (await getUserByEmail(order.userId.toString()))?.email : null);
+
+          if (emailSettings?.smtpHost && customerEmail) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost,
+              port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+            });
+
+            const emailHtml = getOrderCancelledEmailHtml({
+              storeName: generalSettings?.storeName || "Store",
+              logoUrl: appearanceSettings?.logoUrl,
+              primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#3b82f6",
+              contactEmail: generalSettings?.contactEmail || "support@example.com",
+              storePhone: generalSettings?.phone,
+              shippingFullName: order.shippingFullName,
+              orderNumber: order.orderNumber,
+              total: order.total,
+              storeCurrency: generalSettings?.currency || "USD",
+            });
+
+            await transporter.sendMail({
+              from: `"${generalSettings.storeName || 'Store System'}" <${emailSettings.smtpUser}>`,
+              to: customerEmail,
+              subject: `Your Order #${order.orderNumber} has been Cancelled`,
+              html: emailHtml,
+            });
+            console.log(`[Email] Customer cancellation confirmation sent to ${customerEmail}`);
+          }
+        } catch (err) { console.error("Failed to send customer cancellation email:", err); }
+
+        return { success: true };
       }),
   }),
 
@@ -1275,12 +2078,18 @@ export const appRouter = router({
       .query(({ input }) => getAdminStats(input?.timeRange)),
 
     globalSearch: adminProcedure
-      .input(z.object({ query: z.string() }))
-      .query(({ input }) => {
+      .input(z.object({ query: z.string(), cursor: z.number().nullish(), limit: z.number().optional() }))
+      .query(async ({ input }) => {
         if (!input.query) {
-          return { products: [], orders: [], customers: [], categories: [] };
+          return { products: [], orders: [], customers: [], categories: [], nextCursor: null };
         }
-        return adminGlobalSearch(input.query);
+        
+        const limit = input.limit ?? 10;
+        const offset = input.cursor ?? 0;
+        const results = await adminGlobalSearch(input.query, limit, offset);
+        
+        const hasMore = results.products.length === limit || results.orders.length === limit || results.customers.length === limit || results.categories.length === limit;
+        return { ...results, nextCursor: hasMore ? offset + limit : null };
       }),
 
     orders: adminProcedure
@@ -1337,10 +2146,10 @@ export const appRouter = router({
               if (order) {
                 const db = await getDb();
                 let customerEmail = "";
-                if (db) {
+                if (db && order.userId) {
                   const [customer] = await db.select().from(users).where(eq(users.id, order.userId)).limit(1);
                   customerEmail = customer?.email || "";
-                }
+                } else if (order.shippingEmail) customerEmail = order.shippingEmail;
 
                 if (customerEmail) {
                   const appearance = await getSetting("appearance");
@@ -1350,18 +2159,20 @@ export const appRouter = router({
                   const storePhone = general?.phone || "";
                   const logoUrl = appearance?.logoUrl;
                   const contactEmail = general?.contactEmail || "support@example.com";
+                  const primaryColor = emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6";
                   
                   const host = ctx.req.headers.host || "localhost:3000";
                   const protocol = host.includes("localhost") ? "http" : "https";
                   const trackLink = `${protocol}://${host}/dashboard/orders/${order.id}`;
 
                   const emailHtml = getShippingNotificationEmailHtml({
-                    storeName, logoUrl, contactEmail, storePhone,
+                    storeName, logoUrl, contactEmail, storePhone, primaryColor,
                     shippingFullName: order.shippingFullName,
                     orderNumber: order.orderNumber,
                     trackingNumber: input.trackingNumber,
                     trackLink,
-                    customMessage: emailSettings?.shippingNotificationMessage
+                    customMessage: emailSettings?.shippingNotificationMessage,
+                    shippingAddress: `${order.shippingAddress}\n${order.shippingCity}, ${order.shippingPostalCode || ''}\n${order.shippingCountry}`
                   });
 
                   if (emailSettings?.smtpHost && emailSettings.smtpUser) {
@@ -1581,6 +2392,47 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    getPayoutRequests: adminProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      return await db.select().from(deliveryPayouts).orderBy(desc(deliveryPayouts.requestedAt));
+    }),
+
+    approvePayout: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const mpesaSettings = await getSetting("mpesa_b2c");
+        if (!mpesaSettings?.consumerKey || !mpesaSettings.certContent) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "M-Pesa B2C settings are not fully configured in the admin panel." });
+        }
+
+        const [payoutRequest] = await db.select().from(deliveryPayouts).where(eq(deliveryPayouts.id, input.id)).limit(1);
+        if (!payoutRequest) throw new TRPCError({ code: "NOT_FOUND", message: "Payout request not found." });
+        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, payoutRequest.agentId)).limit(1);
+        if (!agent || !agent.phone) throw new TRPCError({ code: "BAD_REQUEST", message: "Driver phone number is missing." });
+        const generalSettings = await getSetting("general");
+        
+        try {
+          const mpesaResponse = await initiateB2CPayout(mpesaSettings, { amount: parseFloat(payoutRequest.amount), phone: agent.phone, remarks: `Payout from ${generalSettings?.storeName || "Store"}`, occasion: `Payout ID ${payoutRequest.id}` });
+          await db.update(deliveryPayouts).set({ mpesaConversationId: mpesaResponse.ConversationID, mpesaOriginatorConversationId: mpesaResponse.OriginatorConversationID }).where(eq(deliveryPayouts.id, input.id));
+          return { success: true, message: "M-Pesa payout initiated successfully." };
+        } catch (error: any) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message || "Failed to initiate M-Pesa payout" });
+        }
+      }),
+
+    rejectPayout: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(deliveryPayouts).set({ status: 'failed', processedAt: new Date() }).where(eq(deliveryPayouts.id, input.id));
+        return { success: true };
+      }),
+
     createPresignedUrl: adminProcedure
       .input(z.object({ filename: z.string(), contentType: z.string() }))
       .mutation(async ({ input }) => {
@@ -1690,6 +2542,356 @@ export const appRouter = router({
         return { success: true };
       }),
   }),
+
+  // ─── Delivery ──────────────────────────────────────────────────────────────
+  delivery: router({
+    getAgents: adminProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const agentsList = await db.select().from(deliveryAgents);
+      
+      const activeOrders = await db.select({
+        agentId: orders.deliveryAgentId,
+        city: orders.shippingCity
+      }).from(orders).where(eq(orders.status, "out_for_delivery"));
+
+      return agentsList.map(agent => {
+        const agentOrders = activeOrders.filter(o => o.agentId === agent.id);
+        const activeCity = agentOrders.length > 0 ? agentOrders[0].city : null;
+        const { pin, ...rest } = agent;
+        return { ...rest, activeCity };
+      });
+    }),
+
+    getDriverProfile: protectedProcedure
+      .input(z.object({ agentId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
+        if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found" });
+        const { pin, ...rest } = agent;
+        return rest;
+      }),
+
+    updateAvailability: protectedProcedure
+      .input(z.object({ agentId: z.number(), isAvailable: z.boolean() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(deliveryAgents).set({ isAvailable: input.isAvailable }).where(eq(deliveryAgents.id, input.agentId));
+        return { success: true };
+      }),
+
+    upsertAgent: adminProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1),
+        phone: z.string().min(1),
+        vehicleNumber: z.string().min(1),
+        vehicleType: z.string().min(1),
+        pin: z.string().optional(),
+        isAvailable: z.boolean().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const dataToUpdate: any = {
+          name: input.name,
+          phone: input.phone,
+          vehicleNumber: input.vehicleNumber,
+          vehicleType: input.vehicleType,
+        };
+        if (input.isAvailable !== undefined) dataToUpdate.isAvailable = input.isAvailable;
+        if (input.pin) dataToUpdate.pin = hashPassword(input.pin); // Hash the PIN before saving!
+
+        if (input.id) {
+          await db.update(deliveryAgents).set(dataToUpdate).where(eq(deliveryAgents.id, input.id));
+        } else {
+          if (!input.pin) throw new TRPCError({ code: "BAD_REQUEST", message: "PIN is required for new drivers" });
+          await db.insert(deliveryAgents).values(dataToUpdate as any);
+        }
+        return { success: true };
+      }),
+
+    deleteAgent: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.delete(deliveryAgents).where(eq(deliveryAgents.id, input.id));
+        return { success: true };
+    }),
+
+    assignDelivery: adminProcedure
+      .input(z.object({ orderId: z.number(), agentId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const [orderToAssign] = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
+        if (!orderToAssign) throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
+
+        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
+        if (!agent || !agent.isAvailable) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Agent not found or is currently offline" });
+        }
+
+        // Enforce Geographic Delivery Constraints
+        const activeOrders = await db.select().from(orders).where(
+          and(eq(orders.deliveryAgentId, agent.id), eq(orders.status, "out_for_delivery"))
+        );
+        if (activeOrders.length > 0) {
+          if (activeOrders[0].shippingCity !== orderToAssign.shippingCity) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `Agent is currently delivering in ${activeOrders[0].shippingCity}. You cannot assign them an order in ${orderToAssign.shippingCity}.` });
+          }
+        }
+
+        const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+        await db.update(orders).set({
+          deliveryAgentId: agent.id,
+          deliveryOtp: otp,
+        }).where(eq(orders.id, input.orderId));
+
+        // Update the timeline so the customer sees the status change
+        await updateOrderStatus(input.orderId, "out_for_delivery", `Assigned to delivery agent: ${agent.name}`);
+
+        return { success: true, message: "Delivery assigned successfully!" };
+      }),
+
+    myDeliveries: protectedProcedure
+      .input(z.object({ agentId: z.number().optional() }).optional())
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input?.agentId) {
+          return db.select().from(orders).where(
+            and(
+              eq(orders.status, "out_for_delivery"),
+              eq(orders.deliveryAgentId, input.agentId)
+            )
+          );
+        }
+        return db.select().from(orders).where(eq(orders.status, "out_for_delivery"));
+      }),
+
+    verifyOtpAndComplete: protectedProcedure
+      .input(z.object({ orderId: z.number(), otp: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [order] = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
+        if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
+        if (order.deliveryOtp !== input.otp) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid OTP code provided" });
+
+        // Formally complete the delivery in the timeline
+        await updateOrderStatus(input.orderId, "delivered", "Delivery successfully completed via OTP confirmation");
+        return { success: true };
+      }),
+
+    verifyDriverPin: protectedProcedure
+      .input(z.object({ phone: z.string(), pin: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.phone, input.phone)).limit(1);
+        if (!agent) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid Phone Number or PIN" });
+
+        const isHashed = agent.pin.includes(":");
+        const isValid = isHashed ? verifyPassword(input.pin, agent.pin) : agent.pin === input.pin;
+
+        if (!isValid) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid Phone Number or PIN" });
+
+        // Auto-upgrade unhashed PINs for better security dynamically
+        if (!isHashed) {
+          await db.update(deliveryAgents).set({ pin: hashPassword(input.pin) }).where(eq(deliveryAgents.id, agent.id));
+        }
+
+        return { success: true, agentId: agent.id, agentName: agent.name };
+      }),
+
+    getEarnings: protectedProcedure
+      .input(z.object({ agentId: z.number(), timeRange: z.string().default('week') }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const completedDeliveries = await db.select().from(orders).where(
+          and(eq(orders.deliveryAgentId, input.agentId), eq(orders.status, "delivered"))
+        );
+
+        let totalEarned = 0;
+        let today = 0, week = 0, month = 0;
+        const now = new Date();
+        const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+        const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const chartMap = new Map(days.map(d => [d, 0]));
+        const breakdown: any[] = [];
+
+        completedDeliveries.forEach(d => {
+          // Driver earns 80% of the shipping fee. You can adjust this percentage.
+          const earned = parseFloat(d.shippingCost) * 0.8;
+          totalEarned += earned;
+          const dDate = new Date(d.updatedAt || d.createdAt);
+          if (dDate >= startOfDay) today += earned;
+          if (dDate >= startOfWeek) {
+            week += earned;
+            const dayName = days[dDate.getDay()];
+            chartMap.set(dayName, (chartMap.get(dayName) || 0) + earned);
+          }
+          if (dDate >= startOfMonth) month += earned;
+          breakdown.push({ orderNumber: d.orderNumber, date: dDate, earnings: earned });
+        });
+
+        let withdrawable = totalEarned;
+        try {
+          const payouts = await db.select().from(deliveryPayouts).where(
+            and(eq(deliveryPayouts.agentId, input.agentId), or(eq(deliveryPayouts.status, 'completed'), eq(deliveryPayouts.status, 'pending')))
+          );
+          const totalPaidOrPending = payouts.reduce((sum, p) => sum + parseFloat(p.amount || "0"), 0);
+          withdrawable = totalEarned - totalPaidOrPending;
+        } catch(e) {}
+
+        return {
+          summary: { today, week, month, withdrawable },
+          chartData: Array.from(chartMap.entries()).map(([day, earnings]) => ({ day, earnings })),
+          breakdown: breakdown.sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 10),
+        };
+      }),
+
+    requestPayout: protectedProcedure
+      .input(z.object({ agentId: z.number(), amount: z.number() }))
+      .mutation(async ({ input }) => {
+        if (input.amount <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be positive." });
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.insert(deliveryPayouts).values({ agentId: input.agentId, amount: input.amount.toString(), status: 'pending' } as any);
+
+        // --- SEND EMAIL NOTIFICATION TO ADMIN ---
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          
+          if (emailSettings?.smtpHost && generalSettings?.contactEmail) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost,
+              port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: {
+                user: emailSettings.smtpUser,
+                pass: emailSettings.smtpPassword,
+              },
+            });
+
+            const [agent] = await db.select({ name: deliveryAgents.name }).from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
+            
+            const currency = generalSettings.currency || "USD";
+            const formattedAmount = new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(input.amount);
+
+            await transporter.sendMail({
+              from: `"${generalSettings.storeName || 'Store System'}" <${emailSettings.smtpUser}>`,
+              to: generalSettings.contactEmail,
+              subject: `🚨 New Driver Payout Request - ${formattedAmount}`,
+              html: `
+                <h3>New Payout Request Received</h3>
+                <p>A new payout request has been submitted by a driver.</p>
+                <ul>
+                  <li><strong>Driver:</strong> ${agent?.name || `Agent ID ${input.agentId}`}</li>
+                  <li><strong>Amount:</strong> ${formattedAmount}</li>
+                </ul>
+                <p>Please log in to the Admin Panel > Payments > Driver Payouts to review and process this request.</p>
+              `,
+            });
+            console.log(`[Email] Payout request notification sent to ${generalSettings.contactEmail}`);
+          }
+        } catch (err) {
+          console.error("Failed to send admin payout notification email:", err);
+          // Do not fail the whole transaction if email fails, just log it.
+        }
+
+        return { success: true };
+      }),
+
+    getPayoutHistory: protectedProcedure
+      .input(z.object({ agentId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        return await db.select().from(deliveryPayouts).where(eq(deliveryPayouts.agentId, input.agentId)).orderBy(desc(deliveryPayouts.requestedAt));
+      }),
+  }),
+
+  // ─── M-Pesa Callbacks ──────────────────────────────────────────────────────
+  mpesa: router({
+    b2cResult: publicProcedure.input(z.any()).mutation(async ({ input }) => {
+      const { Result } = input;
+      if (!Result || !Result.OriginatorConversationID) return { ResultCode: 1, ResultDesc: "Invalid payload" };
+      const db = await getDb();
+      if (db) {
+        if (Result.ResultCode === 0) {
+          await db.update(deliveryPayouts).set({ status: 'completed', processedAt: new Date(), transactionId: Result.TransactionID }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+        } else {
+          await db.update(deliveryPayouts).set({ status: 'failed', processedAt: new Date(), notes: Result.ResultDesc }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+        }
+      }
+      return { ResultCode: 0, ResultDesc: "Accepted" };
+    }),
+    b2cQueueTimeout: publicProcedure.input(z.any()).mutation(async ({ input }) => {
+      const db = await getDb();
+      if (db && input.OriginatorConversationID) {
+        await db.update(deliveryPayouts).set({ status: 'failed', notes: 'M-Pesa API request timed out.' }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, input.OriginatorConversationID));
+      }
+      return { ResultCode: 0, ResultDesc: "Accepted" };
+    }),
+  }),
+
+  // ─── Analytics ──────────────────────────────────────────────────────────────
+  analytics: router({
+    aiConversationStats: adminProcedure
+      .input(z.object({ daysBack: z.number().default(7) }))
+      .query(async ({ input }) => {
+        const stats = await getAIConversationStats(input.daysBack);
+        return stats;
+      }),
+
+    demandPrediction: adminProcedure
+      .input(z.object({ daysBack: z.number().default(7) }))
+      .query(async ({ input }) => {
+        const predictions = await getDemandPrediction(input.daysBack);
+        return predictions;
+      }),
+
+    pricingSuggestions: adminProcedure.query(async () => {
+      const suggestions = await getPricingSuggestions();
+      return suggestions;
+    }),
+
+    customerSegments: adminProcedure.query(async () => {
+      const segments = await getUserSegments();
+      return {
+        budgetBuyers: segments.budget.length,
+        premiumBuyers: segments.premium.length,
+        frequentShoppers: segments.frequent.length,
+      };
+    }),
+
+    productViews: adminProcedure
+      .input(z.object({ productId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return 0;
+        const views = await db.select({ count: sql<number>`COUNT(*)` })
+          .from(productViews)
+          .where(eq(productViews.productId, input.productId));
+        return views[0]?.count || 0;
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;
@@ -1723,7 +2925,7 @@ export async function processAbandonedCheckouts() {
     const storeName = general?.storeName || "Store";
     const storeCurrency = general?.currency || "USD";
     const logoUrl = appearance?.logoUrl;
-    const primaryColor = appearance?.primaryColor || "#3b82f6";
+    const primaryColor = emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6";
     const storePhone = general?.phone || "";
     const contactEmail = general?.contactEmail || "support@example.com";
     
@@ -1737,18 +2939,29 @@ export async function processAbandonedCheckouts() {
     });
 
     for (const order of abandonedOrders) {
-      const [customer] = await db.select().from(users).where(eq(users.id, order.userId)).limit(1);
+      const [customer] = order.userId ? await db.select().from(users).where(eq(users.id, order.userId)).limit(1) : [null];
       if (!customer || !customer.email) continue;
 
       const host = process.env.PUBLIC_URL || "http://localhost:3000";
+      const fullHost = host.startsWith('http') ? host : `http://${host}`;
       const orderLink = `${host}/order-confirmation/${order.orderNumber}`;
+
+      const items = await getOrderItems(order.id);
+      const productIds = items.map(i => i.productId);
+      const productsFromDb = await getProductsByIds(productIds);
 
       const emailHtml = getAbandonedCartEmailHtml({
         storeName, logoUrl, primaryColor, contactEmail, storePhone, storeCurrency,
         shippingFullName: order.shippingFullName,
         orderNumber: order.orderNumber,
         total: order.total,
-        orderLink
+        orderLink,
+        host: fullHost,
+        productImageWidth: emailSettings.productImageWidth,
+        cartData: items.map(i => {
+          const product = productsFromDb.find(p => p.id === i.productId);
+          return { name: i.productName, slug: product?.slug, price: i.price, quantity: i.quantity, image: (product?.images as string[])?.[0] || null };
+        }),
       });
 
       await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customer.email, subject: `Did you forget something? Complete your order at ${storeName}`, html: emailHtml });

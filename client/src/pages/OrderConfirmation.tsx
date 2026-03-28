@@ -11,6 +11,7 @@ import {
   Truck,
   RefreshCw,
   CreditCard,
+  UserPlus
 } from "lucide-react";
 import { Link, useParams } from "wouter";
 import Navbar from "@/components/Navbar";
@@ -153,6 +154,25 @@ export default function OrderConfirmation() {
             </div>
           </div>
         </div>
+
+        {/* Guest Conversion Card */}
+        {!order.userId && (
+          <div className="bg-gradient-to-br from-[var(--brand)]/10 to-transparent border border-[var(--brand)]/20 rounded-xl p-6 mb-6 flex flex-col sm:flex-row items-center justify-between gap-6">
+            <div>
+              <h2 className="font-display font-bold text-lg mb-1 flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-[var(--brand)]" />
+                Save your details for next time!
+              </h2>
+              <p className="text-sm text-muted-foreground">Create an account in 1-click to track your order and save your shipping address.</p>
+            </div>
+            <Button 
+              onClick={() => window.location.href = `/auth?mode=register&email=${encodeURIComponent(order.shippingEmail || "")}&claimOrder=${order.orderNumber}`}
+              className="shrink-0 bg-[var(--brand)] text-white hover:opacity-90 w-full sm:w-auto"
+            >
+              Create Account
+            </Button>
+          </div>
+        )}
 
         {/* Order tracking preview */}
         <div className="bg-card border border-border rounded-xl p-6 mb-6">

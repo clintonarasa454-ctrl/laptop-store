@@ -19,6 +19,11 @@ import {
   announcements,
   wishlists,
   pageViews,
+  deliveryPayouts,
+  productViews,
+  aiConversations,
+  userPreferences,
+  productPriceHistory,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -58,24 +63,28 @@ export async function getDb() {
 }
 
 // ─── Global Search ────────────────────────────────────────────────────────────
-export async function adminGlobalSearch(query: string) {
+export async function adminGlobalSearch(query: string, limit: number = 10, offset: number = 0) {
   const db = await getDb();
   if (!db) return { products: [], orders: [], customers: [], categories: [] };
 
-  const searchQuery = `%${query}%`;
+  const safeQuery = query.trim();
+  if (!safeQuery) return { products: [], orders: [], customers: [], categories: [] };
+
+  const searchQuery = `%${safeQuery}%`;
 
   const [productsRes, ordersRes, customersRes, categoriesRes] = await Promise.all([
     db.select({ id: products.id, name: products.name, slug: products.slug, brand: products.brand })
       .from(products)
       .where(
         or(
-          like(products.name, searchQuery), 
+          like(products.name, searchQuery),
           like(products.sku, searchQuery),
           like(products.brand, searchQuery),
           like(products.shortDescription, searchQuery)
         )
       )
-      .limit(15),
+      .limit(limit)
+      .offset(offset),
     db.select({ id: orders.id, orderNumber: orders.orderNumber, customerName: users.name })
       .from(orders)
       .leftJoin(users, eq(orders.userId, users.id))
@@ -86,17 +95,19 @@ export async function adminGlobalSearch(query: string) {
           like(users.email, searchQuery)
         )
       )
-      .limit(15),
+      .limit(limit)
+      .offset(offset),
     db.select({ id: users.id, name: users.name, email: users.email })
       .from(users)
       .where(
         or(
-          like(users.name, searchQuery), 
+          like(users.name, searchQuery),
           like(users.email, searchQuery),
-          like(users.phone, searchQuery)
+          like(users.phone, searchQuery),
         )
       )
-      .limit(15),
+      .limit(limit)
+      .offset(offset),
     db.select({ id: categories.id, name: categories.name, slug: categories.slug })
       .from(categories)
       .where(
@@ -105,7 +116,8 @@ export async function adminGlobalSearch(query: string) {
           like(categories.description, searchQuery)
         )
       )
-      .limit(15),
+      .limit(limit)
+      .offset(offset),
   ]);
 
   return { products: productsRes, orders: ordersRes, customers: customersRes, categories: categoriesRes };
@@ -208,11 +220,12 @@ export async function getProducts(opts?: {
     }
   }
   if (opts?.featured) conditions.push(eq(products.featured, true));
-  if (opts?.search) {
+  if (opts?.search?.trim()) {
+    const safeSearch = opts.search.trim();
     conditions.push(
       or(
-        like(products.name, `%${opts.search}%`),
-        like(products.brand, `%${opts.search}%`)
+        like(products.name, `%${safeSearch}%`),
+        like(products.brand, `%${safeSearch}%`)
       ) as ReturnType<typeof eq>
     );
   }
@@ -220,7 +233,26 @@ export async function getProducts(opts?: {
     conditions.push(sql`JSON_CONTAINS(COALESCE(${products.tags}, CAST('[]' AS JSON)), ${JSON.stringify(opts.tag)})` as ReturnType<typeof eq>);
   }
   return db
-    .select()
+    .select({
+      id: products.id,
+      categoryId: products.categoryId,
+      name: products.name,
+      slug: products.slug,
+      shortDescription: products.shortDescription,
+      price: products.price,
+      comparePrice: products.comparePrice,
+      stock: products.stock,
+      brand: products.brand,
+      sku: products.sku,
+      images: products.images,
+      tags: products.tags,
+      rating: products.rating,
+      reviewCount: products.reviewCount,
+      featured: products.featured,
+      active: products.active,
+      createdAt: products.createdAt,
+      updatedAt: products.updatedAt,
+    })
     .from(products)
     .where(and(...conditions))
     .orderBy(desc(products.createdAt))
@@ -395,11 +427,13 @@ export async function deleteAddress(userId: number, addressId: number) {
 // ─── Orders ───────────────────────────────────────────────────────────────────
 export async function createOrder(data: {
   orderNumber: string;
-  userId: number;
+  userId?: number;
   shippingFullName: string;
+  shippingEmail?: string;
   shippingPhone: string;
   shippingAddress: string;
   shippingCity: string;
+  shippingCounty?: string;
   shippingPostalCode?: string;
   shippingCountry: string;
   subtotal: string;
@@ -477,6 +511,8 @@ export async function getAllOrders(opts?: { limit?: number; offset?: number }) {
       shippingCity: orders.shippingCity,
       shippingCountry: orders.shippingCountry,
       trackingNumber: orders.trackingNumber,
+      deliveryAgentId: orders.deliveryAgentId,
+      deliveryOtp: orders.deliveryOtp,
       notes: orders.notes,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
@@ -594,7 +630,7 @@ export async function trackPageView(path: string) {
 export async function getAdminStats(timeRange: string = "30d") {
   const db = await getDb();
   if (!db) return {
-    totalOrders: 0, totalRevenue: "0", totalUsers: 0, totalProducts: 0, totalCustomers: 0, pendingOrders: 0, recentOrders: [],
+    totalOrders: 0, totalRevenue: "0", totalPayouts: "0", totalUsers: 0, totalProducts: 0, totalCustomers: 0, pendingOrders: 0, recentOrders: [], payoutChartData: [],
     monthlyRevenueData: [], productPerformanceData: [], categoryData: [], brandData: [], trafficSourceData: [], revenueData: [],
     trends: { revenue: 0, orders: 0, customers: 0, products: 0, pageViews: 0, conversion: 0, aov: 0, returning: 0 }
   };
@@ -622,7 +658,7 @@ export async function getAdminStats(timeRange: string = "30d") {
   // Run all independent queries in parallel to drastically reduce lag
   const [
     [orderStats], [pendingStats], [userCount], [productCount],
-    recentOrderRows, recentAllOrders, recent7DaysOrders, recentPageViews,
+    [payoutStats], recentOrderRows, recentAllOrders, recent7DaysOrders, recentPageViews,
     allOrderItems, categorySalesData, userOrderCounts,
     [recentUsers], [pastUsers], [recentProducts], [recentViews], [pastViews]
   ] = await Promise.all([
@@ -633,6 +669,7 @@ export async function getAdminStats(timeRange: string = "30d") {
     db.select({ count: sql<number>`COUNT(*)` }).from(orders).where(eq(orders.status, "pending")),
     db.select({ count: sql<number>`COUNT(*)` }).from(users),
     db.select({ count: sql<number>`COUNT(*)` }).from(products).where(eq(products.active, true)),
+    db.select({ totalPayouts: sql<string>`COALESCE(SUM(amount), 0)` }).from(deliveryPayouts).where(eq(deliveryPayouts.status, "completed")),
     db.select({
       id: orders.id, orderNumber: orders.orderNumber, status: orders.status, total: orders.total,
       paymentStatus: orders.paymentStatus, createdAt: orders.createdAt, customerName: users.name,
@@ -790,6 +827,7 @@ export async function getAdminStats(timeRange: string = "30d") {
   return {
     totalOrders: orderStats?.totalOrders ?? 0,
     totalRevenue: orderStats?.totalRevenue ?? "0",
+    totalPayouts: payoutStats?.totalPayouts ?? "0",
     totalCustomers: userCount?.count ?? 0,
     totalProducts: productCount?.count ?? 0,
     pendingOrders: pendingStats?.count ?? 0,
@@ -912,4 +950,159 @@ export async function deleteAnnouncement(id: number) {
   const db = await getDb();
   if (!db) return;
   await db.delete(announcements).where(eq(announcements.id, id));
+}
+
+// ─── Product Views (Personalization) ─────────────────────────────────────────
+export async function logProductView(userId: number | null, productId: number, sessionId?: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(productViews).values({ userId: userId || undefined, sessionId, productId });
+}
+
+export async function getUserProductViews(userId: number, limit: number = 100) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ productId: productViews.productId })
+    .from(productViews)
+    .where(eq(productViews.userId, userId))
+    .orderBy(desc(productViews.viewedAt))
+    .limit(limit);
+}
+
+// ─── AI Conversations (Analytics) ────────────────────────────────────────────
+export async function logAIConversation(userId: number | null, userEmail: string | null, role: "user" | "assistant", message: string, messageType: "chat" | "product_recommendation" | "order_tracking" | "admin_query" = "chat") {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(aiConversations).values({ userId: userId || undefined, userEmail, role, message, messageType });
+}
+
+export async function getAIConversationStats(daysBack: number = 7) {
+  const db = await getDb();
+  if (!db) return { totalChats: 0, uniqueUsers: 0, avgMessagesPerUser: 0, topTypes: [] };
+  
+  const dateFilter = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  
+  const totalResult = await db.select({ count: sql<number>`COUNT(*)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter}`);
+  const uniqueResult = await db.select({ count: sql<number>`COUNT(DISTINCT userId)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter}`);
+  const typesResult = await db.select({ type: aiConversations.messageType, count: sql<number>`COUNT(*)` })
+    .from(aiConversations)
+    .where(sql`${aiConversations.createdAt} > ${dateFilter}`)
+    .groupBy(aiConversations.messageType)
+    .orderBy(desc(sql<number>`COUNT(*)`))
+    .limit(5);
+
+  return {
+    totalChats: totalResult[0]?.count || 0,
+    uniqueUsers: uniqueResult[0]?.count || 0,
+    avgMessagesPerUser: totalResult[0]?.count / (uniqueResult[0]?.count || 1) || 0,
+    topTypes: typesResult
+  };
+}
+
+// ─── User Preferences (Personalization) ─────────────────────────────────────
+export async function getUserPreferences(userId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const result = await db.select().from(userPreferences).where(eq(userPreferences.userId, userId)).limit(1);
+  return result[0] || null;
+}
+
+export async function updateUserPreferences(userId: number, data: Partial<typeof userPreferences.$inferInsert>) {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await getUserPreferences(userId);
+  if (existing) {
+    await db.update(userPreferences).set(data).where(eq(userPreferences.userId, userId));
+  } else {
+    await db.insert(userPreferences).values({ userId, ...data } as any);
+  }
+}
+
+export async function getUserSegments() {
+  const db = await getDb();
+  if (!db) return { budget: [], premium: [], frequent: [] };
+  
+  const budgetResult = await db.select({ userId: userPreferences.userId })
+    .from(userPreferences)
+    .where(sql`${userPreferences.budgetMax} < 50000`)
+    .limit(100);
+  
+  const premiumResult = await db.select({ userId: userPreferences.userId })
+    .from(userPreferences)
+    .where(sql`${userPreferences.budgetMin} > 150000`)
+    .limit(100);
+  
+  const frequentResult = await db.select({ userId: userPreferences.userId })
+    .from(userPreferences)
+    .where(sql`${userPreferences.purchaseCount} > 3`)
+    .limit(100);
+
+  return {
+    budget: budgetResult,
+    premium: premiumResult,
+    frequent: frequentResult
+  };
+}
+
+// ─── Product Price History (Dynamic Pricing) ────────────────────────────────
+export async function logPriceChange(productId: number, oldPrice: string | number, newPrice: string | number, reason: string, sales7d: number, demand: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.insert(productPriceHistory).values({
+    productId,
+    oldPrice: String(oldPrice),
+    newPrice: String(newPrice),
+    reason,
+    sales7d,
+    demand
+  } as any);
+}
+
+export async function getPricingSuggestions() {
+  const db = await getDb();
+  if (!db) return [];
+  
+  // Find products with high sales but low price (increase opportunity)
+  const suggestionsResult = await db.select({
+    productId: products.id,
+    name: products.name,
+    currentPrice: products.price,
+    recentSales: sql<number>`COUNT(${orderItems.id})`
+  })
+    .from(products)
+    .leftJoin(orderItems, eq(orderItems.productId, products.id))
+    .where(sql`DATE_SUB(NOW(), INTERVAL 7 DAY) <= ${orderItems.createdAt}`)
+    .groupBy(products.id)
+    .having(sql`COUNT(${orderItems.id}) > 5`)
+    .limit(10);
+
+  return suggestionsResult;
+}
+
+// ─── Demand Prediction ────────────────────────────────────────────────────────
+export async function getDemandPrediction(daysBack: number = 7) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  const dateFilter = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+  
+  // Get top products by sales in last N days
+  const result = await db.select({
+    productId: orderItems.productId,
+    productName: products.name,
+    salesCount: sql<number>`COUNT(${orderItems.id})`,
+    revenue: sql<number>`SUM(CAST(${orderItems.subtotal} AS DECIMAL(10,2)))`
+  })
+    .from(orderItems)
+    .leftJoin(products, eq(orderItems.productId, products.id))
+    .where(sql`${orderItems.createdAt} > ${dateFilter}`)
+    .groupBy(orderItems.productId)
+    .orderBy(desc(sql<number>`COUNT(${orderItems.id})`))
+    .limit(10);
+
+  return result.map(r => ({
+    ...r,
+    trend: "high_demand",
+    predictedSales: Math.ceil((r.salesCount || 0) * 1.2) // Simple 20% growth prediction
+  }));
 }

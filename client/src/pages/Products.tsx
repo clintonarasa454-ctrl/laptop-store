@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
-import { ChevronDown, Package, Search, SlidersHorizontal, X, Check, Loader2 } from "lucide-react";
-import { useEffect, useState, useRef } from "react";
+import { ChevronDown, Package, Search, SlidersHorizontal, X, Check, Loader2, Sparkles } from "lucide-react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -33,6 +33,8 @@ export default function Products() {
   const [selectedBrand, setSelectedBrand] = useState<string | undefined>(brandParam);
   const [minPrice, setMinPrice] = useState<string>(minPriceParam);
   const [maxPrice, setMaxPrice] = useState<string>(maxPriceParam);
+  const [debouncedMinPrice, setDebouncedMinPrice] = useState<string>(minPriceParam);
+  const [debouncedMaxPrice, setDebouncedMaxPrice] = useState<string>(maxPriceParam);
   const [sortBy, setSortBy] = useState<"newest" | "price_asc" | "price_desc">(sortByParam);
   const [tagFilter, setTagFilter] = useState<string | undefined>(tagParam);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -45,9 +47,15 @@ export default function Products() {
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] }, {
     staleTime: Infinity, // Settings rarely change
   });
-  const activeCategories = categories ? categories.filter(c => (c as any).active !== false) : [];
-  const orderedCategories = [...activeCategories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
-  const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
+  const { data: facets } = trpc.products.facets.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+
+  const { orderedCategories, rootCategories } = useMemo(() => {
+    const active = categories ? categories.filter(c => (c as any).active !== false) : [];
+    const ordered = [...active].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
+    const root = ordered.filter(c => !(c as any).parentId);
+    return { orderedCategories: ordered, rootCategories: root };
+  }, [categories]);
+
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const currency = settings?.general?.currency || "$";
 
@@ -56,6 +64,40 @@ export default function Products() {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Debounce prices to prevent UI lag while typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedMinPrice(minPrice);
+      setDebouncedMaxPrice(maxPrice);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [minPrice, maxPrice]);
+
+  // --- Dynamic SEO & Metadata ---
+  useEffect(() => {
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
+    let pageTitle = `Shop All Products | ${storeName}`;
+
+    if (search) {
+      pageTitle = `Search: ${search} | ${storeName}`;
+    } else if (selectedCategories.length === 1) {
+      const catName = orderedCategories.find(c => c.id === selectedCategories[0])?.name;
+      if (catName) pageTitle = `${catName} | ${storeName}`;
+    } else if (featuredParam) {
+      pageTitle = `Featured Deals | ${storeName}`;
+    }
+
+    document.title = pageTitle;
+    
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    metaDesc.setAttribute("content", `Shop ${pageTitle.split(' | ')[0].toLowerCase()} at ${storeName}. Huge selection of premium tech, laptops, and accessories.`);
+  }, [search, selectedCategories, orderedCategories, featuredParam, settings]);
 
   // 1. URL -> State Sync
   useEffect(() => {
@@ -120,8 +162,8 @@ export default function Products() {
     if (search) newParams.set("search", search);
     if (currentParams.get("featured") === "true") newParams.set("featured", "true");
     if (selectedBrand) newParams.set("brand", selectedBrand);
-    if (minPrice) newParams.set("minPrice", minPrice);
-    if (maxPrice) newParams.set("maxPrice", maxPrice);
+    if (debouncedMinPrice) newParams.set("minPrice", debouncedMinPrice);
+    if (debouncedMaxPrice) newParams.set("maxPrice", debouncedMaxPrice);
     if (sortBy !== "newest") newParams.set("sortBy", sortBy);
     if (tagFilter) newParams.set("tag", tagFilter);
     
@@ -154,13 +196,16 @@ export default function Products() {
       const newUrl = qs ? `${location}?${qs}` : location;
       setLocation(newUrl, { replace: true });
     }
-  }, [search, selectedCategories, selectedBrand, minPrice, maxPrice, sortBy, tagFilter, categories, location, searchString, syncedUrl, setLocation]);
+  }, [search, selectedCategories, selectedBrand, debouncedMinPrice, debouncedMaxPrice, sortBy, tagFilter, categories, location, searchString, syncedUrl, setLocation]);
 
   // Include child categories if a parent is selected
-  const categoryIdsToFetch = selectedCategories.length > 0 ? selectedCategories.flatMap(id => {
-    const children = categories?.filter(c => (c as any).parentId === id).map(c => c.id) || [];
-    return [id, ...children];
-  }) : undefined;
+  const categoryIdsToFetch = useMemo(() => {
+    if (selectedCategories.length === 0) return undefined;
+    return selectedCategories.flatMap(id => {
+      const children = categories?.filter(c => (c as any).parentId === id).map(c => c.id) || [];
+      return [id, ...children];
+    });
+  }, [selectedCategories, categories]);
 
   const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = trpc.products.infinite.useInfiniteQuery(
     {
@@ -170,8 +215,8 @@ export default function Products() {
       tag: tagFilter || undefined,
       categoryId: categoryIdsToFetch,
       brand: selectedBrand || undefined,
-      minPrice: minPrice || undefined,
-      maxPrice: maxPrice || undefined,
+      minPrice: debouncedMinPrice || undefined,
+      maxPrice: debouncedMaxPrice || undefined,
       sortBy: sortBy,
     },
     { 
@@ -195,11 +240,13 @@ export default function Products() {
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // Identify if we are viewing exactly one category that has children
-  const currentCategoryId = selectedCategories.length === 1 ? selectedCategories[0] : undefined;
-  const currentCategory = categories?.find(c => c.id === currentCategoryId);
-  const subCategories = currentCategory ? orderedCategories.filter(c => (c as any).parentId === currentCategory.id) : [];
+  const subCategories = useMemo(() => {
+    const currentCategoryId = selectedCategories.length === 1 ? selectedCategories[0] : undefined;
+    const currentCategory = categories?.find(c => c.id === currentCategoryId);
+    return currentCategory ? orderedCategories.filter(c => (c as any).parentId === currentCategory.id) : [];
+  }, [selectedCategories, categories, orderedCategories]);
 
-  const sorted = data?.pages.flatMap((page) => page.items) ?? [];
+  const sorted = useMemo(() => data?.pages.flatMap((page) => page.items) ?? [], [data?.pages]);
 
   type ActiveFilter = { id: string; label: string; onRemove: () => void };
   const activeFilters: ActiveFilter[] = [];
@@ -226,10 +273,10 @@ export default function Products() {
       });
     }
   });
-  if (minPrice || maxPrice) {
+  if (debouncedMinPrice || debouncedMaxPrice) {
     activeFilters.push({
       id: "price",
-      label: `Price: ${formatPrice(minPrice || 0)} - ${maxPrice ? formatPrice(maxPrice) : "∞"}`,
+      label: `Price: ${formatPrice(debouncedMinPrice || 0)} - ${debouncedMaxPrice ? formatPrice(debouncedMaxPrice) : "∞"}`,
       onRemove: () => { setMinPrice(""); setMaxPrice(""); },
     });
   }
@@ -338,7 +385,10 @@ export default function Products() {
                         setExpandedCategories(prev => prev.includes(cat.id) ? prev.filter(id => id !== cat.id) : [...prev, cat.id]);
                       }}
                     >
-                      <span>{cat.name}</span>
+                      <div className="flex items-center">
+                        <span>{cat.name}</span>
+                        {facets?.categories[cat.id] !== undefined && <span className="text-xs text-muted-foreground ml-1.5 opacity-60">({facets.categories[cat.id]})</span>}
+                      </div>
                       <div className="flex items-center gap-2">
                         {isSelected && <Check className="w-3.5 h-3.5" />}
                         {children.length > 0 && (
@@ -368,7 +418,10 @@ export default function Products() {
                                 isChildSelected ? "bg-[var(--brand)]/10 text-[var(--brand)] font-medium" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                               }`}
                             >
-                              <span>{child.name}</span>
+                              <div className="flex items-center">
+                                <span>{child.name}</span>
+                                {facets?.categories[child.id] !== undefined && <span className="text-xs opacity-60 ml-1.5">({facets.categories[child.id]})</span>}
+                              </div>
                               {isChildSelected && <Check className="w-3.5 h-3.5 text-[var(--brand)]" />}
                             </button>
                           );
@@ -434,7 +487,10 @@ export default function Products() {
                       selectedBrand === brand ? "bg-[var(--brand)]/10 text-[var(--brand)] font-semibold shadow-sm" : "text-foreground font-medium hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                     }`}
                   >
-                    <span>{brand}</span>
+                    <div className="flex items-center">
+                      <span>{brand}</span>
+                      {facets?.brands[brand] !== undefined && <span className="text-xs opacity-60 ml-1.5">({facets.brands[brand]})</span>}
+                    </div>
                     {selectedBrand === brand && <Check className="w-3.5 h-3.5 text-[var(--brand)]" />}
                   </button>
                 ))}

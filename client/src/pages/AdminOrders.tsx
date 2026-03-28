@@ -11,7 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Search, Eye, FileText, Truck } from "lucide-react";
+import { Search, Eye, FileText, Truck, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
 import { formatPrice } from "@/lib/cart";
 
@@ -22,6 +22,31 @@ export default function AdminOrders() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [assignAgentId, setAssignAgentId] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+
+  const { data: agents } = trpc.delivery.getAgents.useQuery();
+  const assignDelivery = trpc.delivery.assignDelivery.useMutation({
+    onSuccess: () => {
+      toast.success("Delivery assigned and customer notified!");
+      utils.admin.orders.invalidate();
+      utils.admin.orderDetail.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, statusFilter, itemsPerPage, sortConfig]);
+
+  const handleSort = (key: string) => {
+    setSortConfig((current) => ({
+      key,
+      direction: current?.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
@@ -33,11 +58,14 @@ export default function AdminOrders() {
     { refetchInterval: 5000 }
   );
 
+  type Order = NonNullable<typeof orders>[number];
+  type Agent = NonNullable<typeof agents>[number];
+
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
   const storeName = settings?.general?.storeName || "Store";
   const logoUrl = settings?.appearance?.logoUrl;
-  const address = settings?.general?.address || "123 Tech Avenue, Silicon Valley, CA 94025";
-  const contactEmail = settings?.general?.contactEmail || "support@example.com";
+  const address = settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City";
+  const contactEmail = settings?.general?.contactEmail || "support@company.com";
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
   const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands.";
 
@@ -53,6 +81,22 @@ export default function AdminOrders() {
   ];
 
   const filteredOrders = orders || [];
+  
+  const sortedOrders = [...filteredOrders].sort((a, b) => {
+    if (!sortConfig) return 0;
+    let aVal = a[sortConfig.key];
+    let bVal = b[sortConfig.key];
+    if (sortConfig.key === "total") {
+      aVal = Number(aVal);
+      bVal = Number(bVal);
+    }
+    if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
+    if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  const totalPages = Math.ceil(sortedOrders.length / itemsPerPage);
+  const paginatedOrders = sortedOrders.slice((page - 1) * itemsPerPage, page * itemsPerPage);
 
   const handleStatusUpdate = async (orderId: number, newStatus: string) => {
     try {
@@ -191,7 +235,7 @@ export default function AdminOrders() {
   };
 
   // Ensures the modal always displays the freshest data from our 5s polling interval
-  const activeOrder = selectedOrder ? orders?.find((o: any) => o.id === selectedOrder.id) || selectedOrder : null;
+  const activeOrder = selectedOrder ? orders?.find((o: Order) => o.id === selectedOrder.id) || selectedOrder : null;
 
   return (
     <AdminLayout activeTab="orders">
@@ -238,11 +282,21 @@ export default function AdminOrders() {
             <table className="w-full text-sm">
               <thead className="border-b border-border">
                 <tr>
-                  <th className="text-left py-3 px-4 font-semibold">Order ID</th>
-                  <th className="text-left py-3 px-4 font-semibold">Customer</th>
-                  <th className="text-left py-3 px-4 font-semibold">Date</th>
-                  <th className="text-left py-3 px-4 font-semibold">Status</th>
-                  <th className="text-right py-3 px-4 font-semibold">Total</th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('orderNumber')}>
+                    <div className="flex items-center gap-1">Order ID <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('shippingFullName')}>
+                    <div className="flex items-center gap-1">Customer <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('createdAt')}>
+                    <div className="flex items-center gap-1">Date <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-left py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('status')}>
+                    <div className="flex items-center gap-1">Status <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
+                  <th className="text-right py-3 px-4 font-semibold cursor-pointer hover:bg-muted/50 select-none" onClick={() => handleSort('total')}>
+                    <div className="flex items-center justify-end gap-1">Total <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" /></div>
+                  </th>
                   <th className="text-center py-3 px-4 font-semibold">Actions</th>
                 </tr>
               </thead>
@@ -253,8 +307,8 @@ export default function AdminOrders() {
                       Loading orders...
                     </td>
                   </tr>
-                ) : filteredOrders.length > 0 ? (
-                  filteredOrders.map((order: any) => (
+                ) : paginatedOrders.length > 0 ? (
+                  paginatedOrders.map((order: Order) => (
                     <tr key={order.id} className="border-b border-border hover:bg-secondary transition-colors">
                       <td className="py-3 px-4 font-mono text-xs">{order.orderNumber}</td>
                       <td className="py-3 px-4">{order.shippingFullName}</td>
@@ -336,6 +390,36 @@ export default function AdminOrders() {
               </tbody>
             </table>
           </div>
+          {!isLoading && filteredOrders.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-border mt-4">
+              <p className="text-sm text-muted-foreground text-center sm:text-left">
+                Showing {((page - 1) * itemsPerPage) + 1} to {Math.min(page * itemsPerPage, sortedOrders.length)} of {sortedOrders.length} entries
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground hidden sm:inline">Rows per page:</span>
+                  <Select value={itemsPerPage.toString()} onValueChange={(val) => setItemsPerPage(Number(val))}>
+                    <SelectTrigger className="h-8 w-[70px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
+                    Previous
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </Card>
 
         {/* Order Details Modal */}
@@ -397,6 +481,61 @@ export default function AdminOrders() {
                       </div>
                     </div>
                   </div>
+
+                {/* Delivery Information (for Admin testing/support) */}
+                {activeOrder.status === "out_for_delivery" && activeOrder.deliveryOtp && (
+                  <div className="border-t border-border pt-4">
+                    <h4 className="font-semibold mb-2 flex items-center gap-2">
+                      <Truck className="w-4 h-4 text-[var(--brand)]" /> Active Delivery
+                    </h4>
+                    <div className="flex justify-between items-center bg-muted/50 p-3 rounded-lg">
+                      <span className="text-sm text-muted-foreground">Customer OTP Code:</span>
+                      <span className="font-mono text-lg font-bold tracking-widest text-[var(--brand)]">{activeOrder.deliveryOtp}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Delivery Agent Assignment */}
+                {(activeOrder.status === "processing" || activeOrder.status === "shipped") && (
+                  <div className="border-t border-border pt-4">
+                    <h4 className="font-semibold mb-3">Delivery Management</h4>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                      <Select 
+                        value={assignAgentId || activeOrder.deliveryAgentId?.toString() || ""}
+                        onValueChange={setAssignAgentId}
+                      >
+                        <SelectTrigger className="w-full bg-background">
+                          <SelectValue placeholder="Assign a Delivery Agent" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {agents?.map((agent: Agent) => {
+                            const isAssignedToThis = activeOrder.deliveryAgentId === agent.id;
+                            const isAgentDisabled = !agent.isAvailable || (agent.activeCity && agent.activeCity !== activeOrder.shippingCity);
+                            const isDisabled = isAgentDisabled && !isAssignedToThis;
+
+                            let statusText = "";
+                            if (!agent.isAvailable) statusText = " (Offline)";
+                            else if (agent.activeCity && agent.activeCity !== activeOrder.shippingCity) statusText = ` (Busy in ${agent.activeCity})`;
+                            else if (agent.activeCity === activeOrder.shippingCity) statusText = ` (Active in ${agent.activeCity})`;
+
+                            return (
+                              <SelectItem key={agent.id} value={agent.id.toString()} disabled={isDisabled}>
+                                {agent.name} ({agent.vehicleType} - {agent.vehicleNumber}){statusText}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                      <Button 
+                        className="w-full sm:w-auto shrink-0 bg-[var(--brand)] text-white" 
+                        disabled={!assignAgentId || assignDelivery.isPending}
+                        onClick={() => assignDelivery.mutate({ orderId: activeOrder.id, agentId: parseInt(assignAgentId) })}
+                      >
+                        {assignDelivery.isPending ? "Assigning..." : "Assign & Notify"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
 
                   <Button
                     variant="outline"

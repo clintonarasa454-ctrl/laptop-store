@@ -1,7 +1,8 @@
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
 import { getGuestCart, clearGuestCart, formatPrice } from "@/lib/cart";
+import { toast } from "sonner";
 import {
   ChevronDown,
   ChevronRight,
@@ -19,6 +20,11 @@ import {
   LayoutDashboard,
   Headphones,
   Loader2,
+  Sparkles,
+  RotateCcw,
+  Mic,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
 import { useEffect, useRef, useState } from "react";
@@ -49,6 +55,23 @@ const getCategoryIcon = (cat: any) => {
   return categoryIcons[cat.slug] ?? <Package className="w-4 h-4" />;
 };
 
+function TypewriterText({ text, onComplete, renderContent }: { text: string, onComplete: () => void, renderContent: (content: string) => any }) {
+  const [displayed, setDisplayed] = useState("");
+  useEffect(() => {
+    let i = 0;
+    const timer = setInterval(() => {
+      i += 3; // Number of characters to reveal per tick
+      setDisplayed(text.slice(0, i));
+      if (i >= text.length) {
+        clearInterval(timer);
+        onComplete();
+      }
+    }, 15); // Speed of the stream
+    return () => clearInterval(timer);
+  }, [text, onComplete]);
+  return <>{renderContent(displayed)}<span className="inline-block w-1.5 h-3.5 ml-1 align-middle bg-[var(--brand)] animate-pulse" /></>;
+}
+
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
   const [location, navigate] = useLocation();
@@ -58,17 +81,84 @@ export default function Navbar() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [scrolled, setScrolled] = useState(false);
+  const [isPageScrolling, setIsPageScrolling] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(() => {
+    try { return sessionStorage.getItem("nexus_ai_open") === "true"; } catch { return false; }
+  });
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [isSearchingHistory, setIsSearchingHistory] = useState(false);
+  const [searchHistoryQuery, setSearchHistoryQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [streamingMessageIndex, setStreamingMessageIndex] = useState<number | null>(null);
+
+  // Voice Search State
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const [isMuted, setIsMuted] = useState(true);
+
+  const speakResponse = (text: string) => {
+    if (isMuted || typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const cleanText = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1').replace(/[*_#`]/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.onresult = (event: any) => {
+          const transcript = Array.from(event.results)
+            .map((result: any) => result[0].transcript)
+            .join("");
+          setChatInput(transcript);
+        };
+        recognition.onerror = () => setIsListening(false);
+        recognition.onend = () => setIsListening(false);
+        recognitionRef.current = recognition;
+      }
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) { recognitionRef.current?.stop(); setIsListening(false); } 
+    else { if (recognitionRef.current) { recognitionRef.current.start(); setIsListening(true); toast.info("Listening..."); } else { toast.error("Voice input is not supported in your browser."); } }
+  };
+
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("nexus_ai_messages");
+      if (saved) { setChatMessages(JSON.parse(saved)); return; }
+    } catch {}
+    const displayName = user?.name ? `, ${user.name}` : " there";
+    setChatMessages([{ role: 'assistant', content: `Hi${displayName}! I'm your shopping assistant. What are you looking for today?` }]);
+  }, [user]);
 
   const { data: categories } = trpc.categories.list.useQuery();
   const { data: cartItems } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
-  const activeCategories = categories ? categories.filter(c => (c as any).active !== false) : [];
+  const activeCategories = (categories as any[]) ? (categories as any[]).filter(c => c.active !== false) : [];
   const orderedCategories = [...activeCategories].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0));
   const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
 
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance"] });
   const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
   const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
+
+  const [chatPosition, setChatPosition] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem("nexus_ai_position");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { x: 0, y: 0 };
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
 
   // Prevent background scrolling when mobile menu is open
   useEffect(() => {
@@ -80,26 +170,11 @@ export default function Navbar() {
     return () => { document.body.style.overflow = "auto"; };
   }, [mobileOpen]);
 
-  // Auto-sync guest cart globally when authenticating (e.g. returning from Google OAuth)
-  const syncCart = trpc.cart.syncFromGuest.useMutation({
-    onSuccess: () => {
-      clearGuestCart();
-      utils.cart.get.invalidate();
-    }
-  });
-  useEffect(() => {
-    if (isAuthenticated) {
-      const guestItems = getGuestCart();
-      if (guestItems.length > 0) syncCart.mutate(guestItems);
-    }
-  }, [isAuthenticated]);
-
-  // Guest cart count
   const [guestCartCount, setGuestCartCount] = useState(0);
   useEffect(() => {
     const update = () => {
       const items = getGuestCart();
-      setGuestCartCount(items.reduce((s, i) => s + i.quantity, 0));
+      setGuestCartCount(items.length);
     };
     update();
     window.addEventListener("storage", update);
@@ -121,7 +196,7 @@ export default function Navbar() {
   );
 
   const cartCount = isAuthenticated
-    ? (cartItems?.reduce((s, i) => s + i.quantity, 0) ?? 0)
+    ? (cartItems?.length ?? 0)
     : guestCartCount;
 
   useEffect(() => {
@@ -129,6 +204,174 @@ export default function Navbar() {
     window.addEventListener("scroll", handler);
     return () => window.removeEventListener("scroll", handler);
   }, []);
+
+  // Auto-scroll AI chat to bottom on new messages
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages, aiChatOpen]);
+
+  // Auto-scroll actively while streaming
+  useEffect(() => {
+    if (streamingMessageIndex !== null) {
+      const interval = setInterval(() => {
+        if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      }, 100);
+      return () => clearInterval(interval);
+    }
+  }, [streamingMessageIndex]);
+
+  // Scroll transparency effect
+  useEffect(() => {
+    if (!aiChatOpen) return;
+    let scrollTimeout: NodeJS.Timeout;
+    const handleScroll = () => {
+      setIsPageScrolling(true);
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => setIsPageScrolling(false), 300);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [aiChatOpen]);
+
+  // Persist Assistant state across page navigations
+  useEffect(() => {
+    sessionStorage.setItem("nexus_ai_open", String(aiChatOpen));
+  }, [aiChatOpen]);
+
+  useEffect(() => {
+    sessionStorage.setItem("nexus_ai_messages", JSON.stringify(chatMessages));
+  }, [chatMessages]);
+
+  useEffect(() => {
+    sessionStorage.setItem("nexus_ai_position", JSON.stringify(chatPosition));
+  }, [chatPosition]);
+
+  // Dragging event handlers for the floating assistant
+  const handleDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Prevent dragging if the user is clicking the close button
+    if ((e.target as HTMLElement).closest('button')) return;
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX - chatPosition.x,
+      y: e.clientY - chatPosition.y
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleDragMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    setChatPosition({
+      x: e.clientX - dragStartRef.current.x,
+      y: e.clientY - dragStartRef.current.y
+    });
+  };
+
+  const handleDragEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    setIsDragging(false);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+
+  const aiMutation = trpc.ai.chat.useMutation({
+    onSuccess: (data) => {
+      setChatMessages(prev => {
+        const next = [...prev, { role: 'assistant' as const, content: data.reply }];
+        setStreamingMessageIndex(next.length - 1);
+        return next as { role: "user" | "assistant"; content: string }[];
+      });
+      speakResponse(data.reply);
+    },
+    onError: (error) => {
+      let errorMessage = "Sorry, I ran into a network error. Please try again.";
+      if (error.message.includes('quota') || error.message.includes('429')) {
+        errorMessage = "The AI is currently unavailable due to high traffic or billing issues. Please check your plan and billing details, then try again later.";
+      }
+      setChatMessages(prev => [...prev, { role: 'assistant' as const, content: errorMessage }] as { role: "user" | "assistant"; content: string }[]);
+    }
+  });
+
+  const handleAiSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || aiMutation.isPending) return;
+    const userMsg = chatInput.trim();
+    setChatInput("");
+    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: userMsg }];
+    setChatMessages(newMessages);
+    
+    // Pass the active cart context to the AI so it doesn't recommend duplicate items
+    const currentCart = isAuthenticated 
+      ? (cartItems || []).map(i => ({ productId: i.productId, quantity: i.quantity }))
+      : getGuestCart().map(i => ({ productId: i.productId, quantity: i.quantity }));
+      
+    aiMutation.mutate({ 
+      message: userMsg, 
+      history: newMessages.slice(1), 
+      cartContext: currentCart.length > 0 ? currentCart : undefined,
+      userId: user?.id,
+      userEmail: user?.email,
+    });
+  };
+
+  const handleNewChat = () => {
+    const displayName = user?.name ? `, ${user.name}` : " there";
+    setChatMessages([
+      { role: 'assistant', content: `Hi${displayName}! I'm your shopping assistant. What are you looking for today?` }
+    ]);
+    setChatInput("");
+    toast.success("New chat started!");
+  };
+
+  const customerSuggestedPrompts = [
+    "Find a gaming laptop",
+    "What is your return policy?",
+    "Recommend a budget PC",
+  ];
+
+  const handleSuggestedPrompt = (prompt: string) => {
+    if (aiMutation.isPending) return;
+    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: prompt }];
+    setChatMessages(newMessages);
+    const currentCart = isAuthenticated 
+      ? (cartItems || []).map(i => ({ productId: i.productId, quantity: i.quantity }))
+      : getGuestCart().map(i => ({ productId: i.productId, quantity: i.quantity }));
+    aiMutation.mutate({ 
+      message: prompt, 
+      history: newMessages.slice(1), 
+      cartContext: currentCart.length > 0 ? currentCart : undefined,
+      userId: user?.id,
+      userEmail: user?.email,
+    });
+  };
+
+  // Safely intercept and render markdown links returned by the AI
+  const renderMessageContent = (content: string) => {
+    const linkParts = content.split(/\[([^\]]+)\]\(([^)]+)\)/g);
+    const elements = [];
+    for (let i = 0; i < linkParts.length; i += 3) {
+      const textPart = linkParts[i];
+      const boldParts = textPart.split(/(\*\*.*?\*\*)/g);
+      boldParts.forEach((part, j) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          elements.push(<strong key={`bold-${i}-${j}`}>{part.slice(2, -2)}</strong>);
+        } else if (part) {
+          const lines = part.split('\n');
+          lines.forEach((line, k) => {
+            elements.push(<span key={`text-${i}-${j}-${k}`}>{line}</span>);
+            if (k < lines.length - 1) elements.push(<br key={`br-${i}-${j}-${k}`} />);
+          });
+        }
+      });
+      if (i + 1 < linkParts.length) {
+        elements.push(<Link key={`link-${i}`} href={linkParts[i + 2]} onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }} className="text-[var(--brand)] hover:underline font-semibold transition-colors">{linkParts[i + 1]}</Link>);
+      }
+    }
+    return elements;
+  };
+
+  const filteredMessages = chatMessages.filter(msg => 
+    !searchHistoryQuery.trim() || msg.content.toLowerCase().includes(searchHistoryQuery.toLowerCase())
+  );
 
   useEffect(() => {
     if (searchOpen) searchRef.current?.focus();
@@ -183,11 +426,12 @@ export default function Navbar() {
   };
 
   return (
-    <header
-      className={`sticky top-0 z-50 transition-all duration-500 ${
-        scrolled ? "bg-background/80 backdrop-blur-xl shadow-sm border-b border-border" : "bg-background border-b border-transparent"
-      }`}
-    >
+    <>
+      <header
+        className={`sticky top-0 z-50 transition-all duration-500 ${
+          scrolled ? "bg-background/80 backdrop-blur-xl shadow-sm border-b border-border" : "bg-background border-b border-transparent"
+        }`}
+      >
       {/* Top bar */}
       <div className="container">
         <div className="flex items-center justify-between h-16 gap-4">
@@ -270,23 +514,29 @@ export default function Navbar() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search products..."
+                aria-label="Search products"
                   className="w-48 sm:w-64 h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                 />
-                <Button type="button" variant="ghost" size="icon" onClick={() => setSearchOpen(false)}>
+              <Button type="button" variant="ghost" size="icon" onClick={() => setSearchOpen(false)} aria-label="Close search">
                   <X className="w-4 h-4" />
                 </Button>
                 {renderAutocomplete()}
               </form>
             ) : (
-              <Button variant="ghost" size="icon" onClick={() => setSearchOpen(true)} className="hidden sm:flex">
+              <Button variant="ghost" size="icon" onClick={() => setSearchOpen(true)} className="hidden sm:flex" aria-label="Open search">
                 <Search className="w-4.5 h-4.5" />
               </Button>
             )}
 
+            {/* AI Assistant */}
+            <Button variant="ghost" size="icon" onClick={() => setAiChatOpen(!aiChatOpen)} className="hidden sm:flex" aria-label="Toggle AI Assistant">
+              <Sparkles className="w-4.5 h-4.5 text-[var(--brand)]" />
+            </Button>
+
         {/* Wishlist */}
         {isAuthenticated && (
           <Link href="/dashboard/wishlist">
-            <Button variant="ghost" size="icon" className="hidden sm:flex">
+            <Button variant="ghost" size="icon" className="hidden sm:flex" aria-label="Wishlist">
               <Heart className="w-4.5 h-4.5" />
             </Button>
           </Link>
@@ -294,7 +544,7 @@ export default function Navbar() {
 
             {/* Cart */}
             <Link href="/cart">
-              <Button variant="ghost" size="icon" className="relative">
+              <Button variant="ghost" size="icon" className="relative" aria-label="Cart">
                 <ShoppingCart className="w-4.5 h-4.5" />
                 {cartCount > 0 && (
                   <span className="absolute -top-1 -right-1 w-4.5 h-4.5 rounded-full bg-[var(--brand)] text-white text-[10px] font-bold flex items-center justify-center">
@@ -366,8 +616,13 @@ export default function Navbar() {
               </div>
             )}
 
+            {/* AI Assistant Mobile */}
+            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setAiChatOpen(!aiChatOpen)} aria-label="Toggle AI Assistant">
+              <Sparkles className="w-4.5 h-4.5 text-[var(--brand)]" />
+            </Button>
+
             {/* Mobile menu toggle */}
-            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileOpen(true)}>
+            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileOpen(true)} aria-label="Open mobile menu">
               <Menu className="w-4.5 h-4.5" />
             </Button>
           </div>
@@ -398,7 +653,7 @@ export default function Navbar() {
               {storeName}
             </span>
           </Link>
-          <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}>
+          <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} aria-label="Close mobile menu">
             <X className="w-5 h-5 text-muted-foreground" />
           </Button>
         </div>
@@ -410,9 +665,10 @@ export default function Navbar() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search products..."
+              aria-label="Search products"
               className="flex-1 h-11 px-4 text-sm rounded-xl border border-input bg-background focus:outline-none focus:ring-2 focus:ring-[var(--brand)] shadow-sm"
             />
-            <Button type="submit" size="icon" className="bg-[var(--brand)] text-white h-11 w-11 rounded-xl shadow-sm hover:opacity-90 shrink-0">
+            <Button type="submit" size="icon" className="bg-[var(--brand)] text-white h-11 w-11 rounded-xl shadow-sm hover:opacity-90 shrink-0" aria-label="Submit search">
               <Search className="w-4.5 h-4.5" />
             </Button>
             {renderAutocomplete()}
@@ -471,6 +727,128 @@ export default function Navbar() {
           )}
         </div>
       </div>
-    </header>
+      </header>
+
+      {/* Floating AI Chat Card */}
+      {aiChatOpen && (
+        <div 
+          className={`fixed bottom-6 right-6 z-[100] transition-opacity duration-300 ${isPageScrolling ? 'opacity-50' : 'opacity-100'}`}
+          style={{ transform: `translate3d(${chatPosition.x}px, ${chatPosition.y}px, 0)` }}
+        >
+          <div className="w-80 sm:w-96 h-[32rem] bg-card border border-border shadow-2xl rounded-3xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div 
+              className={`px-5 py-4 border-b border-border/50 bg-gradient-to-r from-[var(--brand)]/8 to-[var(--brand)]/4 flex items-center justify-between select-none touch-none flex-shrink-0 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              onPointerDown={handleDragStart}
+              onPointerMove={handleDragMove}
+              onPointerUp={handleDragEnd}
+              onPointerCancel={handleDragEnd}
+            >
+              <div className="flex items-center gap-2.5 pointer-events-none">
+                <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/20 text-[var(--brand)] flex items-center justify-center">
+                  <Sparkles className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-foreground text-[0.95rem]">{storeName}</h3>
+                  <p className="text-[0.7rem] text-muted-foreground font-medium">Shopping Assistant</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-0.5">
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
+                  <RotateCcw className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={() => toast.info("Deep search coming soon!")} title="Search Chat History" aria-label="Search Chat History">
+                  <Search className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
+                  {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }} aria-label="Close chat">
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Messages Area */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3.5 bg-gradient-to-b from-background/50 to-background" ref={chatScrollRef}>
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300 flex-shrink-0`}>
+                  <div className={`max-w-[80%] ${
+                    msg.role === 'user' 
+                      ? 'rounded-2xl rounded-tr-md bg-[var(--brand)] text-white shadow-md' 
+                      : 'rounded-2xl rounded-tl-md bg-muted text-foreground shadow-sm'
+                  } px-4 py-3 break-words whitespace-normal`}>
+                    <div className={`text-sm leading-[1.6] ${msg.role === 'user' ? 'font-medium' : 'font-normal'}`}>
+                      {msg.role === 'assistant' ? (
+                        streamingMessageIndex === i ? (
+                          <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
+                        ) : renderMessageContent(msg.content)
+                      ) : msg.content}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {chatMessages.length === 1 && !aiMutation.isPending && !searchHistoryQuery && (
+                <div className="flex flex-col gap-2 mt-2 flex-shrink-0">
+                  <p className="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wider px-1">Suggested</p>
+                  <div className="flex flex-wrap gap-2">
+                    {customerSuggestedPrompts.map(prompt => (
+                      <button 
+                        key={prompt}
+                        onClick={() => handleSuggestedPrompt(prompt)}
+                        className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border/50 hover:border-[var(--brand)]/30 rounded-full px-3 py-1.5 transition-all duration-200 text-left shadow-none hover:shadow-sm flex-shrink-0"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {aiMutation.isPending && (
+                <div className="flex justify-start animate-in fade-in duration-300 flex-shrink-0">
+                  <div className="bg-muted rounded-2xl rounded-tl-md p-3 flex items-center gap-2 h-11 px-4 shadow-sm">
+                    <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:150ms]" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:300ms]" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Input Area */}
+            <div className="px-4 py-3 border-t border-border/50 bg-background/80 backdrop-blur-sm flex-shrink-0">
+              <form className="flex gap-2" onSubmit={handleAiSubmit}>
+                <div className="relative flex-1">
+                  <input 
+                    type="text" 
+                    value={chatInput} 
+                    onChange={e => setChatInput(e.target.value)} 
+                    aria-label="Chat input" 
+                    placeholder={isListening ? "Listening..." : "Ask about our laptops..."} 
+                    className="w-full h-10 pl-3.5 pr-9 text-sm rounded-lg border border-input/60 bg-background hover:border-input focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/50 focus:border-[var(--brand)] transition-all placeholder:text-muted-foreground/50" 
+                  />
+                  <button 
+                    type="button" 
+                    onClick={toggleListening} 
+                    className={`absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors p-1 rounded hover:bg-muted/50 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} 
+                    title="Voice Search"
+                  >
+                    <Mic className="w-4 h-4" />
+                  </button>
+                </div>
+                <Button 
+                  type="submit" 
+                  size="sm" 
+                  className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-4 rounded-lg font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed" 
+                  disabled={!chatInput.trim() || aiMutation.isPending}
+                >
+                  Send
+                </Button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
