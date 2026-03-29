@@ -182,3 +182,26 @@ export function getOrderCancelledEmailHtml(opts: CommonEmailOptions & { shipping
     </div>
   `;
 }
+
+export function getAdminOrderCancelledEmailHtml(opts: CommonEmailOptions & { orderNumber: string; shippingFullName: string; shippingEmail: string | null; total: string | number; paymentStatus: string; reason?: string; storeCurrency: string; }) {
+  const { storeName, primaryColor = "#ef4444", orderNumber, shippingFullName, shippingEmail, total, paymentStatus, reason, storeCurrency } = opts;
+  const logoHtml = getHeaderHtml(storeName, opts.logoUrl);
+  const formatEmailPrice = (p: string | number) => new Intl.NumberFormat("en-US", { style: "currency", currency: storeCurrency }).format(typeof p === "string" ? parseFloat(p) : p);
+
+  return `
+    <div style="font-family: system-ui, -apple-system, sans-serif; color: #1f2937; max-width: 600px; margin: 0 auto; padding: 20px 24px; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+      <div style="text-align: center; border-bottom: 2px solid #f3f4f6; padding-bottom: 15px; margin-bottom: 15px;">${logoHtml}<h1 style="font-size: 20px; margin: 0; color: ${primaryColor};">Order Cancelled by Customer</h1></div>
+      <p style="font-size: 14px; margin-top: 0;">A customer has just cancelled their order via the tracking page.</p>
+      <div style="background: #f9fafb; padding: 15px 20px; border-radius: 6px; margin: 15px 0;">
+        <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #4b5563; line-height: 1.6;">
+          <li><strong>Order Number:</strong> ${orderNumber}</li>
+          <li><strong>Customer:</strong> ${shippingFullName} (${shippingEmail || 'N/A'})</li>
+          <li><strong>Total:</strong> ${formatEmailPrice(total)}</li>
+          <li><strong>Payment Status:</strong> ${paymentStatus}</li>
+          <li><strong>Reason:</strong> ${reason || "None provided"}</li>
+        </ul>
+      </div>
+      <p style="font-size: 14px; color: #4b5563;">Please log in to the Admin Panel > Orders to review this cancellation and process any necessary refunds.</p>
+    </div>
+  `;
+}

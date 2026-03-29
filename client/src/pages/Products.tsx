@@ -76,7 +76,7 @@ export default function Products() {
 
   // --- Dynamic SEO & Metadata ---
   useEffect(() => {
-    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || 'Store';
     let pageTitle = `Shop All Products | ${storeName}`;
 
     if (search) {

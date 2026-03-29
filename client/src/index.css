@@ -202,6 +202,14 @@
     min-width: 0;
   }
 
+  .progress-indicator {
+    width: var(--progress-width, 0%);
+  }
+
+  .chat-widget {
+    transform: translate3d(var(--chat-x, 0px), var(--chat-y, 0px), 0);
+  }
+
   @media (min-width: 640px) {
     .container {
       padding-left: 1.5rem; /* 24px - tablet padding */

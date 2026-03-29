@@ -182,7 +182,7 @@ export default function Home() {
   
   // --- SEO Metadata ---
   useEffect(() => {
-    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || 'Store';
     document.title = storeName;
     
     let metaDesc = document.querySelector('meta[name="description"]');
@@ -191,7 +191,7 @@ export default function Home() {
       metaDesc.setAttribute('name', 'description');
       document.head.appendChild(metaDesc);
     }
-    const storeDesc = settings?.general?.storeDescription || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_description") : null) || heroDescription;
+    const storeDesc = settings?.general?.storeDescription || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_description_cache") : null) || heroDescription;
     metaDesc.setAttribute("content", storeDesc);
 
     return () => { document.title = storeName; };

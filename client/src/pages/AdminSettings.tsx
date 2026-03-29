@@ -273,7 +273,8 @@ export default function AdminSettings() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `nexus-backup-${new Date().toISOString().split('T')[0]}.json`;
+      const safeStoreName = generalSettings.storeName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'store';
+      a.download = `${safeStoreName}-backup-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

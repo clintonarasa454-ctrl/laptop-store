@@ -36,6 +36,7 @@ const AdminPayments = lazy(() => import("./pages/AdminPayments"));
 const AdminCustomers = lazy(() => import("./pages/AdminCustomers"));
 const AdminDrivers = lazy(() => import("./pages/AdminDrivers"));
 const AdminContent = lazy(() => import("./pages/AdminContent"));
+const AdminNotifications = lazy(() => import("./pages/AdminNotifications"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const AdminAI = lazy(() => import("./pages/AdminAI"));
 const DriverDashboard = lazy(() => import("./pages/DriverDashboard"));
@@ -43,12 +44,12 @@ const CompareWidget = lazy(() => import("./components/CompareWidget"));
 
 // Apply cached settings immediately to prevent flickering on load
 if (typeof window !== "undefined") {
-  const cachedStoreName = localStorage.getItem("nexus_store_name");
+  const cachedStoreName = localStorage.getItem("store_name_cache");
   if (cachedStoreName) {
     document.title = cachedStoreName;
   }
   
-  const cachedFavicon = localStorage.getItem("nexus_favicon_url");
+  const cachedFavicon = localStorage.getItem("store_favicon_cache");
   if (cachedFavicon) {
     let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
     if (!link) {
@@ -59,17 +60,17 @@ if (typeof window !== "undefined") {
     link.href = cachedFavicon;
   }
   
-  const cachedPrimaryColor = localStorage.getItem("nexus_primary_color");
+  const cachedPrimaryColor = localStorage.getItem("store_primary_color");
   if (cachedPrimaryColor) {
     document.documentElement.style.setProperty("--brand", cachedPrimaryColor);
   }
   
-  const cachedPromoColor = localStorage.getItem("nexus_promo_banner_color");
+  const cachedPromoColor = localStorage.getItem("store_promo_color");
   if (cachedPromoColor) {
     document.documentElement.style.setProperty("--promo-banner", cachedPromoColor);
   }
 
-  const cachedStoreDesc = localStorage.getItem("nexus_store_description");
+  const cachedStoreDesc = localStorage.getItem("store_description_cache");
   if (cachedStoreDesc) {
     let metaDesc = document.querySelector('meta[name="description"]');
     if (!metaDesc) {
@@ -88,11 +89,11 @@ function GlobalSettings() {
     // 1. Apply Primary Theme Color
     if (settings?.appearance?.primaryColor) {
       document.documentElement.style.setProperty("--brand", settings.appearance.primaryColor);
-      localStorage.setItem("nexus_primary_color", settings.appearance.primaryColor);
+      localStorage.setItem("store_primary_color", settings.appearance.primaryColor);
     }
     if (settings?.appearance?.promoBannerColor) {
       document.documentElement.style.setProperty("--promo-banner", settings.appearance.promoBannerColor);
-      localStorage.setItem("nexus_promo_banner_color", settings.appearance.promoBannerColor);
+      localStorage.setItem("store_promo_color", settings.appearance.promoBannerColor);
     }
     // 2. Apply Custom Favicon
     if (settings?.appearance?.faviconUrl !== undefined) {
@@ -104,46 +105,46 @@ function GlobalSettings() {
       }
       if (settings.appearance.faviconUrl) {
         link.href = settings.appearance.faviconUrl;
-        localStorage.setItem("nexus_favicon_url", settings.appearance.faviconUrl);
+        localStorage.setItem("store_favicon_cache", settings.appearance.faviconUrl);
       } else {
         link.href = "/favicon.ico";
-        localStorage.removeItem("nexus_favicon_url");
+        localStorage.removeItem("store_favicon_cache");
       }
     }
     // 3. Apply Browser Tab Title
     if (settings?.general?.storeName) {
       document.title = settings.general.storeName;
-      localStorage.setItem("nexus_store_name", settings.general.storeName);
+      localStorage.setItem("store_name_cache", settings.general.storeName);
     }
     // 4. Cache Store Description for SEO
     if (settings?.general?.storeDescription) {
-      localStorage.setItem("nexus_store_description", settings.general.storeDescription);
+      localStorage.setItem("store_description_cache", settings.general.storeDescription);
     }
     // 4. Cache Logo URL for UI components
     if (settings?.appearance?.logoUrl !== undefined) {
       if (settings.appearance.logoUrl) {
-        localStorage.setItem("nexus_logo_url", settings.appearance.logoUrl);
+        localStorage.setItem("store_logo_cache", settings.appearance.logoUrl);
       } else {
-        localStorage.removeItem("nexus_logo_url");
+        localStorage.removeItem("store_logo_cache");
       }
     }
     // 5. Apply Currency to Local Storage for the formatter
     if (settings?.general?.currency) {
-      localStorage.setItem("nexus_currency", settings.general.currency);
+      localStorage.setItem("store_currency", settings.general.currency);
       window.dispatchEvent(new Event("currencyUpdated"));
     }
 
     // 6. Fetch Live Exchange Rates (Base USD)
     const fetchRates = async () => {
       try {
-        const cachedTime = localStorage.getItem("nexus_exchange_time");
+        const cachedTime = localStorage.getItem("store_exchange_time");
         // Cache the rates for 24 hours so we don't spam the API and slow down load times
         if (cachedTime && Date.now() - parseInt(cachedTime) < 86400000) return; 
         const res = await fetch("https://open.er-api.com/v6/latest/KES");
         const data = await res.json();
         if (data?.rates) {
-          localStorage.setItem("nexus_exchange_rates", JSON.stringify(data.rates));
-          localStorage.setItem("nexus_exchange_time", Date.now().toString());
+          localStorage.setItem("store_exchange_rates", JSON.stringify(data.rates));
+          localStorage.setItem("store_exchange_time", Date.now().toString());
           window.dispatchEvent(new Event("currencyUpdated"));
         }
       } catch (e) {
@@ -195,6 +196,7 @@ function Router() {
         <Route key="admin-customers" path="/admin/customers" component={AdminCustomers} />
         <Route key="admin-drivers" path="/admin/drivers" component={AdminDrivers} />
         <Route key="admin-content" path="/admin/content" component={AdminContent} />
+        <Route key="admin-notifications" path="/admin/notifications" component={AdminNotifications} />
         <Route key="admin-settings" path="/admin/settings" component={AdminSettings} />
         <Route key="admin-ai" path="/admin/ai" component={AdminAI} />
         <Route key="not-found-404" path="/404" component={NotFound} />

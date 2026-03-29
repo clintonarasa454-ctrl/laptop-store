@@ -137,7 +137,7 @@ export default function ProductDetail() {
   // --- SEO & Social Sharing ---
   useEffect(() => {
     if (!product) return;
-    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || 'Store';
+    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || 'Store';
     document.title = `${product.name} | ${storeName}`;
     
     let metaDesc = document.querySelector('meta[name="description"]');

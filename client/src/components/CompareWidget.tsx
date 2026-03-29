@@ -55,7 +55,7 @@ export default function CompareWidget() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={() => { localStorage.removeItem("nexus_compare"); window.dispatchEvent(new Event("compareUpdated")); }}>
+            <Button variant="ghost" size="sm" onClick={() => { localStorage.removeItem("store_compare_list"); window.dispatchEvent(new Event("compareUpdated")); }}>
               Clear All
             </Button>
             <Button onClick={() => setOpen(true)} className="bg-[var(--brand)] text-white hover:opacity-90 shadow-md">

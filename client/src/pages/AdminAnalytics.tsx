@@ -25,7 +25,7 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { Download, Calendar, TrendingUp, Users, ShoppingBag, Eye } from "lucide-react";
+import { Download, Calendar, TrendingUp, Users, ShoppingBag, Eye, Sparkles } from "lucide-react";
 import { formatPrice } from "@/lib/cart";
 
 const COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981"];
@@ -103,7 +103,7 @@ export default function AdminAnalytics() {
         </div>
 
         {/* KPI Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <Card className="p-5 flex items-center gap-4">
             <div className="w-12 h-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-600 flex items-center justify-center shrink-0">
               <Eye className="w-6 h-6" />
@@ -192,6 +192,34 @@ export default function AdminAnalytics() {
             </div>
           </Card>
         </div>
+
+        {/* AI Conversion Tracking Chart */}
+        <Card className="p-6">
+          <h3 className="font-semibold mb-6 flex items-center gap-2"><Sparkles className="w-5 h-5 text-pink-500" /> AI vs Organic Revenue</h3>
+          <div className="h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={stats?.aiRevenueData || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorAi" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#ec4899" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#ec4899" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="colorOrganic" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} dy={10} />
+                <YAxis stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => formatPrice(val)} dx={-10} />
+                <Tooltip contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "8px" }} />
+                <Legend />
+                <Area type="monotone" name="Organic Revenue" dataKey="organicRevenue" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorOrganic)" stackId="1" />
+                <Area type="monotone" name="AI Assisted Revenue" dataKey="aiRevenue" stroke="#ec4899" strokeWidth={2} fillOpacity={1} fill="url(#colorAi)" stackId="1" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
 
         {/* Charts - Secondary row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -48,7 +48,7 @@ function OrderTrackingDisplay({ orderNumber }: { orderNumber: string }) {
             if (!markerRef.current) {
               const truckIcon = document.createElement("div");
               truckIcon.innerHTML = "🚚";
-              truckIcon.className = "bg-white p-2 rounded-full shadow-lg text-2xl border-2 border-[var(--brand)]";
+              truckIcon.className = "bg-white p-2 rounded-full shadow-lg text-2xl border-2 border-[var(--brand)] flex items-center justify-center transition-all duration-1000 ease-linear";
               
               markerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
                 map: mapRef.current,
@@ -58,6 +58,9 @@ function OrderTrackingDisplay({ orderNumber }: { orderNumber: string }) {
               });
             } else {
               markerRef.current.position = position;
+              if (loc.heading && markerRef.current.content) {
+                (markerRef.current.content as HTMLElement).style.transform = `rotate(${loc.heading}deg)`;
+              }
             }
           }
         }

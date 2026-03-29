@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Search, Eye, Mail, Lock, Loader2, ArrowUpDown } from "lucide-react";
+import { Search, Eye, Mail, Lock, Loader2, ArrowUpDown, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminCustomers() {
@@ -49,6 +49,11 @@ export default function AdminCustomers() {
     onError: (err) => toast.error(err.message),
   });
 
+  const triggerAIMarketing = trpc.admin.triggerAIMarketing.useMutation({
+    onSuccess: (data) => toast.success(`Successfully sent AI personalized marketing emails to ${data.sentCount} customers!`),
+    onError: (err) => toast.error(err.message)
+  });
+
   const filteredCustomers = customers || [];
   
   const sortedCustomers = [...filteredCustomers].sort((a, b) => {
@@ -67,11 +72,17 @@ export default function AdminCustomers() {
     <AdminLayout activeTab="customers">
       <div className="space-y-6">
         {/* Header */}
-        <div>
-          <h2 className="text-3xl font-bold">Customers Management</h2>
-          <p className="text-muted-foreground mt-1">
-            View and manage customer accounts
-          </p>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h2 className="text-3xl font-bold">Customers Management</h2>
+            <p className="text-muted-foreground mt-1">
+              View and manage customer accounts
+            </p>
+          </div>
+          <Button onClick={() => triggerAIMarketing.mutate()} disabled={triggerAIMarketing.isPending} className="bg-pink-600 hover:bg-pink-700 text-white gap-2 shadow-sm">
+            {triggerAIMarketing.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            Run AI Email Campaign
+          </Button>
         </div>
 
         {/* Summary Cards */}

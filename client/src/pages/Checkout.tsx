@@ -126,9 +126,6 @@ export default function Checkout() {
     onSuccess: (data) => {
       setOrderId(data.orderId);
       setOrderNumber(data.orderNumber);
-      if (!isAuthenticated) {
-        clearGuestCart();
-      }
       setStep("payment");
     },
     onError: (err) => toast.error(err.message),

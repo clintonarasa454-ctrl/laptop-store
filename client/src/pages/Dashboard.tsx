@@ -332,7 +332,7 @@ function OrderDetail({ orderId }: { orderId: number }) {
             if (!markerRef.current) {
               const truckIcon = document.createElement("div");
               truckIcon.innerHTML = "🚚";
-              truckIcon.className = "bg-white p-2 rounded-full shadow-lg text-2xl border-2 border-[var(--brand)] flex items-center justify-center";
+              truckIcon.className = "bg-white p-2 rounded-full shadow-lg text-2xl border-2 border-[var(--brand)] flex items-center justify-center transition-all duration-1000 ease-linear";
               
               markerRef.current = new window.google.maps.marker.AdvancedMarkerElement({
                 map: mapRef.current,
@@ -342,6 +342,9 @@ function OrderDetail({ orderId }: { orderId: number }) {
               });
             } else {
               markerRef.current.position = position;
+              if (loc.heading && markerRef.current.content) {
+                (markerRef.current.content as HTMLElement).style.transform = `rotate(${loc.heading}deg)`;
+              }
             }
           }
         }
@@ -539,8 +542,8 @@ function OrderDetail({ orderId }: { orderId: number }) {
           </div>
           <div className="absolute top-3 left-0 right-0 h-0.5 bg-border -z-10">
             <div
-              className="h-full bg-[var(--brand)] transition-all duration-500"
-              style={{ width: `${(Math.max(0, currentStageIndex) / (trackingStages.length - 1)) * 100}%` }}
+              className="h-full bg-[var(--brand)] transition-all duration-500 progress-indicator"
+              style={{ "--progress-width": `${(Math.max(0, currentStageIndex) / (trackingStages.length - 1)) * 100}%` } as React.CSSProperties}
             />
           </div>
         </div>
@@ -716,7 +719,7 @@ function AddressesTab() {
                   {addr.isDefault && <Badge className="text-xs mt-1 bg-[var(--brand)]/10 text-[var(--brand)] border-[var(--brand)]/20">Default</Badge>}
                 </div>
               </div>
-              <button onClick={() => deleteAddress.mutate({ addressId: addr.id })} className="text-muted-foreground hover:text-destructive transition-colors">
+              <button onClick={() => deleteAddress.mutate({ addressId: addr.id })} className="text-muted-foreground hover:text-destructive transition-colors" title="Delete address">
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>

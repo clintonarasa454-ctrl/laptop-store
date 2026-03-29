@@ -31,7 +31,8 @@ import {
   RotateCcw,
   Mic,
   Volume2,
-  VolumeX
+  VolumeX,
+  Bell
 } from "lucide-react";
 import { AdminSearch } from "@/components/AdminSearch";
 import { trpc } from "@/lib/trpc";
@@ -75,18 +76,53 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     newPassword: "",
   });
 
+  // --- Settings & Store Info ---
+  const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
+  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || "Admin";
+  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("store_logo_cache") : null);
+
   // --- AI Assistant Hooks ---
   const [aiChatOpen, setAiChatOpen] = useState(() => {
-    try { return sessionStorage.getItem("nexus_admin_ai_open") === "true"; } catch { return false; }
+    try { return sessionStorage.getItem("store_admin_ai_open") === "true"; } catch { return false; }
   });
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string, suggestions?: string[] }[]>([]);
+  const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>([]);
   const [chatPosition, setChatPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const { logAction } = useAIWorkflow();
   const [streamingMessageIndex, setStreamingMessageIndex] = useState<number | null>(null);
+
+  // --- Notifications Sync ---
+  const { data: notifications } = trpc.admin.notifications.useQuery(undefined, { 
+    refetchInterval: 15000,
+    enabled: !!user && user.role === "admin"
+  });
+  const [readIds, setReadIds] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("admin_read_notifications") || "[]"); } catch { return []; }
+  });
+  const [dismissedIds, setDismissedIds] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("admin_dismissed_notifications") || "[]"); } catch { return []; }
+  });
+
+  useEffect(() => {
+    const handleStorage = () => {
+      try {
+        setReadIds(JSON.parse(localStorage.getItem("admin_read_notifications") || "[]"));
+        setDismissedIds(JSON.parse(localStorage.getItem("admin_dismissed_notifications") || "[]"));
+      } catch {}
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('admin_notifications_updated', handleStorage);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('admin_notifications_updated', handleStorage);
+    };
+  }, []);
+
+  const unreadCount = (notifications || []).filter((n: any) => !dismissedIds.includes(n.id) && !readIds.includes(n.id)).length;
 
   // Voice Search State
   const [isListening, setIsListening] = useState(false);
@@ -146,14 +182,18 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     });
   };
 
-  const aiMutation = trpc.ai.chat.useMutation({
+  const aiMutation = trpc.ai.adminChat.useMutation({
     onSuccess: (data) => {
       setChatMessages(prev => {
         const next = [...prev, { role: 'assistant' as const, content: data.reply }];
         setStreamingMessageIndex(next.length - 1);
         return next as { role: "user" | "assistant"; content: string }[];
       });
+      if (data.suggestions && data.suggestions.length > 0) setDynamicSuggestions(data.suggestions);
       speakResponse(data.reply);
+      if (data.commands && data.commands.length > 0) {
+        executeCommands(data.commands as RecordedAction[]);
+      }
     },
     onError: (error) => {
       let errorMessage = "Sorry, I ran into a network error. Please try again.";
@@ -180,22 +220,23 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     }
   }, [streamingMessageIndex]);
 
-  useEffect(() => { sessionStorage.setItem("nexus_admin_ai_open", String(aiChatOpen)); }, [aiChatOpen]);
-  useEffect(() => { sessionStorage.setItem("nexus_admin_ai_messages", JSON.stringify(chatMessages)); }, [chatMessages]);
+  useEffect(() => { sessionStorage.setItem("store_admin_ai_open", String(aiChatOpen)); }, [aiChatOpen]);
+  useEffect(() => { sessionStorage.setItem("store_admin_ai_messages", JSON.stringify(chatMessages)); }, [chatMessages]);
 
   const handleAiSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || aiMutation.isPending) return;
     const userMsg = chatInput.trim();
     setChatInput("");
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: userMsg }];
+    const newMessages: { role: 'user' | 'assistant', content: string, suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: userMsg }];
     setChatMessages(newMessages);
+    setDynamicSuggestions([]);
     aiMutation.mutate({ message: userMsg, history: newMessages.slice(1) });
   };
 
   const handleNewChat = () => {
     const displayName = user?.name || "Admin";
-    setChatMessages([{ role: 'assistant', content: `Hi, ${displayName}! I'm your admin assistant. How can I help?` }]);
+    setChatMessages([{ role: 'assistant', content: `Hello, welcome to the Admin panel. I'm here to help you manage your store efficiently. How can I assist you today?` }]);
     setChatInput("");
     toast.success("New chat started!");
   };
@@ -208,8 +249,9 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
 
   const handleSuggestedPrompt = (prompt: string) => {
     if (aiMutation.isPending) return;
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: prompt }];
+    const newMessages: { role: 'user' | 'assistant', content: string, suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: prompt }];
     setChatMessages(newMessages);
+    setDynamicSuggestions([]);
     aiMutation.mutate({ message: prompt, history: newMessages.slice(1) });
   };
 
@@ -246,18 +288,14 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
         return { ...prev, name, email };
       });
       // Initialize AI chat
-      const saved = sessionStorage.getItem("nexus_admin_ai_messages");
+      const saved = sessionStorage.getItem("store_admin_ai_messages");
       if (saved) {
         try { setChatMessages(JSON.parse(saved)); } catch {}
       } else {
-        setChatMessages([{ role: 'assistant', content: `Hi, ${user.name || 'Admin'}! I'm your admin assistant. How can I help?` }]);
+        setChatMessages([{ role: 'assistant', content: `Hello, welcome to the Admin panel. I'm here to help you manage your store efficiently. How can I assist you today?` }]);
       }
     }
-  }, [user]);
-
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["appearance", "general"] });
-  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Admin";
-  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
+  }, [user, storeName]);
 
   const updateProfileMutation = trpc.auth.updateAdminProfile.useMutation({
     onSuccess: () => {
@@ -404,6 +442,7 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
     { id: "customers", label: "Customers", icon: Users, href: "/admin/customers" },
     { id: "drivers", label: "Drivers", icon: Truck, href: "/admin/drivers" },
     { id: "content", label: "Content", icon: FileText, href: "/admin/content" },
+    { id: "notifications", label: "Notifications", icon: Bell, href: "/admin/notifications" },
     { id: "ai", label: "AI Settings", icon: Sparkles, href: "/admin/ai" },
     { id: "settings", label: "Settings", icon: Settings, href: "/admin/settings" },
   ];
@@ -457,6 +496,16 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                 {isActive && <div className="absolute left-0 top-2 bottom-2 w-1.5 bg-[var(--brand)] rounded-r-full" />}
                 <Icon size={20} className={`flex-shrink-0 ${isActive ? "scale-110" : ""}`} />
                 {sidebarOpen && <span>{item.label}</span>}
+                {item.id === "notifications" && unreadCount > 0 && sidebarOpen && (
+                  <span className="ml-auto bg-destructive text-destructive-foreground text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+                {item.id === "notifications" && unreadCount > 0 && !sidebarOpen && (
+                  <span className="absolute top-2 right-2 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-destructive text-[8px] font-bold text-destructive-foreground shadow-sm">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -622,12 +671,12 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
       {/* Floating AI Chat Card */}
       {aiChatOpen && (
         <div 
-          className="fixed bottom-6 right-6 z-[100] transition-opacity duration-300 opacity-100"
-          style={{ transform: `translate3d(${chatPosition.x}px, ${chatPosition.y}px, 0)` }}
+          className="fixed bottom-6 right-6 z-[100] transition-opacity duration-300 opacity-100 chat-widget"
+          style={{ "--chat-x": `${chatPosition.x}px`, "--chat-y": `${chatPosition.y}px` } as React.CSSProperties}
         >
-          <div className="w-80 sm:w-96 h-[30rem] bg-card border border-border shadow-2xl rounded-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-80 sm:w-96 h-[32rem] bg-card border border-border shadow-2xl rounded-3xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div 
-              className={`p-4 border-b border-border bg-[var(--brand)]/5 flex items-center justify-between select-none touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              className={`px-5 py-4 border-b border-border/50 bg-gradient-to-r from-[var(--brand)]/8 to-[var(--brand)]/4 flex items-center justify-between select-none touch-none flex-shrink-0 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
               onPointerDown={(e) => {
                 if ((e.target as HTMLElement).closest('button')) return;
                 setIsDragging(true);
@@ -643,50 +692,64 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                 (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
               }}
             >
-              <div className="flex items-center gap-3 pointer-events-none">
-                <Sparkles className="w-5 h-5 text-[var(--brand)]" />
-                <h3 className="font-semibold text-foreground">Admin Assistant</h3>
+              <div className="flex items-center gap-2.5 pointer-events-none">
+                <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/20 text-[var(--brand)] flex items-center justify-center">
+                  <Sparkles className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-foreground text-[0.95rem]">Admin Panel</h3>
+                  <p className="text-[0.7rem] text-muted-foreground font-medium">System Assistant</p>
+                </div>
               </div>
-              <div className="flex items-center gap-1">
-                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
-                  <RotateCcw className="w-3.5 h-3.5" />
+              <div className="flex items-center gap-0.5">
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
+                  <RotateCcw className="w-3 h-3" />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
-                  {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
+                  {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
                 </Button>
-                <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted shrink-0" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }}>
-                  <X size={16} />
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }}>
+                  <X className="w-3.5 h-3.5" />
                 </Button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3" ref={chatScrollRef}>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-gradient-to-b from-background/50 to-background" ref={chatScrollRef}>
               {chatMessages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`p-3 rounded-lg text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-[var(--brand)] text-white rounded-br-none' : 'bg-muted text-foreground rounded-tl-none'}`}>
-                    {msg.role === 'assistant' ? (
-                      streamingMessageIndex === i ? (
-                        <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
-                      ) : renderMessageContent(msg.content)
-                    ) : msg.content}
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300 flex-shrink-0`}>
+                  <div className={`max-w-[85%] sm:max-w-[75%] ${
+                    msg.role === 'user' 
+                      ? 'rounded-2xl rounded-tr-md bg-[var(--brand)] text-white shadow-md' 
+                      : 'rounded-2xl rounded-tl-md bg-muted text-foreground shadow-sm'
+                  } px-4 py-3 break-words whitespace-normal`}>
+                    <div className={`text-sm leading-relaxed whitespace-pre-line ${msg.role === 'user' ? 'font-medium' : 'font-normal'}`}>
+                      {msg.role === 'assistant' ? (
+                        streamingMessageIndex === i ? (
+                          <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
+                        ) : renderMessageContent(msg.content)
+                      ) : msg.content}
+                    </div>
                   </div>
                 </div>
               ))}
-              {chatMessages.length === 1 && !aiMutation.isPending && (
-                <div className="flex flex-wrap gap-2 mt-1">
-                  {adminSuggestedPrompts.map(prompt => (
+              {chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'assistant' && !aiMutation.isPending && (
+                <div className="flex flex-col gap-2 mt-2 flex-shrink-0 animate-in fade-in duration-300">
+                  <p className="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wider px-1">Suggested for you</p>
+                  <div className="flex flex-wrap gap-2">
+                  {(dynamicSuggestions.length > 0 ? dynamicSuggestions : adminSuggestedPrompts).map(prompt => (
                     <button 
                       key={prompt}
                       onClick={() => handleSuggestedPrompt(prompt)}
-                      className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border rounded-full px-3 py-1.5 transition-colors text-left shadow-sm"
+                      className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border/50 hover:border-[var(--brand)]/30 rounded-full px-3 py-1.5 transition-all duration-200 text-left shadow-none hover:shadow-sm flex-shrink-0"
                     >
                       {prompt}
                     </button>
                   ))}
+                  </div>
                 </div>
               )}
               {aiMutation.isPending && (
-                <div className="flex justify-start">
-                  <div className="bg-muted p-3 rounded-lg rounded-tl-none flex items-center gap-1.5 h-10 w-16 justify-center">
+                <div className="flex justify-start animate-in fade-in duration-300 flex-shrink-0">
+                  <div className="bg-muted rounded-2xl rounded-tl-md p-3 flex items-center gap-2 h-11 px-4 shadow-sm">
                       <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce" />
                       <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:150ms]" />
                       <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:300ms]" />
@@ -694,15 +757,15 @@ export default function AdminLayout({ children, activeTab = "dashboard" }: Admin
                 </div>
               )}
             </div>
-            <div className="p-3 border-t border-border bg-background">
+            <div className="px-4 py-3 border-t border-border/50 bg-background/80 backdrop-blur-sm flex-shrink-0">
               <form className="flex gap-2" onSubmit={handleAiSubmit}>
                 <div className="relative flex-1">
-                  <Input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about orders, products..."} className="w-full h-9 pl-3 pr-8 text-sm" />
-                  <button type="button" onClick={toggleListening} className={`absolute right-1.5 top-2 transition-colors ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
+                  <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about orders, products..."} className="w-full h-10 pl-3.5 pr-9 text-sm rounded-lg border border-input/60 bg-background hover:border-input focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/50 focus:border-[var(--brand)] transition-all placeholder:text-muted-foreground/50" />
+                  <button type="button" onClick={toggleListening} className={`absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors p-1 rounded hover:bg-muted/50 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
                     <Mic className="w-4 h-4" />
                   </button>
                 </div>
-                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
+                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-4 rounded-lg font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
               </form>
             </div>
           </div>

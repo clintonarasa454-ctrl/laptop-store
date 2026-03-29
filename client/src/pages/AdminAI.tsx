@@ -14,13 +14,14 @@ import { useAIWorkflow } from "@/contexts/AIWorkflowContext";
 export default function AdminAI() {
   const [aiSettings, setAiSettings] = useState({
     model: "gpt-4o-mini",
-    systemPrompt: "You are a helpful e-commerce assistant for the admin panel of an online laptop store called Nexus. Your goal is to help the admin manage the store efficiently. You can answer questions about orders, products, and customers by interpreting the user's request and providing concise information. When asked for data, you should state that you are fetching it. You have access to the admin's context, such as which page they are on.",
+    systemPrompt: "You are a helpful e-commerce assistant for the admin panel of this online store. Your goal is to help the admin manage the store efficiently. You can answer questions about orders, products, and customers by interpreting the user's request and providing concise information. When asked for data, you should state that you are fetching it. You have access to the admin's context, such as which page they are on.",
     knowledgeBaseFiles: [] as string[],
   });
 
   // Workflow state
   const { isRecording, recordedActions, startRecording, stopRecording, clearActions } = useAIWorkflow();
   const [workflowName, setWorkflowName] = useState("");
+  const [aiKnowledge, setAiKnowledge] = useState("");
 
   const utils = trpc.useUtils();
   const updateSetting = trpc.admin.updateSetting.useMutation();
@@ -36,9 +37,22 @@ export default function AdminAI() {
 
   useEffect(() => {
     if (dbSettings) {
-      setAiSettings(prev => ({ ...prev, ...(dbSettings as any) }));
+      setAiSettings(prev => {
+        const loaded = { ...prev, ...(dbSettings as any) };
+        if (typeof loaded.systemPrompt === "string") {
+          loaded.systemPrompt = loaded.systemPrompt.replace(/\bNexus\b/gi, "our");
+        }
+        return loaded;
+      });
     }
   }, [dbSettings]);
+
+  const { data: dbKnowledge } = trpc.admin.getSetting.useQuery({ key: "ai_knowledge" });
+  useEffect(() => {
+    if (dbKnowledge !== undefined) {
+      setAiKnowledge((dbKnowledge as string) || "");
+    }
+  }, [dbKnowledge]);
 
   const handleSave = async () => {
     try {
@@ -49,6 +63,24 @@ export default function AdminAI() {
       toast.error("Failed to save AI settings");
     }
   };
+
+  const handleSaveKnowledge = async () => {
+    try {
+      await updateSetting.mutateAsync({ key: "ai_knowledge", value: aiKnowledge });
+      utils.admin.getSetting.invalidate({ key: "ai_knowledge" });
+      toast.success("Structured Memory saved successfully");
+    } catch (error) {
+      toast.error("Failed to save memory");
+    }
+  };
+
+  const trainAiMutation = trpc.admin.trainAiOnDocument.useMutation({
+    onSuccess: () => {
+      toast.success("AI successfully trained on document!");
+      utils.admin.getSetting.invalidate({ key: "ai_knowledge" });
+    },
+    onError: (err) => toast.error(err.message)
+  });
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -190,14 +222,16 @@ export default function AdminAI() {
               </div>
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
                 {aiSettings.knowledgeBaseFiles.map((fileUrl, idx) => (
-                  <div key={idx} className="relative aspect-square rounded-md overflow-hidden border border-border group bg-muted">
-                    <div className="w-full h-full flex flex-col items-center justify-center text-center p-2">
-                      <FileText className="w-6 h-6 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground mt-1 truncate">{fileUrl.split('/').pop()}</span>
+                  <div key={idx} className="relative aspect-square rounded-md overflow-hidden border border-border group bg-muted/30">
+                    <img src={fileUrl} alt={`Knowledge ${idx}`} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity p-2 gap-2">
+                      <Button size="sm" variant="outline" className="h-7 w-full text-[10px]" onClick={() => trainAiMutation.mutate({ fileUrl, fileName: `Document_${idx}` })} disabled={trainAiMutation.isPending}>
+                        Train
+                      </Button>
+                      <Button size="sm" variant="destructive" className="h-7 w-full text-[10px]" onClick={() => removeFile(idx)}>
+                        Remove
+                      </Button>
                     </div>
-                    <button type="button" onClick={() => removeFile(idx)} className="absolute top-1 right-1 w-6 h-6 bg-destructive/90 text-white rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
                   </div>
                 ))}
                 <button type="button" onClick={() => fileInputRef.current?.click()} className="aspect-square rounded-md border-2 border-dashed border-border hover:border-[var(--brand)] hover:bg-[var(--brand)]/5 flex flex-col items-center justify-center gap-1 text-muted-foreground transition-colors">
@@ -206,6 +240,19 @@ export default function AdminAI() {
                 </button>
                 <input type="file" ref={fileInputRef} className="hidden" multiple onChange={handleFileUpload} />
               </div>
+            </div>
+
+            <div className="mt-6 pt-6 border-t border-border space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="text-lg font-semibold">Structured Memory</Label>
+                  <p className="text-sm text-muted-foreground mt-1">This is the analyzed data extracted from your trained documents. The AI reads this to answer customer questions.</p>
+                </div>
+                <Button onClick={handleSaveKnowledge} size="sm" className="gap-2" disabled={updateSetting.isPending}>
+                  {updateSetting.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save
+                </Button>
+              </div>
+                <Textarea value={aiKnowledge} onChange={(e) => setAiKnowledge(e.target.value)} rows={8} placeholder="Upload and train documents above to populate this, or type manual facts here (e.g. Return policies, delivery times)..." />
             </div>
 
             <Button onClick={handleSave} className="gap-2" disabled={updateSetting.isPending}>

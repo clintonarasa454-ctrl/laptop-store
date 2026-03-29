@@ -83,15 +83,17 @@ export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [isPageScrolling, setIsPageScrolling] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(() => {
-    try { return sessionStorage.getItem("nexus_ai_open") === "true"; } catch { return false; }
+    try { return sessionStorage.getItem("store_ai_open") === "true"; } catch { return false; }
   });
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string, products?: any[], suggestions?: string[] }[]>([]);
+  const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>([]);
   const [isSearchingHistory, setIsSearchingHistory] = useState(false);
   const [searchHistoryQuery, setSearchHistoryQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const [streamingMessageIndex, setStreamingMessageIndex] = useState<number | null>(null);
+  const clearHistoryMutation = trpc.ai.clearHistory.useMutation();
 
   // Voice Search State
   const [isListening, setIsListening] = useState(false);
@@ -105,6 +107,19 @@ export default function Navbar() {
     const utterance = new SpeechSynthesisUtterance(cleanText);
     window.speechSynthesis.speak(utterance);
   };
+
+  // ─── Load Persisted Database Memory ───
+  const { data: dbHistory } = trpc.ai.getHistory.useQuery(undefined, {
+    enabled: isAuthenticated && aiChatOpen,
+    staleTime: Infinity,
+  });
+  
+  useEffect(() => {
+    if (dbHistory && dbHistory.length > 0 && chatMessages.length <= 1) {
+      const formatted = dbHistory.map(h => ({ role: h.role as 'user' | 'assistant', content: h.message })).reverse();
+      setChatMessages(formatted);
+    }
+  }, [dbHistory]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -133,12 +148,18 @@ export default function Navbar() {
 
   useEffect(() => {
     try {
-      const saved = sessionStorage.getItem("nexus_ai_messages");
+      const saved = sessionStorage.getItem("store_ai_messages");
       if (saved) { setChatMessages(JSON.parse(saved)); return; }
     } catch {}
     const displayName = user?.name ? `, ${user.name}` : " there";
-    setChatMessages([{ role: 'assistant', content: `Hi${displayName}! I'm your shopping assistant. What are you looking for today?` }]);
-  }, [user]);
+    
+    let contextGreeting = "What are you looking for today?";
+    if (location.includes("/cart")) contextGreeting = "Need help reviewing your cart before checkout?";
+    else if (location.includes("/products")) contextGreeting = "Looking for something specific in our catalog?";
+    else if (location.includes("/dashboard/orders")) contextGreeting = "Need help tracking your recent orders?";
+    
+    setChatMessages([{ role: 'assistant', content: `Hi${displayName}! I'm your shopping assistant. ${contextGreeting}` }]);
+  }, [user, location]);
 
   const { data: categories } = trpc.categories.list.useQuery();
   const { data: cartItems } = trpc.cart.get.useQuery(undefined, { enabled: isAuthenticated });
@@ -147,12 +168,12 @@ export default function Navbar() {
   const rootCategories = orderedCategories.filter(c => !(c as any).parentId);
 
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance"] });
-  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
-  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
+  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || "Store";
+  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("store_logo_cache") : null);
 
   const [chatPosition, setChatPosition] = useState(() => {
     try {
-      const saved = sessionStorage.getItem("nexus_ai_position");
+      const saved = sessionStorage.getItem("store_ai_position");
       if (saved) return JSON.parse(saved);
     } catch {}
     return { x: 0, y: 0 };
@@ -237,15 +258,15 @@ export default function Navbar() {
 
   // Persist Assistant state across page navigations
   useEffect(() => {
-    sessionStorage.setItem("nexus_ai_open", String(aiChatOpen));
+    sessionStorage.setItem("store_ai_open", String(aiChatOpen));
   }, [aiChatOpen]);
 
   useEffect(() => {
-    sessionStorage.setItem("nexus_ai_messages", JSON.stringify(chatMessages));
+    sessionStorage.setItem("store_ai_messages", JSON.stringify(chatMessages));
   }, [chatMessages]);
 
   useEffect(() => {
-    sessionStorage.setItem("nexus_ai_position", JSON.stringify(chatPosition));
+    sessionStorage.setItem("store_ai_position", JSON.stringify(chatPosition));
   }, [chatPosition]);
 
   // Dragging event handlers for the floating assistant
@@ -296,8 +317,9 @@ export default function Navbar() {
     if (!chatInput.trim() || aiMutation.isPending) return;
     const userMsg = chatInput.trim();
     setChatInput("");
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: userMsg }];
+    const newMessages: { role: 'user' | 'assistant', content: string, products?: any[], suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: userMsg }];
     setChatMessages(newMessages);
+    setDynamicSuggestions([]);
     
     // Pass the active cart context to the AI so it doesn't recommend duplicate items
     const currentCart = isAuthenticated 
@@ -319,6 +341,8 @@ export default function Navbar() {
       { role: 'assistant', content: `Hi${displayName}! I'm your shopping assistant. What are you looking for today?` }
     ]);
     setChatInput("");
+    sessionStorage.removeItem("store_ai_messages");
+    if (isAuthenticated) clearHistoryMutation.mutate();
     toast.success("New chat started!");
   };
 
@@ -330,8 +354,9 @@ export default function Navbar() {
 
   const handleSuggestedPrompt = (prompt: string) => {
     if (aiMutation.isPending) return;
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: prompt }];
+    const newMessages: { role: 'user' | 'assistant', content: string, products?: any[], suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: prompt }];
     setChatMessages(newMessages);
+    setDynamicSuggestions([]);
     const currentCart = isAuthenticated 
       ? (cartItems || []).map(i => ({ productId: i.productId, quantity: i.quantity }))
       : getGuestCart().map(i => ({ productId: i.productId, quantity: i.quantity }));
@@ -358,7 +383,7 @@ export default function Navbar() {
           const lines = part.split('\n');
           lines.forEach((line, k) => {
             elements.push(<span key={`text-${i}-${j}-${k}`}>{line}</span>);
-            if (k < lines.length - 1) elements.push(<br key={`br-${i}-${j}-${k}`} />);
+            if (k < lines.length - 1) elements.push(<span key={`br-${i}-${j}-${k}`} className="block h-1.5" />);
           });
         }
       });
@@ -732,8 +757,8 @@ export default function Navbar() {
       {/* Floating AI Chat Card */}
       {aiChatOpen && (
         <div 
-          className={`fixed bottom-6 right-6 z-[100] transition-opacity duration-300 ${isPageScrolling ? 'opacity-50' : 'opacity-100'}`}
-          style={{ transform: `translate3d(${chatPosition.x}px, ${chatPosition.y}px, 0)` }}
+          className={`fixed bottom-6 right-6 z-[100] transition-opacity duration-300 chat-widget ${isPageScrolling ? 'opacity-50' : 'opacity-100'}`}
+          style={{ "--chat-x": `${chatPosition.x}px`, "--chat-y": `${chatPosition.y}px` } as React.CSSProperties}
         >
           <div className="w-80 sm:w-96 h-[32rem] bg-card border border-border shadow-2xl rounded-3xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             {/* Header */}
@@ -770,29 +795,50 @@ export default function Navbar() {
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3.5 bg-gradient-to-b from-background/50 to-background" ref={chatScrollRef}>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-gradient-to-b from-background/50 to-background" ref={chatScrollRef}>
               {chatMessages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300 flex-shrink-0`}>
-                  <div className={`max-w-[80%] ${
+                  <div className={`max-w-[85%] sm:max-w-[75%] ${
                     msg.role === 'user' 
                       ? 'rounded-2xl rounded-tr-md bg-[var(--brand)] text-white shadow-md' 
                       : 'rounded-2xl rounded-tl-md bg-muted text-foreground shadow-sm'
                   } px-4 py-3 break-words whitespace-normal`}>
-                    <div className={`text-sm leading-[1.6] ${msg.role === 'user' ? 'font-medium' : 'font-normal'}`}>
+                    <div className={`text-sm leading-relaxed whitespace-pre-line ${msg.role === 'user' ? 'font-medium' : 'font-normal'}`}>
                       {msg.role === 'assistant' ? (
-                        streamingMessageIndex === i ? (
-                          <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
-                        ) : renderMessageContent(msg.content)
+                        <>
+                          {streamingMessageIndex === i ? (
+                            <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
+                          ) : renderMessageContent(msg.content)}
+                          
+                          {/* Generative UI: Product Cards */}
+                          {msg.products && msg.products.length > 0 && streamingMessageIndex !== i && (
+                            <div className="mt-4 flex flex-col gap-2 border-t border-border/50 pt-3 animate-in fade-in duration-500">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Recommended</p>
+                              <div className="flex overflow-x-auto gap-3 pb-2 snap-x [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                                {msg.products.map((p: any) => (
+                                  <Link key={p.id} href={`/products/${p.slug}`} onClick={() => setAiChatOpen(false)} className="flex-shrink-0 w-36 bg-background rounded-xl p-2.5 snap-start shadow-sm border border-border/50 hover:border-[var(--brand)] hover:shadow-md transition-all group">
+                                    <div className="w-full h-24 bg-muted/50 rounded-lg mb-2 flex items-center justify-center overflow-hidden">
+                                      {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" /> : <Package className="w-6 h-6 text-muted-foreground/50" />}
+                                    </div>
+                                    <p className="text-[11px] font-semibold truncate text-foreground" title={p.name}>{p.name}</p>
+                                    <p className="text-[10px] text-muted-foreground truncate">{p.brand || "Standard"}</p>
+                                    <p className="text-[12px] font-bold text-[var(--brand)] mt-1">{formatPrice(p.price)}</p>
+                                  </Link>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
                       ) : msg.content}
                     </div>
                   </div>
                 </div>
               ))}
-              {chatMessages.length === 1 && !aiMutation.isPending && !searchHistoryQuery && (
-                <div className="flex flex-col gap-2 mt-2 flex-shrink-0">
-                  <p className="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wider px-1">Suggested</p>
+              {chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'assistant' && !aiMutation.isPending && !searchHistoryQuery && (
+                <div className="flex flex-col gap-2 mt-2 flex-shrink-0 animate-in fade-in duration-300">
+                  <p className="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wider px-1">Suggested for you</p>
                   <div className="flex flex-wrap gap-2">
-                    {customerSuggestedPrompts.map(prompt => (
+                    {(dynamicSuggestions.length > 0 ? dynamicSuggestions : customerSuggestedPrompts).map(prompt => (
                       <button 
                         key={prompt}
                         onClick={() => handleSuggestedPrompt(prompt)}

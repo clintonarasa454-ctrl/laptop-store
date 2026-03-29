@@ -1,5 +1,5 @@
 export const getCompareList = () => {
-  try { return JSON.parse(localStorage.getItem("nexus_compare") || "[]"); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem("store_compare_list") || "[]"); } catch { return []; }
 };
 
 export const toggleCompare = (product: any) => {
@@ -11,18 +11,18 @@ export const toggleCompare = (product: any) => {
     if (list.length >= 4) return false;
     list.push(product);
   }
-  localStorage.setItem("nexus_compare", JSON.stringify(list));
+  localStorage.setItem("store_compare_list", JSON.stringify(list));
   window.dispatchEvent(new Event("compareUpdated"));
   return !exists;
 };
 
 export const getRecentlyViewed = () => {
-  try { return JSON.parse(localStorage.getItem("nexus_recent") || "[]"); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem("store_recent_list") || "[]"); } catch { return []; }
 };
 
 export const addRecentlyViewed = (product: any) => {
   if (!product) return;
   let list = getRecentlyViewed();
   list = [product, ...list.filter((p: any) => p.id !== product.id)].slice(0, 8); // Keep last 8
-  localStorage.setItem("nexus_recent", JSON.stringify(list));
+  localStorage.setItem("store_recent_list", JSON.stringify(list));
 };

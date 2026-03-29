@@ -67,8 +67,8 @@ export default function DriverDashboard() {
   const [phone, setPhone] = useState("");
 
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance"] });
-  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_store_name") : null) || "Store";
-  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("nexus_logo_url") : null);
+  const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || "Store";
+  const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("store_logo_cache") : null);
 
   useEffect(() => {
     const savedToken = localStorage.getItem("driver_auth_token");
@@ -138,7 +138,8 @@ export default function DriverDashboard() {
               if (socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({
                   lat: position.coords.latitude,
-                  lng: position.coords.longitude
+                  lng: position.coords.longitude,
+                  heading: position.coords.heading || 0
                 }));
               }
             },
@@ -209,15 +210,16 @@ export default function DriverDashboard() {
 
   // --- AI Assistant Hooks ---
   const [aiChatOpen, setAiChatOpen] = useState(() => {
-    try { return sessionStorage.getItem("nexus_ai_open") === "true"; } catch { return false; }
+    try { return sessionStorage.getItem("store_ai_open") === "true"; } catch { return false; }
   });
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant', content: string, suggestions?: string[] }[]>([]);
+  const [dynamicSuggestions, setDynamicSuggestions] = useState<string[]>([]);
   const [chatPosition, setChatPosition] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     try {
-      const saved = sessionStorage.getItem("nexus_ai_messages");
+      const saved = sessionStorage.getItem("store_ai_messages");
       if (saved) {
         setChatMessages(JSON.parse(saved));
         return;
@@ -289,9 +291,9 @@ export default function DriverDashboard() {
     }
   }, [streamingMessageIndex]);
 
-  useEffect(() => { sessionStorage.setItem("nexus_ai_open", String(aiChatOpen)); }, [aiChatOpen]);
-  useEffect(() => { sessionStorage.setItem("nexus_ai_messages", JSON.stringify(chatMessages)); }, [chatMessages]);
-  useEffect(() => { sessionStorage.setItem("nexus_ai_position", JSON.stringify(chatPosition)); }, [chatPosition]);
+  useEffect(() => { sessionStorage.setItem("store_ai_open", String(aiChatOpen)); }, [aiChatOpen]);
+  useEffect(() => { sessionStorage.setItem("store_ai_messages", JSON.stringify(chatMessages)); }, [chatMessages]);
+  useEffect(() => { sessionStorage.setItem("store_ai_position", JSON.stringify(chatPosition)); }, [chatPosition]);
 
   const handleDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('input')) return;
@@ -308,13 +310,14 @@ export default function DriverDashboard() {
     e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
-  const aiMutation = trpc.ai.chat.useMutation({
+  const aiMutation = trpc.ai.driverChat.useMutation({
     onSuccess: (data) => { 
       setChatMessages(prev => {
         const next = [...prev, { role: 'assistant' as const, content: data.reply }];
         setStreamingMessageIndex(next.length - 1);
         return next as { role: "user" | "assistant"; content: string }[];
       }); 
+      if (data.suggestions && data.suggestions.length > 0) setDynamicSuggestions(data.suggestions);
       speakResponse(data.reply);
     },
     onError: (error) => {
@@ -331,9 +334,10 @@ export default function DriverDashboard() {
     if (!chatInput.trim() || aiMutation.isPending) return;
     const userMsg = chatInput.trim();
     setChatInput("");
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: userMsg }];
+    const newMessages: { role: 'user' | 'assistant', content: string, suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: userMsg }];
     setChatMessages(newMessages);
-    aiMutation.mutate({ message: userMsg, history: newMessages.slice(1) });
+    setDynamicSuggestions([]);
+    aiMutation.mutate({ message: userMsg, history: newMessages.slice(1), agentId: driverInfo?.id });
   };
 
   const handleNewChat = () => {
@@ -351,9 +355,10 @@ export default function DriverDashboard() {
 
   const handleSuggestedPrompt = (prompt: string) => {
     if (aiMutation.isPending) return;
-    const newMessages: { role: 'user' | 'assistant', content: string }[] = [...chatMessages, { role: 'user', content: prompt }];
+    const newMessages: { role: 'user' | 'assistant', content: string, suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: prompt }];
     setChatMessages(newMessages);
-    aiMutation.mutate({ message: prompt, history: newMessages.slice(1) });
+    setDynamicSuggestions([]);
+    aiMutation.mutate({ message: prompt, history: newMessages.slice(1), agentId: driverInfo?.id });
   };
 
   const renderMessageContent = (content: string) => {
@@ -369,7 +374,7 @@ export default function DriverDashboard() {
           const lines = part.split('\n');
           lines.forEach((line, k) => {
             elements.push(<span key={`text-${i}-${j}-${k}`}>{line}</span>);
-            if (k < lines.length - 1) elements.push(<br key={`br-${i}-${j}-${k}`} />);
+            if (k < lines.length - 1) elements.push(<span key={`br-${i}-${j}-${k}`} className="block h-1.5" />);
           });
         }
       });
@@ -702,47 +707,50 @@ export default function DriverDashboard() {
       {/* Floating AI Chat Card */}
       {aiChatOpen && (
         <div 
-          className="fixed bottom-6 right-6 z-[100] transition-opacity duration-300 opacity-100"
-          style={{ transform: `translate3d(${chatPosition.x}px, ${chatPosition.y}px, 0)` }}
+          className="fixed bottom-6 right-6 z-[100] transition-opacity duration-300 opacity-100 chat-widget"
+          style={{ "--chat-x": `${chatPosition.x}px`, "--chat-y": `${chatPosition.y}px` } as React.CSSProperties}
         >
-          <div className="w-80 sm:w-96 h-[30rem] bg-card border border-border shadow-2xl rounded-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          <div className="w-80 sm:w-96 h-[32rem] bg-card border border-border shadow-2xl rounded-3xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div 
-              className={`p-4 border-b border-border bg-[var(--brand)]/5 flex items-center justify-between select-none touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+              className={`px-5 py-4 border-b border-border/50 bg-gradient-to-r from-[var(--brand)]/8 to-[var(--brand)]/4 flex items-center justify-between select-none touch-none flex-shrink-0 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
               onPointerDown={handleDragStart}
               onPointerMove={handleDragMove}
               onPointerUp={handleDragEnd}
               onPointerCancel={handleDragEnd}
             >
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 pointer-events-none">
-                  <Sparkles className="w-5 h-5 text-[var(--brand)]" />
-                  <h3 className="font-semibold text-foreground">{storeName} Shopping Assistant</h3>
+              <div className="flex items-center gap-2.5 pointer-events-none">
+                <div className="w-8 h-8 rounded-lg bg-[var(--brand)]/20 text-[var(--brand)] flex items-center justify-center">
+                  <Sparkles className="w-4.5 h-4.5" />
                 </div>
-                <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
-                    <RotateCcw className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button 
-                    variant={isSearchingHistory ? "secondary" : "ghost"} 
-                    size="icon" 
-                    className="h-6 w-6 rounded-full hover:bg-muted" 
-                    onClick={() => {
-                      setIsSearchingHistory(!isSearchingHistory);
-                      if (isSearchingHistory) setSearchHistoryQuery("");
-                    }} 
-                    title="Search Chat History"
-                    aria-label="Search Chat History"
-                  >
-                    <Search className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
-                    {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                  </Button>
+                <div>
+                  <h3 className="font-bold text-foreground text-[0.95rem]">{storeName}</h3>
+                  <p className="text-[0.7rem] text-muted-foreground font-medium">Delivery Assistant</p>
                 </div>
               </div>
-              <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-muted shrink-0" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }} aria-label="Close chat">
-                <X className="w-4 h-4" />
-              </Button>
+              <div className="flex items-center gap-0.5">
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={handleNewChat} title="New Chat" aria-label="New Chat">
+                  <RotateCcw className="w-3 h-3" />
+                </Button>
+                <Button 
+                  variant={isSearchingHistory ? "secondary" : "ghost"} 
+                  size="icon" 
+                  className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" 
+                  onClick={() => {
+                    setIsSearchingHistory(!isSearchingHistory);
+                    if (isSearchingHistory) setSearchHistoryQuery("");
+                  }} 
+                  title="Search Chat History"
+                  aria-label="Search Chat History"
+                >
+                  <Search className="w-3 h-3" />
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-foreground transition-colors" onClick={() => { setIsMuted(!isMuted); if (!isMuted) window.speechSynthesis?.cancel(); }} title={isMuted ? "Unmute AI Voice" : "Mute AI Voice"} aria-label="Toggle Voice">
+                  {isMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                </Button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors" onClick={() => { setAiChatOpen(false); window.speechSynthesis?.cancel(); }} aria-label="Close chat">
+                  <X className="w-3.5 h-3.5" />
+                </Button>
+              </div>
             </div>
             {isSearchingHistory && (
               <div className="p-3 border-b border-border bg-muted/30">
@@ -755,38 +763,47 @@ export default function DriverDashboard() {
                 </div>
               </div>
             )}
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3" ref={chatScrollRef}>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-gradient-to-b from-background/50 to-background" ref={chatScrollRef}>
               {filteredMessages.length > 0 ? (
                 filteredMessages.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`p-3 rounded-lg text-sm max-w-[85%] ${msg.role === 'user' ? 'bg-[var(--brand)] text-white rounded-br-none' : 'bg-muted text-foreground rounded-tl-none'}`}>
-                      {msg.role === 'assistant' ? (
-                        streamingMessageIndex === i ? (
-                          <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
-                        ) : renderMessageContent(msg.content)
-                      ) : msg.content}
+                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300 flex-shrink-0`}>
+                    <div className={`max-w-[85%] sm:max-w-[75%] ${
+                      msg.role === 'user' 
+                        ? 'rounded-2xl rounded-tr-md bg-[var(--brand)] text-white shadow-md' 
+                        : 'rounded-2xl rounded-tl-md bg-muted text-foreground shadow-sm'
+                    } px-4 py-3 break-words whitespace-normal`}>
+                      <div className={`text-sm leading-relaxed whitespace-pre-line ${msg.role === 'user' ? 'font-medium' : 'font-normal'}`}>
+                        {msg.role === 'assistant' ? (
+                          streamingMessageIndex === i ? (
+                            <TypewriterText text={msg.content} onComplete={() => setStreamingMessageIndex(null)} renderContent={renderMessageContent} />
+                          ) : renderMessageContent(msg.content)
+                        ) : msg.content}
+                      </div>
                     </div>
                   </div>
                 ))
               ) : (
                 <div className="text-center text-sm text-muted-foreground py-8">No messages found for "{searchHistoryQuery}"</div>
               )}
-              {chatMessages.length === 1 && !aiMutation.isPending && !searchHistoryQuery && (
-                <div className="flex flex-wrap gap-2 mt-1">
-                  {driverSuggestedPrompts.map(prompt => (
+              {chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === 'assistant' && !aiMutation.isPending && !searchHistoryQuery && (
+                <div className="flex flex-col gap-2 mt-2 flex-shrink-0 animate-in fade-in duration-300">
+                  <p className="text-[0.75rem] text-muted-foreground font-semibold uppercase tracking-wider px-1">Suggested for you</p>
+                  <div className="flex flex-wrap gap-2">
+                  {(dynamicSuggestions.length > 0 ? dynamicSuggestions : driverSuggestedPrompts).map(prompt => (
                     <button 
                       key={prompt}
                       onClick={() => handleSuggestedPrompt(prompt)}
-                      className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border rounded-full px-3 py-1.5 transition-colors text-left shadow-sm"
+                      className="text-xs bg-background hover:bg-[var(--brand)]/10 text-muted-foreground hover:text-[var(--brand)] border border-border/50 hover:border-[var(--brand)]/30 rounded-full px-3 py-1.5 transition-all duration-200 text-left shadow-none hover:shadow-sm flex-shrink-0"
                     >
                       {prompt}
                     </button>
                   ))}
+                  </div>
                 </div>
               )}
               {aiMutation.isPending && !searchHistoryQuery && (
-                <div className="flex justify-start">
-                  <div className="bg-muted p-3 rounded-lg rounded-tl-none flex items-center gap-1.5 h-10 w-16 justify-center">
+                <div className="flex justify-start animate-in fade-in duration-300 flex-shrink-0">
+                  <div className="bg-muted rounded-2xl rounded-tl-md p-3 flex items-center gap-2 h-11 px-4 shadow-sm">
                     <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce" />
                     <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:150ms]" />
                     <div className="w-1.5 h-1.5 rounded-full bg-foreground/40 animate-bounce [animation-delay:300ms]" />
@@ -794,15 +811,15 @@ export default function DriverDashboard() {
                 </div>
               )}
             </div>
-            <div className="p-3 border-t border-border bg-background">
+            <div className="px-4 py-3 border-t border-border/50 bg-background/80 backdrop-blur-sm flex-shrink-0">
               <form className="flex gap-2" onSubmit={handleAiSubmit}>
                 <div className="relative flex-1">
-                  <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about deliveries..."} className="w-full h-9 pl-3 pr-8 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-[var(--brand)]" />
-                  <button type="button" onClick={toggleListening} className={`absolute right-1.5 top-2 transition-colors ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
+                  <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about deliveries..."} className="w-full h-10 pl-3.5 pr-9 text-sm rounded-lg border border-input/60 bg-background hover:border-input focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/50 focus:border-[var(--brand)] transition-all placeholder:text-muted-foreground/50" />
+                  <button type="button" onClick={toggleListening} className={`absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors p-1 rounded hover:bg-muted/50 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
                     <Mic className="w-4 h-4" />
                   </button>
                 </div>
-                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
+                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-4 rounded-lg font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
               </form>
             </div>
           </div>
