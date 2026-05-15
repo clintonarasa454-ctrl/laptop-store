@@ -1567,6 +1567,8 @@ AI Response (JSON):
              console.log("No SMTP configured. Verification Code for", input.email, "is", otp);
           }
         } catch (err: any) { 
+          // Rollback user creation if email fails so they can try registering again
+          if (db) await db.delete(users).where(eq(users.email, input.email));
           console.error("Failed to send verification email", err); 
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `Email sending failed: ${err.message}. Please check your SMTP settings.` });
         }
