@@ -42,10 +42,6 @@ export default defineConfig({
           ) {
             return "query";
           }
-          // Heavy chart library — only admin analytics pages need this
-          if (id.includes("node_modules/recharts") || id.includes("node_modules/d3-")) {
-            return "charts";
-          }
           // Animation library — not needed on initial paint
           if (id.includes("node_modules/framer-motion")) {
             return "motion";
