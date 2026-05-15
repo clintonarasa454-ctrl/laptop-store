@@ -14,8 +14,10 @@ import {
 import { trpc } from "@/lib/trpc";
 import { Search, Eye, Mail, Lock, Loader2, ArrowUpDown, Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "./useAuth";
 
 export default function AdminCustomers() {
+  const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
@@ -41,7 +43,7 @@ export default function AdminCustomers() {
 
   const { data: customers, isLoading } = trpc.admin.customers.useQuery(
     { search: debouncedSearch || undefined }, 
-    { refetchInterval: 15000 }
+    { staleTime: 0, refetchInterval: 5000, refetchOnWindowFocus: true }
   );
 
   const resetPassword = trpc.auth.resetPasswordRequest.useMutation({
@@ -54,12 +56,12 @@ export default function AdminCustomers() {
     onError: (err) => toast.error(err.message)
   });
 
-  const filteredCustomers = customers || [];
+  const filteredCustomers = (customers || []).filter((c: any) => user?.role === "admin" || c.role !== "admin");
   
   const sortedCustomers = [...filteredCustomers].sort((a, b) => {
     if (!sortConfig) return 0;
-    let aVal = a[sortConfig.key] || "";
-    let bVal = b[sortConfig.key] || "";
+    let aVal = a[sortConfig.key as keyof typeof a] || "";
+    let bVal = b[sortConfig.key as keyof typeof b] || "";
     if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
     if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
     return 0;
@@ -86,7 +88,7 @@ export default function AdminCustomers() {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className={`grid grid-cols-1 ${user?.role === 'admin' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4`}>
           <Card className="p-6">
             <p className="text-sm text-muted-foreground font-medium">Total Customers</p>
             <p className="text-3xl font-bold mt-2">{customers?.length || 0}</p>
@@ -97,12 +99,14 @@ export default function AdminCustomers() {
               {customers?.filter((c: any) => c.role !== "admin").length || 0}
             </p>
           </Card>
-          <Card className="p-6">
-            <p className="text-sm text-muted-foreground font-medium">Admins</p>
-            <p className="text-3xl font-bold mt-2">
-              {customers?.filter((c: any) => c.role === "admin").length || 0}
-            </p>
-          </Card>
+          {user?.role === "admin" && (
+            <Card className="p-6">
+              <p className="text-sm text-muted-foreground font-medium">Admins</p>
+              <p className="text-3xl font-bold mt-2">
+                {customers?.filter((c: any) => c.role === "admin").length || 0}
+              </p>
+            </Card>
+          )}
         </div>
 
         {/* Search */}

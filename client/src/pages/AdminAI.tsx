@@ -6,7 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Save, Upload, X, Loader2, Sparkles, FileText, Bot, Play, Square, Trash2, Workflow } from "lucide-react";
+import {
+  Save, Upload, X, Loader2, Sparkles, FileText, Bot, Play, Square, Trash2, Workflow, Mail, Send, TrendingUp, Package, RefreshCw
+} from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAIWorkflow } from "@/contexts/AIWorkflowContext";
@@ -22,16 +24,22 @@ export default function AdminAI() {
   const { isRecording, recordedActions, startRecording, stopRecording, clearActions } = useAIWorkflow();
   const [workflowName, setWorkflowName] = useState("");
   const [aiKnowledge, setAiKnowledge] = useState("");
+  
+  const [inventorySettings, setInventorySettings] = useState({
+    lowStockThreshold: "5",
+    notifyAdmin: true,
+    adminEmail: "",
+  });
+
+  // Persist workflows using settings DB
+  const [workflows, setWorkflows] = useState<any[]>([]);
 
   const utils = trpc.useUtils();
   const updateSetting = trpc.admin.updateSetting.useMutation();
   const createPresignedUrl = trpc.admin.createPresignedUrl.useMutation();
   const { data: dbSettings } = trpc.admin.getSetting.useQuery({ key: "ai" });
 
-  // Workflow features are disabled - not available in backend
-  // const { data: workflows, refetch: refetchWorkflows } = trpc.admin.listAiWorkflows.useQuery();
-  // const saveWorkflow = trpc.admin.saveAiWorkflow.useMutation();
-  // const deleteWorkflow = trpc.admin.deleteAiWorkflow.useMutation();
+  const { data: trendingProducts, isLoading: isTrendingLoading } = trpc.analytics.demandPrediction.useQuery({ daysBack: 7 });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -47,6 +55,13 @@ export default function AdminAI() {
     }
   }, [dbSettings]);
 
+  const { data: dbWorkflows } = trpc.admin.getSetting.useQuery({ key: "ai_workflows" });
+  useEffect(() => {
+    if (dbWorkflows && Array.isArray(dbWorkflows)) {
+      setWorkflows(dbWorkflows);
+    }
+  }, [dbWorkflows]);
+
   const { data: dbKnowledge } = trpc.admin.getSetting.useQuery({ key: "ai_knowledge" });
   useEffect(() => {
     if (dbKnowledge !== undefined) {
@@ -54,13 +69,31 @@ export default function AdminAI() {
     }
   }, [dbKnowledge]);
 
+  const { data: dbInventory } = trpc.admin.getSetting.useQuery({ key: "inventory" });
+  useEffect(() => {
+    if (dbInventory) {
+      setInventorySettings(prev => JSON.stringify(prev) === JSON.stringify(dbInventory) ? prev : (dbInventory as any));
+    }
+  }, [dbInventory]);
+
   const handleSave = async () => {
     try {
       await updateSetting.mutateAsync({ key: "ai", value: aiSettings });
       utils.admin.getSetting.invalidate({ key: "ai" });
+      utils.settings.public.invalidate();
       toast.success("AI settings saved successfully");
     } catch (error) {
       toast.error("Failed to save AI settings");
+    }
+  };
+
+  const handleSaveInventory = async () => {
+    try {
+      await updateSetting.mutateAsync({ key: "inventory", value: inventorySettings });
+      utils.admin.getSetting.invalidate({ key: "inventory" });
+      toast.success("Inventory settings saved successfully");
+    } catch (error) {
+      toast.error("Failed to save inventory settings");
     }
   };
 
@@ -82,6 +115,16 @@ export default function AdminAI() {
     onError: (err) => toast.error(err.message)
   });
 
+  const broadcastTrendingMutation = trpc.admin.broadcastTrendingProducts.useMutation({
+    onSuccess: (data) => toast.success(`Successfully sent trending emails to ${data.sentCount} customers!`),
+    onError: (err) => toast.error(`Failed to send emails: ${err.message}`)
+  });
+
+  const triggerRestock = trpc.admin.triggerAutoRestock.useMutation({
+    onSuccess: () => toast.success("Auto-restock check triggered successfully! Check your email."),
+    onError: (err) => toast.error(err.message),
+  });
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
@@ -96,7 +139,7 @@ export default function AdminAI() {
       try {
         toastId = toast.loading(`Uploading ${file.name}...`);
         const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
-        
+
         if (uploadUrl && publicUrl) {
           const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
           if (!res.ok) throw new Error("S3 Upload Failed");
@@ -109,7 +152,7 @@ export default function AdminAI() {
         toast.error(`Failed to upload ${file.name}`, { id: toastId });
       }
     }
-    
+
     if (newFiles.length > 0) {
       setAiSettings(prev => ({ ...prev, knowledgeBaseFiles: [...prev.knowledgeBaseFiles, ...newFiles] }));
     }
@@ -128,35 +171,29 @@ export default function AdminAI() {
     toast.info("AI workflow recording started. Perform the actions you want the AI to learn.");
   };
 
-  // Workflow save/delete disabled - endpoints not available
-  // const handleStopAndSave = async () => {
-  //   if (!workflowName.trim()) {
-  //     toast.error("Please enter a name for the workflow.");
-  //     return;
-  //   }
-  //   stopRecording();
-  //   try {
-  //     await saveWorkflow.mutateAsync({ name: workflowName, actions: recordedActions });
-  //     toast.success(`Workflow "${workflowName}" saved successfully!`);
-  //     setWorkflowName("");
-  //     clearActions();
-  //     refetchWorkflows();
-  //   } catch (error) {
-  //     toast.error("Failed to save workflow. The name might already exist.");
-  //   }
-  // };
+  const handleStopAndSave = async () => {
+    if (!workflowName.trim()) {
+      toast.error("Please enter a name for the workflow.");
+      return;
+    }
+    stopRecording();
+    const newWorkflow = { id: Date.now(), name: workflowName, actions: recordedActions, createdAt: new Date().toISOString() };
+    const updated = [...workflows, newWorkflow];
+    setWorkflows(updated);
+    await updateSetting.mutateAsync({ key: "ai_workflows", value: updated });
+    toast.success(`Workflow "${workflowName}" saved successfully!`);
+    setWorkflowName("");
+    clearActions();
+  };
 
-  // const handleDeleteWorkflow = async (id: number, name: string) => {
-  //   if (confirm(`Are you sure you want to delete the "${name}" workflow? This cannot be undone.`)) {
-  //     try {
-  //       await deleteWorkflow.mutateAsync({ id });
-  //       toast.success(`Workflow "${name}" deleted.`);
-  //       refetchWorkflows();
-  //     } catch (error) {
-  //       toast.error("Failed to delete workflow.");
-  //     }
-  //   }
-  // };
+  const handleDeleteWorkflow = async (id: number, name: string) => {
+    if (confirm(`Are you sure you want to delete the "${name}" workflow? This cannot be undone.`)) {
+      const updated = workflows.filter(w => w.id !== id);
+      setWorkflows(updated);
+      await updateSetting.mutateAsync({ key: "ai_workflows", value: updated });
+      toast.success(`Workflow "${name}" deleted.`);
+    }
+  };
 
   return (
     <AdminLayout activeTab="ai">
@@ -194,7 +231,15 @@ export default function AdminAI() {
             </div>
 
             <div className="space-y-3">
-              <Label htmlFor="system-prompt">System Prompt</Label>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="system-prompt" className="text-lg font-semibold">System Prompt</Label>
+                  <p className="text-sm text-muted-foreground mt-1">This is the core instruction set for the AI. It sets the behavior across all panels.</p>
+                </div>
+                <Button onClick={handleSave} size="sm" className="gap-2" disabled={updateSetting.isPending}>
+                  {updateSetting.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Prompt
+                </Button>
+              </div>
               <Textarea
                 id="system-prompt"
                 value={aiSettings.systemPrompt}
@@ -202,9 +247,6 @@ export default function AdminAI() {
                 rows={8}
                 placeholder="Define the AI's personality, role, and instructions..."
               />
-              <p className="text-xs text-muted-foreground">
-                This is the core instruction set for the AI. It sets the behavior across all panels (Customer, Admin, Driver).
-              </p>
               <div className="flex flex-wrap gap-2 mt-2">
                 <span className="text-[10px] font-mono bg-muted px-2 py-1 rounded text-muted-foreground">Context Variables Automatically Injected:</span>
                 <span className="text-[10px] font-mono bg-[var(--brand)]/10 text-[var(--brand)] px-2 py-1 rounded border border-[var(--brand)]/20">{`{{Page Context}}`}</span>
@@ -252,12 +294,52 @@ export default function AdminAI() {
                   {updateSetting.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save
                 </Button>
               </div>
-                <Textarea value={aiKnowledge} onChange={(e) => setAiKnowledge(e.target.value)} rows={8} placeholder="Upload and train documents above to populate this, or type manual facts here (e.g. Return policies, delivery times)..." />
+              <Textarea value={aiKnowledge} onChange={(e) => setAiKnowledge(e.target.value)} rows={8} placeholder="Upload and train documents above to populate this, or type manual facts here (e.g. Return policies, delivery times)..." />
             </div>
 
             <Button onClick={handleSave} className="gap-2" disabled={updateSetting.isPending}>
               {updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
               Save AI Settings
+            </Button>
+          </div>
+        </Card>
+
+        <Card className="p-6 md:p-8 mt-6">
+          <div className="space-y-6">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                  <Package className="w-6 h-6 text-[var(--brand)]" /> AI Auto-Restock Notifications
+                </h3>
+                <p className="text-muted-foreground mt-1">
+                  Managers automatically receive auto-restock alerts. Configure admin notifications below.
+                </p>
+              </div>
+              <Button onClick={() => triggerRestock.mutate()} disabled={triggerRestock.isPending} variant="outline" className="gap-2 hidden sm:flex">
+                {triggerRestock.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                Test Restock Check
+              </Button>
+            </div>
+
+            <div className="space-y-4 max-w-xl">
+              <div className="space-y-2">
+                <Label htmlFor="low-stock-threshold">Low Stock Threshold</Label>
+                <p className="text-sm text-muted-foreground">Trigger an AI auto-restock email when stock falls below this number.</p>
+                <Input id="low-stock-threshold" type="number" min="0" value={inventorySettings.lowStockThreshold} onChange={(e) => setInventorySettings({ ...inventorySettings, lowStockThreshold: e.target.value })} />
+              </div>
+
+              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-muted/30">
+                <div>
+                  <Label htmlFor="notify-admin" className="text-base font-medium">Send Alerts to Admin</Label>
+                  <p className="text-sm text-muted-foreground">Toggle whether the admin should receive auto-restock emails.</p>
+                </div>
+                <input type="checkbox" id="notify-admin" checked={inventorySettings.notifyAdmin} onChange={(e) => setInventorySettings({ ...inventorySettings, notifyAdmin: e.target.checked })} className="w-5 h-5 accent-[var(--brand)] cursor-pointer" />
+              </div>
+            </div>
+
+            <Button onClick={handleSaveInventory} className="gap-2" disabled={updateSetting.isPending}>
+              {updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+              Save Inventory Settings
             </Button>
           </div>
         </Card>
@@ -286,11 +368,11 @@ export default function AdminAI() {
                   <Input id="workflow-name" placeholder="e.g., 'How to add a new product'" value={workflowName} onChange={(e) => setWorkflowName(e.target.value)} />
                 </div>
                 <div className="max-h-40 overflow-y-auto bg-background/50 p-3 rounded-md border border-border text-xs space-y-1.5 font-mono text-muted-foreground">
-                  {recordedActions.length > 0 ? recordedActions.map((action, i) => <p key={i}>{i+1}. {action.description}</p>) : <p>Waiting for actions...</p>}
+                  {recordedActions.length > 0 ? recordedActions.map((action, i) => <p key={i}>{i + 1}. {action.description}</p>) : <p>Waiting for actions...</p>}
                 </div>
-                <Button onClick={() => { stopRecording(); toast.info("Workflow recording stopped."); }} variant="destructive" className="w-full gap-2" disabled>
-                  {<Square size={18} />}
-                  Stop Recording & Save Workflow (Disabled)
+                <Button onClick={handleStopAndSave} variant="destructive" className="w-full gap-2" disabled={recordedActions.length === 0}>
+                  <Square size={18} />
+                  Stop Recording & Save Workflow
                 </Button>
               </div>
             ) : (
@@ -299,11 +381,68 @@ export default function AdminAI() {
               </Button>
             )}
 
-            {/* Workflow features disabled - endpoints not available */}
             <div className="pt-4 border-t border-border">
-              <h4 className="font-semibold mb-3 text-muted-foreground">Saved Workflows (Disabled)</h4>
-              <p className="text-sm text-muted-foreground text-center py-4">Workflow management is not available yet.</p>
+              <h4 className="font-semibold mb-3 text-foreground">Saved Workflows</h4>
+              {workflows.length > 0 ? (
+                <div className="space-y-3">
+                  {workflows.map((wf) => (
+                    <div key={wf.id} className="flex items-center justify-between p-3 border border-border rounded-lg bg-secondary/30">
+                      <div>
+                        <p className="font-medium text-sm">{wf.name}</p>
+                        <p className="text-xs text-muted-foreground">{wf.actions?.length || 0} steps recorded</p>
+                      </div>
+                      <Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10" onClick={() => handleDeleteWorkflow(wf.id, wf.name)}>
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-4">No workflows saved yet. Record one above.</p>
+              )}
             </div>
+          </div>
+        </Card>
+
+        <Card className="p-6 md:p-8 mt-6">
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-bold flex items-center gap-2">
+                <Mail className="w-6 h-6 text-[var(--brand)]" /> Email Marketing Campaigns
+              </h3>
+              <p className="text-muted-foreground mt-1">
+            Automatically fetch fast-moving and high-demand products from the database and broadcast an email to your customers encouraging them to shop with unique 15% off discount codes.
+              </p>
+            </div>
+
+        <div className="bg-muted/30 p-4 rounded-lg border border-border mb-6">
+          <h4 className="font-semibold flex items-center gap-2 mb-3">
+            <TrendingUp className="w-4 h-4 text-orange-500" /> Fast-Moving Products (Last 7 Days)
+          </h4>
+          {isTrendingLoading ? (
+             <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          ) : trendingProducts && trendingProducts.length > 0 ? (
+            <ul className="space-y-2">
+              {trendingProducts.slice(0, 3).map((p: any) => (
+                <li key={p.productId} className="text-sm flex justify-between p-2 bg-background rounded border border-border">
+                  <span className="font-medium">{p.productName}</span>
+                  <span className="text-muted-foreground text-xs bg-orange-500/10 text-orange-600 px-2 py-1 rounded-full">{p.salesCount} sold recently</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">No trending products found.</p>
+          )}
+        </div>
+
+            <Button
+              onClick={() => broadcastTrendingMutation.mutate()}
+              disabled={broadcastTrendingMutation.isPending}
+              className="gap-2 bg-[var(--brand)] text-white hover:opacity-90"
+            >
+              {broadcastTrendingMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Send Trending Products Email
+            </Button>
           </div>
         </Card>
       </div>

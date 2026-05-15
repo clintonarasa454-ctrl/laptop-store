@@ -1,6 +1,4 @@
-import { and, desc, eq, ilike, inArray, like, or, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import mysql from "mysql2/promise";
+import { and, desc, eq, ilike, inArray, or, sql, gte, lt, gt } from "drizzle-orm";
 import {
   addresses,
   cartItems,
@@ -24,43 +22,17 @@ import {
   aiConversations,
   userPreferences,
   productPriceHistory,
+  productUnits,
+  inventoryTransactions,
+  warehouses,
+  deletionRequests,
+  productInventory,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
+import { getDb } from "./db-init";
 
-let _db: ReturnType<typeof drizzle> | null = null;
-
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      let dbUrl = process.env.DATABASE_URL.trim();
-      
-      // Remove accidental quotes if pasted directly from .env into Render
-      if ((dbUrl.startsWith('"') && dbUrl.endsWith('"')) || (dbUrl.startsWith("'") && dbUrl.endsWith("'"))) {
-        dbUrl = dbUrl.slice(1, -1);
-      }
-      
-      // Automatically append SSL requirement for TiDB Serverless if not present
-      if (dbUrl.includes("tidbcloud.com") && !dbUrl.includes("ssl=")) {
-        dbUrl += dbUrl.includes("?") ? "&ssl={\"rejectUnauthorized\":true}" : "?ssl={\"rejectUnauthorized\":true}";
-      }
-
-      const pool = mysql.createPool(dbUrl);
-
-      // Test the connection immediately to catch Auth or SSL errors
-      const connection = await pool.getConnection();
-      connection.release();
-
-      _db = drizzle(pool as any) as any;
-    } catch (error) {
-      console.error("\n========================================");
-      console.error("[Database Error] Failed to connect to TiDB/MySQL.");
-      console.error("Details:", (error as Error).message);
-      console.error("========================================\n");
-      _db = null;
-    }
-  }
-  return _db;
-}
+// Re-export getDb so it's available to all modules that import from db
+export { getDb };
 
 // ─── Global Search ────────────────────────────────────────────────────────────
 export async function adminGlobalSearch(query: string, limit: number = 10, offset: number = 0) {
@@ -71,16 +43,17 @@ export async function adminGlobalSearch(query: string, limit: number = 10, offse
   if (!safeQuery) return { products: [], orders: [], customers: [], categories: [] };
 
   const searchQuery = `%${safeQuery}%`;
+  const likeOp = ilike;
 
   const [productsRes, ordersRes, customersRes, categoriesRes] = await Promise.all([
     db.select({ id: products.id, name: products.name, slug: products.slug, brand: products.brand })
       .from(products)
       .where(
         or(
-          like(products.name, searchQuery),
-          like(products.sku, searchQuery),
-          like(products.brand, searchQuery),
-          like(products.shortDescription, searchQuery)
+          likeOp(products.name, searchQuery),
+          likeOp(products.sku, searchQuery),
+          likeOp(products.brand, searchQuery),
+          likeOp(products.shortDescription, searchQuery)
         )
       )
       .limit(limit)
@@ -90,9 +63,9 @@ export async function adminGlobalSearch(query: string, limit: number = 10, offse
       .leftJoin(users, eq(orders.userId, users.id))
       .where(
         or(
-          like(orders.orderNumber, searchQuery),
-          like(users.name, searchQuery),
-          like(users.email, searchQuery)
+          likeOp(orders.orderNumber, searchQuery),
+          likeOp(users.name, searchQuery),
+          likeOp(users.email, searchQuery)
         )
       )
       .limit(limit)
@@ -101,9 +74,9 @@ export async function adminGlobalSearch(query: string, limit: number = 10, offse
       .from(users)
       .where(
         or(
-          like(users.name, searchQuery),
-          like(users.email, searchQuery),
-          like(users.phone, searchQuery),
+          likeOp(users.name, searchQuery),
+          likeOp(users.email, searchQuery),
+          likeOp(users.phone, searchQuery)
         )
       )
       .limit(limit)
@@ -112,8 +85,8 @@ export async function adminGlobalSearch(query: string, limit: number = 10, offse
       .from(categories)
       .where(
         or(
-          like(categories.name, searchQuery),
-          like(categories.description, searchQuery)
+          likeOp(categories.name, searchQuery),
+          likeOp(categories.description, searchQuery)
         )
       )
       .limit(limit)
@@ -154,7 +127,12 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
   if (!values.lastSignedIn) values.lastSignedIn = new Date();
   if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+  const q = db.insert(users).values(values);
+  if (typeof (q as any).onConflictDoUpdate === 'function') {
+    await (q as any).onConflictDoUpdate({ target: users.openId, set: updateSet });
+  } else {
+    await (q as any).onDuplicateKeyUpdate({ set: updateSet });
+  }
 }
 
 export async function getUserByOpenId(openId: string) {
@@ -194,10 +172,15 @@ export async function getCategoryBySlug(slug: string) {
 export async function upsertCategory(data: { name: string; slug: string; description?: string | null; imageUrl?: string | null; icon?: string | null; featured?: boolean; active?: boolean; parentId?: number | null }) {
   const db = await getDb();
   if (!db) return;
-  await db
-    .insert(categories)
-    .values({ ...data, icon: data.icon, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null })
-    .onDuplicateKeyUpdate({ set: { name: data.name, description: data.description, imageUrl: data.imageUrl, icon: data.icon, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null } });
+  const values = { ...data, icon: data.icon, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null };
+  const updateSet = { name: data.name, slug: data.slug, description: data.description, imageUrl: data.imageUrl, icon: data.icon, featured: data.featured ?? false, active: data.active ?? true, parentId: data.parentId ?? null };
+
+  const q = db.insert(categories).values(values);
+  if (typeof (q as any).onConflictDoUpdate === 'function') {
+    await (q as any).onConflictDoUpdate({ target: categories.slug, set: updateSet as any });
+  } else {
+    await (q as any).onDuplicateKeyUpdate({ set: updateSet as any });
+  }
 }
 
 // ─── Products ─────────────────────────────────────────────────────────────────
@@ -208,6 +191,7 @@ export async function getProducts(opts?: {
   limit?: number;
   tag?: string;
   offset?: number;
+  nearestWarehouseId?: number;
 }) {
   const db = await getDb();
   if (!db) return [];
@@ -222,15 +206,21 @@ export async function getProducts(opts?: {
   if (opts?.featured) conditions.push(eq(products.featured, true));
   if (opts?.search?.trim()) {
     const safeSearch = opts.search.trim();
-    conditions.push(
-      or(
-        like(products.name, `%${safeSearch}%`),
-        like(products.brand, `%${safeSearch}%`)
-      ) as ReturnType<typeof eq>
-    );
+    const searchCondition = or(ilike(products.name, `%${safeSearch}%`), ilike(products.brand, `%${safeSearch}%`));
+
+    conditions.push(searchCondition as ReturnType<typeof eq>);
   }
   if (opts?.tag) {
-    conditions.push(sql`JSON_CONTAINS(COALESCE(${products.tags}, CAST('[]' AS JSON)), ${JSON.stringify(opts.tag)})` as ReturnType<typeof eq>);
+    const tagJson = JSON.stringify([opts.tag]);
+    const tagCondition = sql`${products.tags}::jsonb @> ${tagJson}::jsonb`;
+    conditions.push(tagCondition as ReturnType<typeof eq>);
+  }
+  if (opts?.nearestWarehouseId !== undefined) {
+    const warehouseCondition = or(
+      eq(products.hasSerial, false),
+      sql`EXISTS (SELECT 1 FROM product_units WHERE product_units.product_id = ${products.id} AND product_units.warehouse_id = ${opts.nearestWarehouseId} AND product_units.status = 'IN_STOCK')`
+    );
+    conditions.push(warehouseCondition as ReturnType<typeof eq>);
   }
   return db
     .select({
@@ -250,6 +240,7 @@ export async function getProducts(opts?: {
       reviewCount: products.reviewCount,
       featured: products.featured,
       active: products.active,
+      warehouseId: products.warehouseId,
       createdAt: products.createdAt,
       updatedAt: products.updatedAt,
     })
@@ -298,6 +289,7 @@ export async function upsertProduct(data: {
   tags?: string[];
   featured?: boolean;
   active?: boolean;
+  hasSerial?: boolean;
 }) {
   const db = await getDb();
   if (!db) return;
@@ -308,19 +300,81 @@ export async function upsertProduct(data: {
     tags: data.tags ?? [],
   };
   if (data.id) {
-    await db.update(products).set(payload).where(eq(products.id, data.id));
+    await db.update(products).set(payload as any).where(eq(products.id, data.id));
   } else {
-    await db.insert(products).values(payload as any);
+    const q = db.insert(products).values(payload as any);
+    if (typeof (q as any).onConflictDoUpdate === 'function') {
+      await (q as any).onConflictDoUpdate({ target: products.slug, set: payload as any });
+    } else {
+      await (q as any).onDuplicateKeyUpdate({ set: payload as any });
+    }
   }
 }
 
-export async function updateProductStock(productId: number, delta: number) {
+export async function updateProductStock(productId: number, delta: number, orderId?: number) {
   const db = await getDb();
   if (!db) return;
-  await db
-    .update(products)
-    .set({ stock: sql`${products.stock} + ${delta}` })
-    .where(eq(products.id, productId));
+  
+  const [product] = await db.select().from(products).where(eq(products.id, productId)).limit(1);
+
+  let originWarehouseId: number | null = null;
+  if (orderId) {
+    const [order] = await db.select({ originWarehouseId: orders.originWarehouseId }).from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (order?.originWarehouseId) {
+      originWarehouseId = order.originWarehouseId;
+    }
+  }
+
+  if (product?.hasSerial) {
+    if (delta < 0) {
+      // Selling units: Mark IN_STOCK units as SOLD
+      let conditions: any[] = [eq(productUnits.productId, productId), eq(productUnits.status, "IN_STOCK")];
+      if (originWarehouseId) conditions.push(eq(productUnits.warehouseId, originWarehouseId));
+      
+      const availableUnits = await db.select().from(productUnits)
+        .where(and(...conditions))
+        .limit(Math.abs(delta));
+        
+      if (availableUnits.length > 0) {
+        const unitIds = availableUnits.map(u => u.id);
+        await db.update(productUnits)
+          .set({ status: "SOLD", soldAt: new Date(), soldToOrderId: orderId || null })
+          .where(inArray(productUnits.id, unitIds));
+          
+        await db.insert(inventoryTransactions).values(
+          availableUnits.map(u => ({ productId, unitId: u.id, transactionType: "SOLD", quantityChange: -1, fromStatus: "IN_STOCK", toStatus: "SOLD", orderId: orderId || null }))
+        );
+      }
+    } else if (delta > 0 && orderId) {
+      // Returning units: Order was cancelled, mark specific units back to IN_STOCK
+      const soldUnits = await db.select().from(productUnits)
+        .where(and(eq(productUnits.productId, productId), eq(productUnits.soldToOrderId, orderId)))
+        .limit(delta);
+
+      if (soldUnits.length > 0) {
+        const unitIds = soldUnits.map(u => u.id);
+        await db.update(productUnits)
+          .set({ status: "IN_STOCK", soldAt: null, soldToOrderId: null })
+          .where(inArray(productUnits.id, unitIds));
+
+        await db.insert(inventoryTransactions).values(
+          soldUnits.map(u => ({ productId, unitId: u.id, transactionType: "RETURNED", quantityChange: 1, fromStatus: "SOLD", toStatus: "IN_STOCK", orderId: orderId }))
+        );
+      }
+    }
+  } else if (!product?.hasSerial) {
+    // For non-serialized bulk items, simply update the stock number
+    const stockUpdate = sql`GREATEST(0, "stock" + ${delta})`;
+    await db.update(products).set({ stock: stockUpdate }).where(eq(products.id, productId));
+    
+    if (originWarehouseId) {
+       const [inv] = await db.select().from(productInventory).where(and(eq(productInventory.productId, productId), eq(productInventory.warehouseId, originWarehouseId))).limit(1);
+       if (inv) {
+         const invUpdate = sql`GREATEST(0, "stock" + ${delta})`;
+         await db.update(productInventory).set({ stock: invUpdate }).where(eq(productInventory.id, inv.id));
+       }
+    }
+  }
 }
 
 // ─── Cart ─────────────────────────────────────────────────────────────────────
@@ -441,12 +495,13 @@ export async function createOrder(data: {
   total: string;
   paymentMethod?: "mpesa" | "paypal" | "stripe" | "card" | "cod";
   notes?: string;
+  originWarehouseId?: number;
 }) {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(orders).values(data);
-  const insertId = (result as unknown as [{ insertId: number }])[0]?.insertId;
-  return insertId;
+
+  const result = await db.insert(orders).values(data).returning({ insertId: orders.id });
+  return result[0]?.insertId;
 }
 
 export async function createOrderItems(
@@ -491,9 +546,15 @@ export async function getOrderItems(orderId: number) {
   return db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
 }
 
-export async function getAllOrders(opts?: { limit?: number; offset?: number }) {
+export async function getAllOrders(opts?: { limit?: number; offset?: number; warehouseId?: number | null }) {
   const db = await getDb();
   if (!db) return [];
+  
+  const conditions = [];
+  if (opts?.warehouseId) {
+    conditions.push(eq(orders.originWarehouseId, opts.warehouseId));
+  }
+
   return db
     .select({
       id: orders.id,
@@ -520,6 +581,7 @@ export async function getAllOrders(opts?: { limit?: number; offset?: number }) {
     })
     .from(orders)
     .leftJoin(users, eq(orders.userId, users.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(orders.createdAt))
     .limit(opts?.limit ?? 50)
     .offset(opts?.offset ?? 0);
@@ -568,7 +630,7 @@ export async function createPayment(data: {
 
 export async function updatePaymentStatus(
   orderId: number,
-  status: "pending" | "completed" | "failed" | "refunded",
+  status: "pending" | "paid" | "failed" | "refunded",
   transactionId?: string,
   providerResponse?: unknown
 ) {
@@ -627,65 +689,138 @@ export async function trackPageView(path: string) {
 }
 
 // ─── Admin Stats ──────────────────────────────────────────────────────────────
-export async function getAdminStats(timeRange: string = "30d") {
+export async function logAuditAction(userId: number, action: string, resourceId: string | number, details?: string) {
   const db = await getDb();
-  if (!db) return {
-    totalOrders: 0, totalRevenue: "0", totalPayouts: "0", totalUsers: 0, totalProducts: 0, totalCustomers: 0, pendingOrders: 0, recentOrders: [], payoutChartData: [],
-    monthlyRevenueData: [], productPerformanceData: [], categoryData: [], brandData: [], trafficSourceData: [], revenueData: [],
-    trends: { revenue: 0, orders: 0, customers: 0, products: 0, pageViews: 0, conversion: 0, aov: 0, returning: 0 }
-  };
+  if (!db) return;
+  
+  try {
+    // Using raw SQL so it functions immediately even before you map it in schema.ts
+    await db.execute(sql`
+      INSERT INTO audit_logs (user_id, action, resource_id, details, created_at) 
+      VALUES (${userId}, ${action}, ${String(resourceId)}, ${details ?? null}, NOW())
+    `);
+  } catch (error) {
+    console.error("⚠️ Failed to write audit log (Ensure 'audit_logs' table exists):", error);
+  }
+}
+
+export async function getAdminStats(timeRange: string = "30d", warehouseId?: number | null) {
+  const db = await getDb();
+  if (!db) {
+    console.error("[getAdminStats] Database connection failed. Check your DATABASE_URL configuration.");
+    throw new Error("Database connection failed. Check your DATABASE_URL configuration.");
+  }
 
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-  const sixMonthsAgo = new Date();
-  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-  // Dynamic Time Range
   let days = 30;
-  if (timeRange === "7d") days = 7;
-  else if (timeRange === "90d") days = 90;
-  else if (timeRange === "12m") days = 365;
+  let isAllTime = false;
+
+  if (!timeRange || timeRange === "all") {
+    isAllTime = true;
+    days = 3650; // Use a large number for charts fallback
+  } else if (timeRange.endsWith("d")) {
+    days = parseInt(timeRange.replace("d", ""));
+  } else if (timeRange.endsWith("m")) {
+    days = parseInt(timeRange.replace("m", "")) * 30;
+  } else if (timeRange.endsWith("y")) {
+    days = parseInt(timeRange.replace("y", "")) * 365;
+  } else {
+    days = parseInt(timeRange) || 30;
+  }
 
   const dynamicDaysAgo = new Date();
   dynamicDaysAgo.setDate(dynamicDaysAgo.getDate() - days);
   
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const previousPeriodAgo = new Date();
+  previousPeriodAgo.setDate(previousPeriodAgo.getDate() - (days * 2));
+  
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-  const sixtyDaysAgo = new Date();
-  sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+  const ordersConditions = isAllTime ? [] : [gte(orders.createdAt, dynamicDaysAgo)];
+  if (warehouseId) ordersConditions.push(eq(orders.originWarehouseId, warehouseId));
+  const ordersFilter = ordersConditions.length > 0 ? and(...ordersConditions) : undefined;
 
-  // Run all independent queries in parallel to drastically reduce lag
-  const [
-    [orderStats], [pendingStats], [userCount], [productCount],
-    [payoutStats], recentOrderRows, recentAllOrders, recent7DaysOrders, recentPageViews,
-    allOrderItems, categorySalesData, userOrderCounts,
-    [recentUsers], [pastUsers], [recentProducts], [recentViews], [pastViews]
-  ] = await Promise.all([
+  const usersConditions = isAllTime ? [] : [gte(users.createdAt, dynamicDaysAgo)];
+  if (warehouseId) usersConditions.push(eq(users.warehouseId, warehouseId));
+  const usersFilter = usersConditions.length > 0 ? and(...usersConditions) : undefined;
+
+  const productsConditions = isAllTime ? [] : [gte(products.createdAt, dynamicDaysAgo)];
+  if (warehouseId) productsConditions.push(eq(products.warehouseId, warehouseId));
+  const productsFilter = productsConditions.length > 0 ? and(...productsConditions) : undefined;
+
+  const payoutsFilter = isAllTime ? undefined : gte(deliveryPayouts.requestedAt, dynamicDaysAgo);
+  const viewsFilter = isAllTime ? undefined : gte(pageViews.createdAt, dynamicDaysAgo);
+  
+  const pastOrdersConditions = isAllTime ? [sql`1=0`] : [gte(orders.createdAt, previousPeriodAgo), lt(orders.createdAt, dynamicDaysAgo)];
+  if (warehouseId) pastOrdersConditions.push(eq(orders.originWarehouseId, warehouseId));
+  const pastOrdersFilter = pastOrdersConditions.length > 0 ? and(...pastOrdersConditions) : undefined;
+
+  const pastUsersConditions = isAllTime ? [sql`1=0`] : [gte(users.createdAt, previousPeriodAgo), lt(users.createdAt, dynamicDaysAgo)];
+  if (warehouseId) pastUsersConditions.push(eq(users.warehouseId, warehouseId));
+  const pastUsersFilter = pastUsersConditions.length > 0 ? and(...pastUsersConditions) : undefined;
+
+  const pastViewsFilter = isAllTime ? sql`1=0` : and(gte(pageViews.createdAt, previousPeriodAgo), lt(pageViews.createdAt, dynamicDaysAgo));
+
+  // Group 1: General Stats (Prevents DB connection pool exhaustion - max 20 conns)
+  const [[orderStats], [pastOrderStats], [pendingStats], [userCount], [productCount], [payoutStats]] = await Promise.all([
     db.select({
       totalOrders: sql<number>`COUNT(*)`,
-      totalRevenue: sql<string>`COALESCE(SUM(CASE WHEN paymentStatus = 'paid' THEN total ELSE 0 END), 0)`,
-    }).from(orders),
-    db.select({ count: sql<number>`COUNT(*)` }).from(orders).where(eq(orders.status, "pending")),
-    db.select({ count: sql<number>`COUNT(*)` }).from(users),
-    db.select({ count: sql<number>`COUNT(*)` }).from(products).where(eq(products.active, true)),
-    db.select({ totalPayouts: sql<string>`COALESCE(SUM(amount), 0)` }).from(deliveryPayouts).where(eq(deliveryPayouts.status, "completed")),
+      totalRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${orders.paymentStatus} = 'paid' THEN CAST(${orders.total} AS DECIMAL(10,2)) ELSE 0 END), 0)`,
+    }).from(orders).where(ordersFilter),
+    db.select({
+      totalOrders: sql<number>`COUNT(*)`,
+      totalRevenue: sql<string>`COALESCE(SUM(CASE WHEN ${orders.paymentStatus} = 'paid' THEN CAST(${orders.total} AS DECIMAL(10,2)) ELSE 0 END), 0)`,
+    }).from(orders).where(pastOrdersFilter),
+    db.select({ count: sql<number>`COUNT(*)` }).from(orders).where(and(eq(orders.status, "pending"), ordersFilter)),
+    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(and(eq(users.role, "user"), warehouseId ? eq(users.warehouseId, warehouseId) : undefined)),
+    db.select({ count: sql<number>`COUNT(*)` }).from(products).where(and(eq(products.active, true), gt(products.stock, 0), warehouseId ? eq(products.warehouseId, warehouseId) : undefined)),
+    db.select({ totalPayouts: sql<string>`COALESCE(SUM(amount), 0)` }).from(deliveryPayouts).where(and(eq(deliveryPayouts.status, "completed"), payoutsFilter)),
+  ]);
+
+  // Group 2: Recent Data & Lists
+  const [recentOrderRows, recentAllOrders, recent7DaysOrders, recentPageViews] = await Promise.all([
     db.select({
       id: orders.id, orderNumber: orders.orderNumber, status: orders.status, total: orders.total,
       paymentStatus: orders.paymentStatus, createdAt: orders.createdAt, customerName: users.name,
-    }).from(orders).leftJoin(users, eq(orders.userId, users.id)).orderBy(desc(orders.createdAt)).limit(5),
-    db.select({ total: orders.total, createdAt: orders.createdAt }).from(orders).where(and(sql`${orders.createdAt} >= ${sixMonthsAgo}`, eq(orders.paymentStatus, "paid"))),
-    db.select({ total: orders.total, createdAt: orders.createdAt }).from(orders).where(and(sql`${orders.createdAt} >= ${dynamicDaysAgo}`, eq(orders.paymentStatus, "paid"))),
-    db.select({ path: pageViews.path, createdAt: pageViews.createdAt }).from(pageViews).where(sql`${pageViews.createdAt} >= ${dynamicDaysAgo}`),
-    db.select().from(orderItems),
-    db.select({ categoryName: categories.name, subtotal: orderItems.subtotal, brand: products.brand }).from(orderItems).innerJoin(products, eq(orderItems.productId, products.id)).innerJoin(categories, eq(products.categoryId, categories.id)),
-    db.select({ userId: orders.userId, count: sql<number>`COUNT(*)` }).from(orders).groupBy(orders.userId),
-    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(sql`${users.createdAt} >= ${thirtyDaysAgo}`),
-    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(sql`${users.createdAt} >= ${sixtyDaysAgo} AND ${users.createdAt} < ${thirtyDaysAgo}`),
-    db.select({ count: sql<number>`COUNT(*)` }).from(products).where(sql`${products.createdAt} >= ${thirtyDaysAgo}`),
-    db.select({ count: sql<number>`COUNT(*)` }).from(pageViews).where(sql`${pageViews.createdAt} >= ${thirtyDaysAgo}`),
-    db.select({ count: sql<number>`COUNT(*)` }).from(pageViews).where(sql`${pageViews.createdAt} >= ${sixtyDaysAgo} AND ${pageViews.createdAt} < ${thirtyDaysAgo}`)
+    }).from(orders).leftJoin(users, eq(orders.userId, users.id)).where(ordersFilter).orderBy(desc(orders.createdAt)).limit(5),
+    db.select({ total: orders.total, createdAt: orders.createdAt, userId: orders.userId })
+      .from(orders)
+      .where(and(sql`${orders.createdAt} >= ${sixMonthsAgo.toISOString()}`, eq(orders.paymentStatus, "paid"), warehouseId ? eq(orders.originWarehouseId, warehouseId) : undefined)),
+    db.select({ total: orders.total, createdAt: orders.createdAt, userId: orders.userId }).from(orders).where(and(ordersFilter || undefined, eq(orders.paymentStatus, "paid"))),
+    db.select({ path: pageViews.path, createdAt: pageViews.createdAt }).from(pageViews).where(viewsFilter).limit(50000),
   ]);
+
+  // Group 3: Aggregations & AI User Tracking
+  const [allOrderItems, categorySalesData, userOrderCounts, aiUserRows] = await Promise.all([
+    db.select({ productName: orderItems.productName, quantity: orderItems.quantity })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(ordersFilter),
+    db.select({ categoryName: categories.name, subtotal: orderItems.subtotal, brand: products.brand })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .innerJoin(products, eq(orderItems.productId, products.id))
+      .innerJoin(categories, eq(products.categoryId, categories.id))
+      .where(ordersFilter),
+    db.select({ userId: orders.userId, count: sql<number>`COUNT(*)` })
+      .from(orders)
+      .where(ordersFilter)
+      .groupBy(orders.userId),
+    db.select({ userId: aiConversations.userId }).from(aiConversations).where(sql`${aiConversations.userId} IS NOT NULL`)
+  ]);
+
+  // Group 4: Trends Calculation
+  const [[recentUsers], [pastUsers], [recentProducts], [recentViews], [pastViews]] = await Promise.all([
+    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(usersFilter),
+    db.select({ count: sql<number>`COUNT(*)` }).from(users).where(pastUsersFilter),
+    db.select({ count: sql<number>`COUNT(*)` }).from(products).where(and(eq(products.active, true), gt(products.stock, 0), productsFilter)),
+    db.select({ count: sql<number>`COUNT(*)` }).from(pageViews).where(viewsFilter),
+    db.select({ count: sql<number>`COUNT(*)` }).from(pageViews).where(pastViewsFilter),
+  ]);
+
+  const aiUsers = new Set((aiUserRows || []).map(r => r.userId));
 
   // Monthly Revenue (last 6 months)
   const monthlyDataMap: Record<string, { month: string, revenue: number, orders: number, _ts: number }> = {};
@@ -695,30 +830,38 @@ export async function getAdminStats(timeRange: string = "30d") {
     const m = months[d.getMonth()];
     monthlyDataMap[m] = { month: m, revenue: 0, orders: 0, _ts: d.getTime() };
   }
-  recentAllOrders.forEach(o => {
-    const m = months[o.createdAt.getMonth()];
+  (recentAllOrders || []).forEach(o => {
+    const date = o?.createdAt ? new Date(o.createdAt) : new Date();
+    const m = months[date.getMonth()];
     if (monthlyDataMap[m]) {
-      monthlyDataMap[m].revenue += parseFloat(o.total as string);
+      monthlyDataMap[m].revenue += parseFloat((o?.total as string) || "0");
       monthlyDataMap[m].orders += 1;
     }
   });
   const monthlyRevenueData = Object.values(monthlyDataMap).sort((a, b) => a._ts - b._ts).map(({_ts, ...rest}) => rest);
 
   // Dynamic Revenue & Visitors Chart
-  const dailyDataMap: Record<string, { date: string, revenue: number, visitors: number, _ts: number }> = {};
-  if (days === 365) {
+  const dailyDataMap: Record<string, { date: string, revenue: number, visitors: number, aiRevenue: number, organicRevenue: number, _ts: number }> = {};
+  if (isAllTime || days >= 365) {
     for (let i = 11; i >= 0; i--) {
       const d = new Date();
       d.setMonth(d.getMonth() - i);
       const dateStr = `${months[d.getMonth()]} ${d.getFullYear()}`;
-      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, _ts: new Date(d.getFullYear(), d.getMonth(), 1).getTime() };
+      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, aiRevenue: 0, organicRevenue: 0, _ts: new Date(d.getFullYear(), d.getMonth(), 1).getTime() };
     }
-    recent7DaysOrders.forEach(o => {
-      const dateStr = `${months[o.createdAt.getMonth()]} ${o.createdAt.getFullYear()}`;
-      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].revenue += parseFloat(o.total as string);
+    (recent7DaysOrders || []).forEach(o => {
+      const date = o?.createdAt ? new Date(o.createdAt) : new Date();
+      const dateStr = `${months[date.getMonth()]} ${date.getFullYear()}`;
+      const rev = parseFloat((o?.total as string) || "0");
+      if (dailyDataMap[dateStr]) {
+        dailyDataMap[dateStr].revenue += rev;
+        if (o.userId && aiUsers.has(o.userId)) dailyDataMap[dateStr].aiRevenue += rev;
+        else dailyDataMap[dateStr].organicRevenue += rev;
+      }
     });
-    recentPageViews.forEach(pv => {
-      const dateStr = `${months[pv.createdAt.getMonth()]} ${pv.createdAt.getFullYear()}`;
+    (recentPageViews || []).forEach(pv => {
+      const date = pv?.createdAt ? new Date(pv.createdAt) : new Date();
+      const dateStr = `${months[date.getMonth()]} ${date.getFullYear()}`;
       if (dailyDataMap[dateStr]) dailyDataMap[dateStr].visitors += 1;
     });
   } else {
@@ -726,14 +869,21 @@ export async function getAdminStats(timeRange: string = "30d") {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = `${months[d.getMonth()]} ${d.getDate()}`;
-      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, _ts: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() };
+      dailyDataMap[dateStr] = { date: dateStr, revenue: 0, visitors: 0, aiRevenue: 0, organicRevenue: 0, _ts: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() };
     }
-    recent7DaysOrders.forEach(o => {
-      const dateStr = `${months[o.createdAt.getMonth()]} ${o.createdAt.getDate()}`;
-      if (dailyDataMap[dateStr]) dailyDataMap[dateStr].revenue += parseFloat(o.total as string);
+    (recent7DaysOrders || []).forEach(o => {
+      const date = o?.createdAt ? new Date(o.createdAt) : new Date();
+      const dateStr = `${months[date.getMonth()]} ${date.getDate()}`;
+      const rev = parseFloat((o?.total as string) || "0");
+      if (dailyDataMap[dateStr]) {
+        dailyDataMap[dateStr].revenue += rev;
+        if (o.userId && aiUsers.has(o.userId)) dailyDataMap[dateStr].aiRevenue += rev;
+        else dailyDataMap[dateStr].organicRevenue += rev;
+      }
     });
-    recentPageViews.forEach(pv => {
-      const dateStr = `${months[pv.createdAt.getMonth()]} ${pv.createdAt.getDate()}`;
+    (recentPageViews || []).forEach(pv => {
+      const date = pv?.createdAt ? new Date(pv.createdAt) : new Date();
+      const dateStr = `${months[date.getMonth()]} ${date.getDate()}`;
       if (dailyDataMap[dateStr]) dailyDataMap[dateStr].visitors += 1;
     });
   }
@@ -741,65 +891,55 @@ export async function getAdminStats(timeRange: string = "30d") {
 
   // Product Performance
   const productSales: Record<string, number> = {};
-  allOrderItems.forEach(item => {
-    productSales[item.productName] = (productSales[item.productName] || 0) + item.quantity;
+  (allOrderItems || []).forEach(item => {
+    if (item?.productName) {
+      productSales[item.productName] = (productSales[item.productName] || 0) + (item.quantity || 0);
+    }
   });
   const productPerformanceData = Object.entries(productSales).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5);
 
   // Category & Brand Sales
   const catSalesMap: Record<string, number> = {};
   const brandSalesMap: Record<string, number> = {};
-  categorySalesData.forEach(row => {
-    const subtotal = parseFloat(row.subtotal as string);
-    catSalesMap[row.categoryName] = (catSalesMap[row.categoryName] || 0) + subtotal;
-    if (row.brand) {
-      brandSalesMap[row.brand] = (brandSalesMap[row.brand] || 0) + subtotal;
+  (categorySalesData || []).forEach(row => {
+    const subtotal = parseFloat(row?.subtotal as string || "0");
+    if (row?.categoryName) {
+      catSalesMap[row.categoryName] = (catSalesMap[row.categoryName] || 0) + subtotal;
+      if (row.brand) {
+        brandSalesMap[row.brand] = (brandSalesMap[row.brand] || 0) + subtotal;
+      }
     }
   });
   const categoryData = Object.entries(catSalesMap).map(([name, sales]) => ({ name, sales })).sort((a, b) => b.sales - a.sales);
   const brandData = Object.entries(brandSalesMap).map(([name, sales]) => ({ name, sales })).sort((a, b) => b.sales - a.sales).slice(0, 10);
 
-  const returningUsersCount = userOrderCounts.filter(u => Number(u.count) > 1).length;
+  const returningUsersCount = (userOrderCounts || []).filter(u => Number(u?.count ?? 0) > 1).length;
 
-  const currMonth = monthlyRevenueData[monthlyRevenueData.length - 1];
-  const prevMonth = monthlyRevenueData[monthlyRevenueData.length - 2];
+  const currRevenue = parseFloat(orderStats?.totalRevenue || "0");
+  const prevRevenue = parseFloat(pastOrderStats?.totalRevenue || "0");
+  const revenueTrend = prevRevenue > 0 ? ((currRevenue - prevRevenue) / prevRevenue) * 100 : 0;
   
-  const revenueTrend = prevMonth?.revenue ? ((currMonth.revenue - prevMonth.revenue) / prevMonth.revenue) * 100 : 0;
-  const ordersTrend = prevMonth?.orders ? ((currMonth.orders - prevMonth.orders) / prevMonth.orders) * 100 : 0;
-  const customersTrend = pastUsers?.count ? ((Number(recentUsers?.count || 0) - Number(pastUsers.count)) / Number(pastUsers.count)) * 100 : 0;
-  const pageViewsTrend = pastViews?.count ? ((Number(recentViews?.count || 0) - Number(pastViews.count)) / Number(pastViews.count)) * 100 : 0;
-
-  // --- Dynamic Live Trends (30 vs 60 days) ---
-  const thirtyDaysAgoTs = thirtyDaysAgo.getTime();
-  const sixtyDaysAgoTs = sixtyDaysAgo.getTime();
-  let recent30DaysOrdersCount = 0;
-  let past30DaysOrdersCount = 0;
-  let recent30DaysRevenue = 0;
-  let past30DaysRevenue = 0;
+  const currOrders = Number(orderStats?.totalOrders || 0);
+  const prevOrders = Number(pastOrderStats?.totalOrders || 0);
+  const ordersTrend = prevOrders > 0 ? ((currOrders - prevOrders) / prevOrders) * 100 : 0;
   
-  recentAllOrders.forEach(o => {
-    const ts = o.createdAt.getTime();
-    const rev = parseFloat(o.total as string);
-    if (ts >= thirtyDaysAgoTs) {
-      recent30DaysOrdersCount++;
-      recent30DaysRevenue += rev;
-    } else if (ts >= sixtyDaysAgoTs) {
-      past30DaysOrdersCount++;
-      past30DaysRevenue += rev;
-    }
-  });
+  const currUsersCount = Number(recentUsers?.count ?? 0);
+  const prevUsersCount = Number(pastUsers?.count ?? 0);
+  const customersTrend = prevUsersCount > 0 ? ((currUsersCount - prevUsersCount) / prevUsersCount) * 100 : 0;
 
-  const currViews = Number(recentViews?.count || 0);
-  const prevViews = Number(pastViews?.count || 0);
-  const currConvRate = currViews > 0 ? (recent30DaysOrdersCount / currViews) * 100 : 0;
-  const prevConvRate = prevViews > 0 ? (past30DaysOrdersCount / prevViews) * 100 : 0;
+  const currViews = Number(recentViews?.count ?? 0);
+  const prevViews = Number(pastViews?.count ?? 0);
+  const pageViewsTrend = prevViews > 0 ? ((currViews - prevViews) / prevViews) * 100 : 0;
+
+  const currConvRate = currViews > 0 ? (currOrders / currViews) * 100 : 0;
+  const prevConvRate = prevViews > 0 ? (prevOrders / prevViews) * 100 : 0;
   const convTrend = prevConvRate > 0 ? ((currConvRate - prevConvRate) / prevConvRate) * 100 : 0;
   
-  const currAov = recent30DaysOrdersCount > 0 ? recent30DaysRevenue / recent30DaysOrdersCount : 0;
-  const prevAov = past30DaysOrdersCount > 0 ? past30DaysRevenue / past30DaysOrdersCount : 0;
+  const currAov = currOrders > 0 ? currRevenue / currOrders : 0;
+  const prevAov = prevOrders > 0 ? prevRevenue / prevOrders : 0;
   const aovTrend = prevAov > 0 ? ((currAov - prevAov) / prevAov) * 100 : 0;
   
-  const returningRatio = Number(userCount?.count || 0) > 0 ? (returningUsersCount / Number(userCount!.count)) * 100 : 0;
+  const returningRatio = Number(userCount?.count ?? 0) > 0 ? (returningUsersCount / Number(userCount?.count ?? 1)) * 100 : 0;
 
   const trends = {
     revenue: Number(revenueTrend.toFixed(1)), orders: Number(ordersTrend.toFixed(1)), customers: Number(customersTrend.toFixed(1)),
@@ -809,8 +949,8 @@ export async function getAdminStats(timeRange: string = "30d") {
 
   // --- Actual PageView groupings ---
   const pathCounts: Record<string, number> = {};
-  recentPageViews.forEach(pv => {
-    let p = pv.path.split('?')[0];
+  (recentPageViews || []).forEach(pv => {
+    let p = (pv?.path || "").split('?')[0];
     let name = "Other";
     if (p === '/' || p === '') name = "Home / Direct";
     else if (p.startsWith('/products')) name = "Products / Shop";
@@ -825,28 +965,28 @@ export async function getAdminStats(timeRange: string = "30d") {
     .sort((a, b) => b.value - a.value).slice(0, 4);
 
   return {
-    totalOrders: orderStats?.totalOrders ?? 0,
+    totalOrders: Number(orderStats?.totalOrders ?? 0),
     totalRevenue: orderStats?.totalRevenue ?? "0",
     totalPayouts: payoutStats?.totalPayouts ?? "0",
-    totalCustomers: userCount?.count ?? 0,
-    totalProducts: productCount?.count ?? 0,
-    pendingOrders: pendingStats?.count ?? 0,
+    totalCustomers: Number(userCount?.count ?? 0),
+    totalProducts: Number(productCount?.count ?? 0),
+    pendingOrders: Number(pendingStats?.count ?? 0),
     recentOrders: recentOrderRows,
     returningUsersCount,
     trends,
     monthlyRevenueData,
     revenueData,
-    productPerformanceData: productPerformanceData.length ? productPerformanceData : [{ name: "No Sales", value: 1 }],
-    categoryData: categoryData.length ? categoryData : [{ name: "No Sales", sales: 1 }],
-    brandData: brandData.length ? brandData : [{ name: "No Sales", sales: 1 }],
-    trafficSourceData: computedTrafficSourceData.length ? computedTrafficSourceData : [{ name: "No Traffic", value: 1 }],
+    productPerformanceData,
+    categoryData,
+    brandData,
+    trafficSourceData: computedTrafficSourceData,
   };
 }
 
 export async function getStoreStats() {
   const db = await getDb();
   if (!db) return { productCount: 0, customerCount: 0, avgRating: "0.0" };
-  const [productCount] = await db.select({ count: sql<number>`COUNT(*)` }).from(products).where(eq(products.active, true));
+  const [productCount] = await db.select({ count: sql<number>`COUNT(*)` }).from(products).where(and(eq(products.active, true), gt(products.stock, 0)));
   const [customerCount] = await db.select({ count: sql<number>`COUNT(*)` }).from(users).where(eq(users.role, "user"));
   const [ratingStats] = await db.select({ avg: sql<number>`AVG(rating)` }).from(reviews);
   return {
@@ -865,16 +1005,26 @@ export async function deleteProduct(productId: number) {
 
 // ─── Settings & Content ───────────────────────────────────────────────────────
 export async function getSetting(key: string): Promise<any> {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
-  return result[0]?.value ?? null;
+  try {
+    const db = await getDb();
+    if (!db) return null;
+    const result = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+    return result[0]?.value ?? null;
+  } catch (error) {
+    console.warn(`⚠️  Database unavailable - getSetting("${key}") returned null:`, error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 export async function upsertSetting(key: string, value: unknown) {
   const db = await getDb();
   if (!db) return;
-  await db.insert(settings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
+  const q = db.insert(settings).values({ key, value });
+  if (typeof (q as any).onConflictDoUpdate === 'function') {
+    await (q as any).onConflictDoUpdate({ target: settings.key, set: { value } });
+  } else {
+    await (q as any).onDuplicateKeyUpdate({ set: { value } });
+  }
 }
 
 export async function getBanners(opts?: { activeOnly?: boolean }) {
@@ -982,11 +1132,11 @@ export async function getAIConversationStats(daysBack: number = 7) {
   
   const dateFilter = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
   
-  const totalResult = await db.select({ count: sql<number>`COUNT(*)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter}`);
-  const uniqueResult = await db.select({ count: sql<number>`COUNT(DISTINCT userId)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter}`);
+  const totalResult = await db.select({ count: sql<number>`COUNT(*)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter.toISOString()}`);
+  const uniqueResult = await db.select({ count: sql<number>`COUNT(DISTINCT userId)` }).from(aiConversations).where(sql`${aiConversations.createdAt} > ${dateFilter.toISOString()}`);
   const typesResult = await db.select({ type: aiConversations.messageType, count: sql<number>`COUNT(*)` })
     .from(aiConversations)
-    .where(sql`${aiConversations.createdAt} > ${dateFilter}`)
+    .where(sql`${aiConversations.createdAt} > ${dateFilter.toISOString()}`)
     .groupBy(aiConversations.messageType)
     .orderBy(desc(sql<number>`COUNT(*)`))
     .limit(5);
@@ -1062,6 +1212,8 @@ export async function getPricingSuggestions() {
   const db = await getDb();
   if (!db) return [];
   
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
   // Find products with high sales but low price (increase opportunity)
   const suggestionsResult = await db.select({
     productId: products.id,
@@ -1071,8 +1223,9 @@ export async function getPricingSuggestions() {
   })
     .from(products)
     .leftJoin(orderItems, eq(orderItems.productId, products.id))
-    .where(sql`DATE_SUB(NOW(), INTERVAL 7 DAY) <= ${orderItems.createdAt}`)
-    .groupBy(products.id)
+    .leftJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(sql`${orders.createdAt} >= ${sevenDaysAgo.toISOString()}`)
+    .groupBy(products.id, products.name, products.price)
     .having(sql`COUNT(${orderItems.id}) > 5`)
     .limit(10);
 
@@ -1095,8 +1248,9 @@ export async function getDemandPrediction(daysBack: number = 7) {
   })
     .from(orderItems)
     .leftJoin(products, eq(orderItems.productId, products.id))
-    .where(sql`${orderItems.createdAt} > ${dateFilter}`)
-    .groupBy(orderItems.productId)
+    .leftJoin(orders, eq(orders.id, orderItems.orderId))
+    .where(sql`${orders.createdAt} > ${dateFilter.toISOString()}`)
+    .groupBy(orderItems.productId, products.name)
     .orderBy(desc(sql<number>`COUNT(${orderItems.id})`))
     .limit(10);
 

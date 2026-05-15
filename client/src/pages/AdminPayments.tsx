@@ -21,16 +21,21 @@ import {
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { formatPrice } from "@/lib/cart";
+import { useAuth } from "@/pages/useAuth";
 
 export default function AdminPayments() {
+  const { user } = useAuth();
   const { data: payments, isLoading } = trpc.admin.payments.useQuery(undefined, {
-    refetchInterval: 10000,
+    staleTime: 0,
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   });
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [payoutStatusFilter, setPayoutStatusFilter] = useState("all");
   const [payoutStartDate, setPayoutStartDate] = useState("");
   const [payoutEndDate, setPayoutEndDate] = useState("");
+  const [payoutTimeRange, setPayoutTimeRange] = useState("all");
   const [payoutsPage, setPayoutsPage] = useState(1);
   const [payoutsItemsPerPage, setPayoutsItemsPerPage] = useState(20);
   const [selectedPayment, setSelectedPayment] = useState<any>(null);
@@ -44,6 +49,7 @@ export default function AdminPayments() {
   const [page, setPage] = useState(1);
   const [paymentStartDate, setPaymentStartDate] = useState("");
   const [paymentEndDate, setPaymentEndDate] = useState("");
+  const [paymentTimeRange, setPaymentTimeRange] = useState("all");
   const [mpesaSettings, setMpesaSettings] = useState({
     consumerKey: "",
     consumerSecret: "",
@@ -58,13 +64,19 @@ export default function AdminPayments() {
 
   const { data: dbPaymentMethods } = trpc.admin.getSetting.useQuery({ key: "payment_methods" });
   const { data: stats } = trpc.admin.stats.useQuery(undefined, {
-    refetchInterval: 30000, // Refetch stats every 30 seconds
+    staleTime: 0, // Data is immediately stale for real-time updates
+    refetchInterval: 5000, // Poll every 5 seconds
+    refetchOnWindowFocus: true, // Refresh when user focuses the tab
+    refetchOnReconnect: true, // Refresh when reconnecting
   });
+  const typedStats = stats as any;
   const updateSetting = trpc.admin.updateSetting.useMutation();
   const utils = trpc.useUtils();
 
   const { data: payoutRequests, isLoading: loadingPayouts } = trpc.admin.getPayoutRequests.useQuery(undefined, {
-    refetchInterval: 10000,
+    staleTime: 0,
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: dbMpesaSettings } = trpc.admin.getSetting.useQuery({ key: "mpesa_b2c" });
@@ -74,18 +86,30 @@ export default function AdminPayments() {
       { onSuccess: () => toast.success("M-Pesa settings saved!"), onError: (err) => toast.error(err.message) });
   };
 
+  const filterByTimeRange = (dateString: string, range: string) => {
+    if (range === "all") return true;
+    const date = new Date(dateString).getTime();
+    const now = Date.now();
+    const days = { "1d": 1, "2d": 2, "3d": 3, "4d": 4, "7d": 7, "30d": 30, "90d": 90, "12m": 365 }[range] || 0;
+    return (now - date) <= days * 24 * 60 * 60 * 1000;
+  };
+
   const filteredPayouts = payoutRequests?.filter((p: any) => {
     const matchesStatus = payoutStatusFilter === "all" || p.status === payoutStatusFilter;
     let matchesDate = true;
-    if (payoutStartDate) {
-      const start = new Date(payoutStartDate);
-      start.setHours(0, 0, 0, 0);
-      matchesDate = matchesDate && new Date(p.requestedAt) >= start;
-    }
-    if (payoutEndDate) {
-      const end = new Date(payoutEndDate);
-      end.setHours(23, 59, 59, 999);
-      matchesDate = matchesDate && new Date(p.requestedAt) <= end;
+    if (payoutTimeRange === "custom") {
+      if (payoutStartDate) {
+        const start = new Date(payoutStartDate);
+        start.setHours(0, 0, 0, 0);
+        matchesDate = matchesDate && new Date(p.requestedAt) >= start;
+      }
+      if (payoutEndDate) {
+        const end = new Date(payoutEndDate);
+        end.setHours(23, 59, 59, 999);
+        matchesDate = matchesDate && new Date(p.requestedAt) <= end;
+      }
+    } else {
+      matchesDate = filterByTimeRange(p.requestedAt, payoutTimeRange);
     }
     return matchesStatus && matchesDate;
   }) || [];
@@ -100,14 +124,13 @@ export default function AdminPayments() {
     const csvHeader = "Request ID,Agent ID,Amount,Status,Requested At,Processed At,Transaction ID\n";
     const csvRows = dataToExport.map((p: any) => 
       [
-        p.id,
-        p.agentId,
-        p.amount,
-        p.status,
-        /* Use quotes around toLocaleString to prevent commas from breaking CSV columns */
+        `"${p.id}"`,
+        `"${p.agentId}"`,
+        `"${p.amount}"`,
+        `"${p.status}"`,
         `"${new Date(p.requestedAt).toLocaleString()}"`,
-        p.processedAt ? `"${new Date(p.processedAt).toLocaleString()}"` : '',
-        p.transactionId || ''
+        `"${p.processedAt ? new Date(p.processedAt).toLocaleString() : ''}"`,
+        `"${p.transactionId || ''}"`
       ].join(',')
     ).join('\n');
     const blob = new Blob([csvHeader + csvRows], { type: "text/csv" });
@@ -159,11 +182,11 @@ export default function AdminPayments() {
 
   useEffect(() => {
     setPage(1);
-  }, [searchTerm, statusFilter, paymentStartDate, paymentEndDate, itemsPerPage, sortConfig]);
+  }, [searchTerm, statusFilter, paymentStartDate, paymentEndDate, paymentTimeRange, itemsPerPage, sortConfig]);
 
   useEffect(() => {
     setPayoutsPage(1);
-  }, [payoutStatusFilter, payoutStartDate, payoutEndDate, payoutsItemsPerPage, sortConfig]);
+  }, [payoutStatusFilter, payoutStartDate, payoutEndDate, payoutTimeRange, payoutsItemsPerPage, sortConfig]);
 
   const handleSort = (key: string) => {
     setSortConfig((current) => ({
@@ -187,15 +210,19 @@ export default function AdminPayments() {
     const matchesSearch = p.id.toString().includes(searchTerm) || p.orderId.toString().includes(searchTerm);
     const matchesStatus = statusFilter === "all" || p.status === statusFilter;
     let matchesDate = true;
-    if (paymentStartDate) {
-      const start = new Date(paymentStartDate);
-      start.setHours(0, 0, 0, 0);
-      matchesDate = matchesDate && new Date(p.createdAt) >= start;
-    }
-    if (paymentEndDate) {
-      const end = new Date(paymentEndDate);
-      end.setHours(23, 59, 59, 999);
-      matchesDate = matchesDate && new Date(p.createdAt) <= end;
+    if (paymentTimeRange === "custom") {
+      if (paymentStartDate) {
+        const start = new Date(paymentStartDate);
+        start.setHours(0, 0, 0, 0);
+        matchesDate = matchesDate && new Date(p.createdAt) >= start;
+      }
+      if (paymentEndDate) {
+        const end = new Date(paymentEndDate);
+        end.setHours(23, 59, 59, 999);
+        matchesDate = matchesDate && new Date(p.createdAt) <= end;
+      }
+    } else {
+      matchesDate = filterByTimeRange(p.createdAt, paymentTimeRange);
     }
     return matchesSearch && matchesStatus && matchesDate;
   }) || [];
@@ -206,7 +233,7 @@ export default function AdminPayments() {
     
     const csvHeader = "Payment ID,Order ID,Method,Amount,Status,Date\n";
     const csvRows = dataToExport.map((p: any) => 
-      `${p.id},${p.orderId},${p.method},${p.amount},${p.status},"${new Date(p.createdAt).toLocaleString()}"`
+      `"${p.id}","${p.orderId}","${p.method}","${p.amount}","${p.status}","${new Date(p.createdAt).toLocaleString()}"`
     ).join('\n');
     const blob = new Blob([csvHeader + csvRows], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -318,52 +345,54 @@ export default function AdminPayments() {
           </div>
         </Card>
 
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4">M-Pesa B2C Payout Configuration</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Consumer Key</label>
-              <Input type="password" value={mpesaSettings.consumerKey} onChange={(e) => setMpesaSettings(s => ({...s, consumerKey: e.target.value}))} />
+        {user?.role === "admin" && (
+          <Card className="p-6">
+            <h3 className="text-lg font-semibold mb-4">M-Pesa B2C Payout Configuration</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Consumer Key</label>
+                <Input type="password" value={mpesaSettings.consumerKey} onChange={(e) => setMpesaSettings(s => ({...s, consumerKey: e.target.value}))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Consumer Secret</label>
+                <Input type="password" value={mpesaSettings.consumerSecret} onChange={(e) => setMpesaSettings(s => ({...s, consumerSecret: e.target.value}))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">ShortCode (Paybill/Till)</label>
+                <Input value={mpesaSettings.shortcode} onChange={(e) => setMpesaSettings(s => ({...s, shortcode: e.target.value}))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">API Host</label>
+                <Select value={mpesaSettings.apiHost} onValueChange={(val) => setMpesaSettings(s => ({...s, apiHost: val}))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sandbox">Sandbox (for testing)</SelectItem>
+                    <SelectItem value="production">Production (live)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Initiator Name</label>
+                <Input value={mpesaSettings.initiatorName} onChange={(e) => setMpesaSettings(s => ({...s, initiatorName: e.target.value}))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Initiator Password</label>
+                <Input type="password" value={mpesaSettings.initiatorPassword} onChange={(e) => setMpesaSettings(s => ({...s, initiatorPassword: e.target.value}))} />
+              </div>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-sm font-medium">B2C Certificate Content</label>
+                <Textarea 
+                  placeholder="-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----" 
+                  className="font-mono text-xs min-h-[120px]"
+                  value={mpesaSettings.certContent} 
+                  onChange={(e) => setMpesaSettings(s => ({...s, certContent: e.target.value}))} 
+                />
+                <p className="text-xs text-muted-foreground">Paste the entire content of the .cer file provided by Safaricom here.</p>
+              </div>
             </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Consumer Secret</label>
-              <Input type="password" value={mpesaSettings.consumerSecret} onChange={(e) => setMpesaSettings(s => ({...s, consumerSecret: e.target.value}))} />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">ShortCode (Paybill/Till)</label>
-              <Input value={mpesaSettings.shortcode} onChange={(e) => setMpesaSettings(s => ({...s, shortcode: e.target.value}))} />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">API Host</label>
-              <Select value={mpesaSettings.apiHost} onValueChange={(val) => setMpesaSettings(s => ({...s, apiHost: val}))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="sandbox">Sandbox (for testing)</SelectItem>
-                  <SelectItem value="production">Production (live)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Initiator Name</label>
-              <Input value={mpesaSettings.initiatorName} onChange={(e) => setMpesaSettings(s => ({...s, initiatorName: e.target.value}))} />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Initiator Password</label>
-              <Input type="password" value={mpesaSettings.initiatorPassword} onChange={(e) => setMpesaSettings(s => ({...s, initiatorPassword: e.target.value}))} />
-            </div>
-            <div className="md:col-span-2 space-y-1">
-              <label className="text-sm font-medium">B2C Certificate Content</label>
-              <Textarea 
-                placeholder="-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----" 
-                className="font-mono text-xs min-h-[120px]"
-                value={mpesaSettings.certContent} 
-                onChange={(e) => setMpesaSettings(s => ({...s, certContent: e.target.value}))} 
-              />
-              <p className="text-xs text-muted-foreground">Paste the entire content of the .cer file provided by Safaricom here.</p>
-            </div>
-          </div>
-          <Button className="mt-4" onClick={handleSaveMpesaSettings} disabled={updateSetting.isPending}>Save M-Pesa Settings</Button>
-        </Card>
+            <Button className="mt-4" onClick={handleSaveMpesaSettings} disabled={updateSetting.isPending}>Save M-Pesa Settings</Button>
+          </Card>
+        )}
 
         {/* Search & Filter */}
         <Card className="p-4">
@@ -378,9 +407,29 @@ export default function AdminPayments() {
                   className="pl-10 h-9"
                 />
               </div>
-              <Input type="date" value={paymentStartDate} onChange={(e) => setPaymentStartDate(e.target.value)} className="w-36 h-9" title="Start Date" />
-              <span className="text-muted-foreground hidden sm:inline mt-1.5">-</span>
-              <Input type="date" value={paymentEndDate} onChange={(e) => setPaymentEndDate(e.target.value)} className="w-36 h-9" title="End Date" />
+              <Select value={paymentTimeRange} onValueChange={setPaymentTimeRange}>
+                <SelectTrigger className="w-36 h-9">
+                  <SelectValue placeholder="Time Range" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1d">Today / 24h</SelectItem>
+                  <SelectItem value="2d">Last 2 Days</SelectItem>
+                  <SelectItem value="3d">Last 3 Days</SelectItem>
+                  <SelectItem value="4d">Last 4 Days</SelectItem>
+                  <SelectItem value="7d">Last 7 Days</SelectItem>
+                  <SelectItem value="30d">Last 30 Days</SelectItem>
+                  <SelectItem value="12m">Last 12 Months</SelectItem>
+                  <SelectItem value="all">All Time</SelectItem>
+                  <SelectItem value="custom">Custom Range</SelectItem>
+                </SelectContent>
+              </Select>
+              {paymentTimeRange === "custom" && (
+                <>
+                  <Input type="date" value={paymentStartDate} onChange={(e) => setPaymentStartDate(e.target.value)} className="w-36 h-9" title="Start Date" />
+                  <span className="text-muted-foreground hidden sm:inline mt-1.5">-</span>
+                  <Input type="date" value={paymentEndDate} onChange={(e) => setPaymentEndDate(e.target.value)} className="w-36 h-9" title="End Date" />
+                </>
+              )}
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-36 h-9">
                   <SelectValue placeholder="Status" />
@@ -510,7 +559,7 @@ export default function AdminPayments() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card className="p-6 bg-gradient-to-br from-green-50 to-green-100 dark:from-green-950 dark:to-green-900">
                 <p className="text-sm text-muted-foreground font-medium">Total Paid Out</p>
-                <p className="text-3xl font-bold mt-2">{formatPrice(stats?.totalPayouts || 0)}</p>
+                <p className="text-3xl font-bold mt-2">{formatPrice(typedStats?.totalPayouts || 0)}</p>
               </Card>
               <Card className="p-6 bg-gradient-to-br from-yellow-50 to-yellow-100 dark:from-yellow-950 dark:to-yellow-900">
                 <p className="text-sm text-muted-foreground font-medium">Pending Requests</p>
@@ -528,7 +577,7 @@ export default function AdminPayments() {
               </div>
               <div className="h-[250px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={stats?.payoutChartData || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <AreaChart data={(stats as any)?.payoutChartData || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <defs>
                       <linearGradient id="colorPayouts" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="var(--brand)" stopOpacity={0.3} />
@@ -549,9 +598,29 @@ export default function AdminPayments() {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold">Driver Payout Requests</h3>
                 <div className="flex flex-wrap items-center gap-3">
-                  <Input type="date" value={payoutStartDate} onChange={(e) => setPayoutStartDate(e.target.value)} className="w-36 h-9" title="Start Date" />
-                  <span className="text-muted-foreground hidden sm:inline">-</span>
-                  <Input type="date" value={payoutEndDate} onChange={(e) => setPayoutEndDate(e.target.value)} className="w-36 h-9" title="End Date" />
+                  <Select value={payoutTimeRange} onValueChange={setPayoutTimeRange}>
+                    <SelectTrigger className="w-36 h-9">
+                      <SelectValue placeholder="Time Range" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1d">Today / 24h</SelectItem>
+                      <SelectItem value="2d">Last 2 Days</SelectItem>
+                      <SelectItem value="3d">Last 3 Days</SelectItem>
+                      <SelectItem value="4d">Last 4 Days</SelectItem>
+                      <SelectItem value="7d">Last 7 Days</SelectItem>
+                      <SelectItem value="30d">Last 30 Days</SelectItem>
+                      <SelectItem value="12m">Last 12 Months</SelectItem>
+                      <SelectItem value="all">All Time</SelectItem>
+                      <SelectItem value="custom">Custom Range</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {payoutTimeRange === "custom" && (
+                    <>
+                      <Input type="date" value={payoutStartDate} onChange={(e) => setPayoutStartDate(e.target.value)} className="w-36 h-9" title="Start Date" />
+                      <span className="text-muted-foreground hidden sm:inline">-</span>
+                      <Input type="date" value={payoutEndDate} onChange={(e) => setPayoutEndDate(e.target.value)} className="w-36 h-9" title="End Date" />
+                    </>
+                  )}
                   <Select value={payoutStatusFilter} onValueChange={setPayoutStatusFilter}>
                     <SelectTrigger className="w-36 h-9">
                       <SelectValue placeholder="Status" />
@@ -595,12 +664,30 @@ export default function AdminPayments() {
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center justify-center gap-2">
-                              <Button variant="outline" size="sm" className="h-8 text-green-600 hover:text-green-700 hover:bg-green-50" disabled={payout.status !== 'pending' || approvePayout.isPending} onClick={() => approvePayout.mutate({ id: payout.id })}>
-                                <Check className="w-4 h-4 mr-1" /> Approve
-                              </Button>
-                              <Button variant="outline" size="sm" className="h-8 text-red-600 hover:text-red-700 hover:bg-red-50" disabled={payout.status !== 'pending' || rejectPayout.isPending} onClick={() => rejectPayout.mutate({ id: payout.id })}>
-                                <X className="w-4 h-4 mr-1" /> Reject
-                              </Button>
+                              {user?.role === "admin" || user?.role === "manager" ? (
+                                <>
+                                  <Button variant="outline" size="sm" className="h-8 text-green-600 hover:text-green-700 hover:bg-green-50" disabled={payout.status !== 'pending' || approvePayout.isPending} onClick={() => {
+                                    if (user?.role === "manager") {
+                                      toast.warning("Payout approvals restricted. Please alert an Admin to confirm and authorize this action.");
+                                    } else {
+                                      approvePayout.mutate({ id: payout.id });
+                                    }
+                                  }}>
+                                    <Check className="w-4 h-4 mr-1" /> Approve
+                                  </Button>
+                                  <Button variant="outline" size="sm" className="h-8 text-red-600 hover:text-red-700 hover:bg-red-50" disabled={payout.status !== 'pending' || rejectPayout.isPending} onClick={() => {
+                                    if (user?.role === "manager") {
+                                      toast.warning("Payout rejections restricted. Please alert an Admin to confirm and authorize this action.");
+                                    } else {
+                                      rejectPayout.mutate({ id: payout.id });
+                                    }
+                                  }}>
+                                    <X className="w-4 h-4 mr-1" /> Reject
+                                  </Button>
+                                </>
+                              ) : (
+                                <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider bg-muted px-2 py-1 rounded">Admin Only</span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -691,13 +778,19 @@ export default function AdminPayments() {
                   </div>
 
                   <div className="border-t border-border pt-4 space-y-2">
-                    <Link href={`/admin/orders/${selectedPayment.orderId}`}>
+                    <Link href={user?.role === 'manager' ? `/manager/orders/${selectedPayment.orderId}` : `/admin/orders/${selectedPayment.orderId}`}>
                       <Button variant="outline" className="w-full">
                         View Order Details
                       </Button>
                     </Link>
-                    {selectedPayment.status === "completed" && (
-                      <Button variant="outline" className="w-full text-destructive" onClick={() => refundPayment.mutate({ orderId: selectedPayment.orderId })} disabled={refundPayment.isPending}>
+                    {selectedPayment.status === "completed" && (user?.role === "admin" || user?.role === "manager") && (
+                      <Button variant="outline" className="w-full text-destructive" onClick={() => {
+                        if (user?.role === "manager") {
+                          toast.warning("Refunds restricted. Please alert an Admin to confirm and authorize this action.");
+                        } else {
+                          refundPayment.mutate({ orderId: selectedPayment.orderId });
+                        }
+                      }} disabled={refundPayment.isPending}>
                         Process Refund
                       </Button>
                     )}

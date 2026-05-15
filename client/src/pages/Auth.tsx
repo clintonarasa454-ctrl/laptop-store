@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
-import { Loader2, Lock, Mail, User, Eye, EyeOff, Phone } from "lucide-react";
+import { Loader2, Lock, Mail, User, Eye, EyeOff, Phone, Shield } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import { ForgotPassword } from "@/pages/ForgotPassword";
 
 function ResetPasswordForm({ resetData, resetPassword, resendCode, onBackToLogin }: any) {
   const [otpCode, setOtpCode] = useState("");
@@ -72,8 +73,9 @@ function ResetPasswordForm({ resetData, resetPassword, resendCode, onBackToLogin
                 {otpCode[i] || ""}
               </div>
             ))}
-            <input id="resetOtpCode" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
+            <input id="resetOtpCode" aria-label="Reset verification code" placeholder="000000" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
           </div>
+          <p className="text-xs text-muted-foreground/60 mt-2">Press Enter to submit</p>
         </div>
 
         <div className="space-y-4">
@@ -93,6 +95,7 @@ function ResetPasswordForm({ resetData, resetPassword, resendCode, onBackToLogin
               <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input id="confirmNewPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
             </div>
+            <p className="text-xs text-muted-foreground/60">Press Enter to submit</p>
           </div>
         </div>
         <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={otpCode.length !== 6}>Update Password</Button>
@@ -155,8 +158,9 @@ function VerifyEmailForm({ verificationData, verifyEmail, resendVerification, on
                 {otpCode[i] || ""}
               </div>
             ))}
-            <input id="otpCode" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
+            <input id="otpCode" aria-label="Email verification code" placeholder="000000" className="absolute inset-0 w-full h-full opacity-0 cursor-text" maxLength={6} value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} autoFocus autoComplete="one-time-code" />
           </div>
+          <p className="text-xs text-muted-foreground/60 mt-2">Press Enter to submit</p>
         </div>
         <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 h-11" disabled={verifyEmail.isPending || otpCode.length !== 6}>
           Verify Account
@@ -178,16 +182,27 @@ function VerifyEmailForm({ verificationData, verifyEmail, resendVerification, on
 }
 
 export default function Auth() {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
+  const isAdminRoute = location.startsWith("/admin");
+  const isManagerRoute = location.startsWith("/manager");
+  const isStaffRoute = isAdminRoute || isManagerRoute;
   const params = new URLSearchParams(window.location.search);
-  const redirectUrl = params.get("redirect") || "/dashboard";
+  
+  // Update redirect logic to send admins to the dashboard securely
+  const redirectUrl = params.get("redirect") || (isAdminRoute ? "/admin" : isManagerRoute ? "/manager" : "/dashboard");
   const oauthError = params.get("error");
   const mode = params.get("mode");
   const prefillEmail = params.get("email") || "";
   const claimOrderNumber = params.get("claimOrder") || undefined;
 
-  const [isLogin, setIsLogin] = useState(mode !== "register");
+  // Force isLogin to true if it's the admin route
+  const [isLogin, setIsLogin] = useState(isStaffRoute ? true : mode !== "register");
   const [isForgotPassword, setIsForgotPassword] = useState(false);
+
+  useEffect(() => {
+    // Ensure we switch to login view if user navigates to admin route
+    if (isStaffRoute) setIsLogin(true);
+  }, [isStaffRoute]);
 
   useEffect(() => {
     if (oauthError === "google_not_configured") {
@@ -209,7 +224,6 @@ export default function Auth() {
   const [form, setForm] = useState({ 
     firstName: "", 
     lastName: "", 
-    surname: "",
     phone: "",
     email: prefillEmail, 
     password: "", 
@@ -245,7 +259,7 @@ export default function Auth() {
   const forgotPassword = trpc.auth.resetPasswordRequest.useMutation({
     onSuccess: (data) => {
       toast.success("Password reset code sent to your email!");
-      setResetData({ token: data.token, email: data.email });
+      setResetData({ token: data.token, email: data.email ?? "" });
       setIsForgotPassword(false);
       setForm({ ...form, email: "" });
     },
@@ -290,22 +304,13 @@ export default function Auth() {
   };
 
   const formatPhone = (value: string) => {
-    const numbers = value.replace(/\D/g, "");
-    if (numbers.length === 0) return "";
-    const cc = numbers.slice(0, 1);
-    const area = numbers.slice(1, 4);
-    const prefix = numbers.slice(4, 7);
-    const line = numbers.slice(7, 11);
-    let res = `+${cc}`;
-    if (numbers.length > 1) res += ` (${area}`;
-    if (numbers.length > 4) res += `) ${prefix}`;
-    if (numbers.length > 7) res += `-${line}`;
-    return res;
+    // Allow flexible input for international numbers
+    return value;
   };
 
   const validatePhone = (phone: string) => {
-    const phoneRegex = /^\+\d{1,3}\s\(\d{3}\)\s\d{3}-\d{4}$/;
-    if (!phoneRegex.test(phone)) return "Phone number must follow the format: +1 (555) 123-4567";
+    const phoneRegex = /^\+?[0-9\s\-\(\)]{7,20}$/;
+    if (!phoneRegex.test(phone)) return "Please enter a valid phone number";
     return null;
   };
 
@@ -315,7 +320,8 @@ export default function Auth() {
     if (isForgotPassword) {
       forgotPassword.mutate({ email: form.email });
     } else if (isLogin) {
-      login.mutate({ email: form.email, password: form.password });
+      // DYNAMIC FLAG: Send true to backend if admin route, false otherwise
+      login.mutate({ email: form.email, password: form.password, isAdminLogin: isStaffRoute });
     } else {
       if (form.password !== form.confirmPassword) {
         return toast.error("Passwords do not match");
@@ -330,7 +336,7 @@ export default function Auth() {
         return toast.error("Please accept the Terms & Conditions");
       }
 
-      const fullName = [form.firstName, form.lastName, form.surname].filter(Boolean).join(" ");
+      const fullName = [form.firstName, form.lastName].filter(Boolean).join(" ");
       register.mutate({ name: fullName, email: form.email, password: form.password, phone: form.phone, claimOrderNumber } as any);
     }
   };
@@ -350,13 +356,8 @@ export default function Auth() {
             </div>
           )}
 
-          {resetData ? (
-            <ResetPasswordForm 
-              resetData={resetData} 
-              resetPassword={resetPassword} 
-              resendCode={forgotPassword} 
-              onBackToLogin={() => { setResetData(null); setIsLogin(true); }} 
-            />
+          {isForgotPassword ? (
+            <ForgotPassword onBackToLogin={() => setIsForgotPassword(false)} />
           ) : verificationData ? (
             <VerifyEmailForm 
               verificationData={verificationData} 
@@ -368,19 +369,21 @@ export default function Auth() {
             <>
           <div className="text-center mb-8">
             <div className="w-12 h-12 rounded-full bg-[var(--brand)]/10 flex items-center justify-center mx-auto mb-4">
-              <Lock className="w-6 h-6 text-[var(--brand)]" />
+              {isStaffRoute ? <Shield className="w-6 h-6 text-[var(--brand)]" /> : <Lock className="w-6 h-6 text-[var(--brand)]" />}
             </div>
             <h1 className="text-2xl font-bold font-display">
-              {isForgotPassword ? "Forgot Password" : isLogin ? "Welcome Back" : "Create an Account"}
+              {isAdminRoute ? "Admin Panel" : isManagerRoute ? "Manager Portal" : (isLogin ? "Welcome Back" : "Create an Account")}
             </h1>
             <p className="text-muted-foreground text-sm mt-2">
-              {isForgotPassword ? "We'll send you a code to reset it" : isLogin ? "Sign in to your account to continue" : "Join us to track orders and save your details"}
+              {isStaffRoute 
+                ? "Sign in to access system settings" 
+                : (isLogin ? "Sign in to your account to continue" : "Join us to track orders and save your details")}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {!isLogin && !isForgotPassword && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {!isLogin && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="firstName">First Name</Label>
                   <div className="relative">
@@ -395,35 +398,30 @@ export default function Auth() {
                     <Input id="lastName" required placeholder="Last Name" className="pl-10" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="surname">Surname (Optional)</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input id="surname" placeholder="Surname" className="pl-10" value={form.surname} onChange={(e) => setForm({ ...form, surname: e.target.value })} />
-                  </div>
-                </div>
               </div>
             )}
             
-            {!isLogin && !isForgotPassword && (
+            {!isLogin && (
               <div className="space-y-2">
                 <Label htmlFor="phone">Phone Number</Label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input id="phone" required placeholder="+1 (555) 123-4567" className="pl-10" value={form.phone} onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })} />
+                  <Input id="phone" required placeholder="e.g. +254 712 345678" className="pl-10" value={form.phone} onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })} />
                 </div>
+                <p className="text-xs text-muted-foreground/60">Press Enter to submit</p>
               </div>
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email Address</Label>
+              <Label htmlFor="email">{isStaffRoute ? "Email or phone" : "Email Address"}</Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input id="email" type="email" required placeholder="name@company.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                <Input id="email" type={isStaffRoute ? "text" : "email"} required placeholder="name@company.com" className="pl-10" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               </div>
+              <p className="text-xs text-muted-foreground/60">Press Enter to submit</p>
             </div>
 
-            {!isForgotPassword && (
+            {true && (
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
@@ -437,32 +435,39 @@ export default function Auth() {
                     {showPassword ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
                   </button>
                 </div>
+                {!isLogin && (
+                  <p className="text-xs text-muted-foreground mt-1.5">At least 8 characters, 1 number, and 1 symbol</p>
+                )}
+                {isLogin && (
+                  <p className="text-xs text-muted-foreground/60">Press Enter to submit</p>
+                )}
               </div>
             )}
 
-            {!isLogin && !isForgotPassword && (
+            {!isLogin && (
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirm Password</Label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                   <Input id="confirmPassword" type={showPassword ? "text" : "password"} required placeholder="••••••••" className="pl-10 pr-10" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
                 </div>
+                <p className="text-xs text-muted-foreground/60">Press Enter to submit</p>
               </div>
             )}
 
-            {!isLogin && !isForgotPassword && (
-              <div className="flex items-center gap-2 mt-4">
-                <input type="checkbox" id="terms" className="rounded border-input w-4 h-4 text-[var(--brand)] focus:ring-[var(--brand)]" checked={form.acceptTerms} onChange={(e) => setForm({ ...form, acceptTerms: e.target.checked })} required />
-                <Label htmlFor="terms" className="text-sm font-normal text-muted-foreground cursor-pointer">
+            {!isLogin && (
+              <div className="flex items-start gap-3 mt-2 p-3 bg-muted/30 rounded-lg border border-border/50 transition-colors hover:border-[var(--brand)]/30">
+              <input type="checkbox" id="terms" aria-label="Accept terms and conditions" className="mt-0.5 rounded border-input w-4 h-4 text-[var(--brand)] focus:ring-[var(--brand)] cursor-pointer" checked={form.acceptTerms} onChange={(e) => setForm({ ...form, acceptTerms: e.target.checked })} required />
+                <Label htmlFor="terms" className="text-sm font-normal text-muted-foreground cursor-pointer leading-tight">
                   I agree to the <a href="/legal/terms-of-service" className="text-[var(--brand)] hover:underline">Terms &amp; Conditions</a>
                 </Label>
               </div>
             )}
 
-            {isLogin && !isForgotPassword && (
+            {isLogin && !isStaffRoute && (
               <div className="flex items-center justify-between mt-4">
                 <div className="flex items-center gap-2">
-                  <input type="checkbox" id="remember" className="rounded border-input w-4 h-4 text-[var(--brand)] focus:ring-[var(--brand)]" checked={form.rememberMe} onChange={(e) => setForm({ ...form, rememberMe: e.target.checked })} />
+                  <input type="checkbox" id="remember" aria-label="Remember me on this device" className="rounded border-input w-4 h-4 text-[var(--brand)] focus:ring-[var(--brand)]" checked={form.rememberMe} onChange={(e) => setForm({ ...form, rememberMe: e.target.checked })} />
                   <Label htmlFor="remember" className="text-sm font-normal text-muted-foreground cursor-pointer">Remember Me</Label>
                 </div>
                 <button type="button" onClick={() => setIsForgotPassword(true)} className="text-sm font-medium text-[var(--brand)] hover:underline">
@@ -471,13 +476,22 @@ export default function Auth() {
               </div>
             )}
 
-            <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 mt-6 h-11" disabled={isPending}>
+            {/* Admin specifically just gets forgot password stacked here, or omit remember me */}
+            {isStaffRoute && (
+              <div className="flex items-center justify-end mt-4">
+                 <button type="button" onClick={() => setIsForgotPassword(true)} className="text-sm font-medium text-[var(--brand)] hover:underline">
+                  Forgot Password?
+                </button>
+              </div>
+            )}
+
+            <Button type="submit" className="w-full bg-[var(--brand)] text-white hover:opacity-90 mt-6 h-11 text-base font-medium transition-all" disabled={isPending || (!isLogin && !form.acceptTerms)}>
               {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              {isForgotPassword ? "Send Reset Code" : isLogin ? "Sign In" : "Create Account"}
+              {isPending ? (isLogin ? "Signing in..." : "Creating Account...") : (isLogin ? "Sign In" : "Create Account")}
             </Button>
           </form>
 
-          {unverifiedEmail && isLogin && !isForgotPassword && (
+          {unverifiedEmail && isLogin && !isStaffRoute && (
             <div className="mt-4 p-4 bg-muted/50 rounded-lg border border-border text-center space-y-3">
               <p className="text-sm text-muted-foreground">Didn't receive the verification email?</p>
               <Button
@@ -492,7 +506,7 @@ export default function Auth() {
             </div>
           )}
 
-          {!isForgotPassword && (
+          {!isStaffRoute && (
             <div className="mt-6">
               <div className="relative mb-6">
                 <div className="absolute inset-0 flex items-center">
@@ -540,13 +554,13 @@ export default function Auth() {
           )}
 
           <div className="mt-6 text-center">
-            {isForgotPassword ? (
-              <button type="button" onClick={() => { setIsForgotPassword(false); setUnverifiedEmail(null); }} className="text-sm text-[var(--brand)] hover:underline">
-                ← Back to Login
-              </button>
-            ) : (
+            {!isStaffRoute ? (
               <button type="button" onClick={() => { setIsLogin(!isLogin); setUnverifiedEmail(null); }} className="text-sm text-[var(--brand)] hover:underline">
                 {isLogin ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
+              </button>
+            ) : (
+              <button type="button" onClick={() => navigate("/")} className="text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center mx-auto gap-2">
+                &larr; Back to Store
               </button>
             )}
           </div>

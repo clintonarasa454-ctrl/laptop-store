@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { SettingsResponse } from "@shared/settingsTypes";
 import { ChevronDown, Package, Search, SlidersHorizontal, X, Check, Loader2, Sparkles } from "lucide-react";
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useLocation, useSearch, Link } from "wouter";
@@ -10,9 +11,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatPrice } from "@/lib/cart";
+import { useCurrency } from "@/_core/hooks/useCurrency";
+import { useGeolocation } from "@/hooks/useGeolocation";
 
 export default function Products() {
+  const currency = useCurrency(); // Listen for currency updates from admin panel
   const [location, setLocation] = useLocation();
+  const geoLocation = useGeolocation(); // Get user's geolocation for warehouse filtering
   const searchString = useSearch();
   const params = new URLSearchParams(searchString);
   const categorySlug = params.get("category") ?? undefined;
@@ -44,9 +49,10 @@ export default function Products() {
   const { data: categories } = trpc.categories.list.useQuery(undefined, {
     staleTime: 1000 * 60 * 60, // Cache for 1 hour
   });
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands", "general"] }, {
+  const { data: settingsData } = trpc.settings.public.useQuery({ keys: ["brands", "general"] }, {
     staleTime: Infinity, // Settings rarely change
   });
+  const settings = settingsData as SettingsResponse;
   const { data: facets } = trpc.products.facets.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
 
   const { orderedCategories, rootCategories } = useMemo(() => {
@@ -56,8 +62,7 @@ export default function Products() {
     return { orderedCategories: ordered, rootCategories: root };
   }, [categories]);
 
-  const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
-  const currency = settings?.general?.currency || "$";
+  const availableBrands = (settings?.brands as string[]) || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
 
   // Debounce search so we don't hammer the API while the user is typing
   useEffect(() => {
@@ -159,7 +164,7 @@ export default function Products() {
     const currentParams = new URLSearchParams(searchString);
     const newParams = new URLSearchParams();
     
-    if (search) newParams.set("search", search);
+    if (debouncedSearch) newParams.set("search", debouncedSearch);
     if (currentParams.get("featured") === "true") newParams.set("featured", "true");
     if (selectedBrand) newParams.set("brand", selectedBrand);
     if (debouncedMinPrice) newParams.set("minPrice", debouncedMinPrice);
@@ -196,7 +201,7 @@ export default function Products() {
       const newUrl = qs ? `${location}?${qs}` : location;
       setLocation(newUrl, { replace: true });
     }
-  }, [search, selectedCategories, selectedBrand, debouncedMinPrice, debouncedMaxPrice, sortBy, tagFilter, categories, location, searchString, syncedUrl, setLocation]);
+  }, [debouncedSearch, selectedCategories, selectedBrand, debouncedMinPrice, debouncedMaxPrice, sortBy, tagFilter, categories, location, searchString, syncedUrl, setLocation]);
 
   // Include child categories if a parent is selected
   const categoryIdsToFetch = useMemo(() => {
@@ -218,6 +223,8 @@ export default function Products() {
       minPrice: debouncedMinPrice || undefined,
       maxPrice: debouncedMaxPrice || undefined,
       sortBy: sortBy,
+      lat: geoLocation?.lat,
+      lng: geoLocation?.lng,
     },
     { 
       getNextPageParam: (lastPage) => lastPage.nextCursor,
@@ -308,6 +315,7 @@ export default function Products() {
             <div className="flex items-center gap-2">
               {/* Sort */}
               <select
+                aria-label="Sort products by"
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                 className="h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
@@ -329,7 +337,7 @@ export default function Products() {
               {activeFilters.map((f) => (
                 <Badge key={f.id} variant="secondary" className="gap-1 text-xs">
                   {f.label}
-                  <button onClick={f.onRemove}>
+                  <button onClick={f.onRemove} aria-label={`Remove ${f.label} filter`}>
                     <X className="w-3 h-3" />
                   </button>
                 </Badge>
@@ -397,6 +405,7 @@ export default function Products() {
                               e.stopPropagation();
                               setExpandedCategories(prev => prev.includes(cat.id) ? prev.filter(id => id !== cat.id) : [...prev, cat.id]);
                             }}
+                            aria-label={isExpanded ? `Collapse ${cat.name} category` : `Expand ${cat.name} category`}
                             className="p-0.5 rounded-md hover:bg-muted/50 transition-colors text-muted-foreground hover:text-foreground"
                           >
                             <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? "rotate-180" : "group-hover:rotate-180"}`} />
@@ -504,7 +513,7 @@ export default function Products() {
             {subCategories.length > 0 && !isLoading && !search && (
               <div className="mb-8">
                 <h3 className="font-display font-semibold text-lg mb-4">Shop by Subcategory</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
                   {subCategories.map(subCat => (
                     <Link key={subCat.id} href={`/products?category=${subCat.slug}`}>
                       <div className="group relative overflow-hidden rounded-xl border border-border bg-card hover:border-[var(--brand)]/40 hover:shadow-lg transition-all duration-300 cursor-pointer">
@@ -532,7 +541,7 @@ export default function Products() {
               </div>
             ) : sorted.length > 0 ? (
               <>
-                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
                   {sorted.map((product) => (
                     <ProductCard key={product.id} product={product} />
                   ))}
@@ -568,6 +577,7 @@ export default function Products() {
                     setSelectedBrand(undefined);
                     setMinPrice("");
                     setMaxPrice("");
+                    setTagFilter(undefined);
                   }}
                 >
                   Clear Filters

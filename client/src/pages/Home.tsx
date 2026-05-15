@@ -1,5 +1,7 @@
 import { trpc } from "@/lib/trpc";
+import { SettingsResponse } from "@shared/settingsTypes";
 import {
+  CheckCircle,
   ArrowRight,
   Award,
   ChevronLeft,
@@ -23,6 +25,8 @@ import {
   Zap,
   Megaphone,
   X,
+  Store,
+  Navigation,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
 import { useState, useEffect, useRef } from "react";
@@ -35,7 +39,9 @@ import StoreLoader from "@/components/StoreLoader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { MapView } from "@/components/Map";
+import { formatPrice } from "@/lib/cart";
+import { useCurrency } from "@/_core/hooks/useCurrency";
+import { useGeolocation } from "@/hooks/useGeolocation";
 
 const categoryGradients = [
   { gradient: "from-blue-500/10 to-indigo-500/10", iconColor: "text-blue-500" },
@@ -74,32 +80,40 @@ const darkMapStyle = [
 ];
 
 export default function Home() {
+  const geoLocation = useGeolocation(); // Get user's geolocation for warehouse filtering
+  
   const { data: featuredProducts, isLoading: loadingFeatured } = trpc.products.list.useQuery(
-    { featured: true, limit: 8 },
+    { featured: true, limit: 8, lat: geoLocation?.lat, lng: geoLocation?.lng },
     { staleTime: 1000 * 60 * 5 } // Cache for 5 minutes
   );
   const { data: latestProducts, isLoading: loadingLatest } = trpc.products.list.useQuery(
-    { limit: 8 },
+    { limit: 8, lat: geoLocation?.lat, lng: geoLocation?.lng },
     { staleTime: 1000 * 60 * 5 }
   );
-  const { data: banners, isLoading: loadingBanners } = trpc.content.banners.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
-  const { data: promotions, isLoading: loadingPromotions } = trpc.content.promotions.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: banners, isLoading: loadingBanners } = trpc.content.banners.useQuery(undefined, { 
+    staleTime: 1000 * 60 * 5,
+    gcTime: 1000 * 60 * 10,  // Keep in memory for 10 mins so returning users see instant display
+    refetchOnMount: false,    // Don't refetch if already cached
+    refetchOnWindowFocus: false  // Don't interrupt user if they switch tabs
+  });
+  const { data: promotions } = trpc.content.promotions.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
   const { data: dbCategories, isLoading: loadingCategories } = trpc.categories.list.useQuery(undefined, { 
     staleTime: 1000 * 60 * 60 // Cache categories for 1 full hour
   });
-  const { data: storeStats, isLoading: loadingStats } = trpc.store.stats.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
-  const { data: settings, isLoading: loadingSettings } = trpc.settings.public.useQuery(
+  const { data: storeStats } = trpc.store.stats.useQuery(undefined, { staleTime: 1000 * 60 * 5 });
+  const { data: settingsData } = trpc.settings.public.useQuery(
     { keys: ["shipping", "general", "brands"] },
     { 
-      staleTime: Infinity, // Settings rarely change; cache indefinitely per user session
-      gcTime: Infinity 
+      staleTime: 1000 * 60 * 5, // Refetch every 5 minutes to catch admin updates
+      gcTime: 1000 * 60 * 10 // Keep in cache for 10 minutes
     }
   );
-  const { data: announcements, isLoading: loadingAnnouncements } = trpc.content.announcements.useQuery(undefined, { 
+  const settings = settingsData as SettingsResponse;
+  const { data: announcements } = trpc.content.announcements.useQuery(undefined, { 
     staleTime: 1000 * 60 * 5 
   });
 
-  const activeAnnouncements = announcements?.filter(a => a.active) || [];
+  const activeAnnouncements = (Array.isArray(announcements) ? announcements : []).filter((a: any) => a.active) || [];
   const latestAnnouncement = activeAnnouncements[0];
   const [dismissedAnnouncements, setDismissedAnnouncements] = useState<number[]>(() => {
     if (typeof localStorage !== "undefined") {
@@ -113,7 +127,7 @@ export default function Home() {
     localStorage.setItem("dismissed_announcements", JSON.stringify(newDismissed));
   };
 
-  const orderedBanners = banners ? [...banners].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
+  const orderedBanners = Array.isArray(banners) ? [...banners].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)) : [];
   const mainBanner = orderedBanners?.[0];
   const activeBanners = orderedBanners?.filter(b => b.active) || [];
   const [activeIndex, setActiveIndex] = useState(0);
@@ -123,22 +137,39 @@ export default function Home() {
   const mapSectionRef = useRef<HTMLElement>(null);
   const [isMapVisible, setIsMapVisible] = useState(false);
   const [recentProducts, setRecentProducts] = useState<any[]>([]);
+  const [isStoreOpen, setIsStoreOpen] = useState(true);
 
   useEffect(() => {
     setRecentProducts(getRecentlyViewed());
+  }, []);
+
+  // Listen for settings updates from admin panel
+  useEffect(() => {
+    const handleSettingsUpdate = () => {
+      // Settings will automatically refetch due to staleTime expiry
+      // But we can force refetch by using refetch if needed
+      console.log("Settings updated event received");
+    };
+    window.addEventListener('settingsUpdated', handleSettingsUpdate);
+    return () => window.removeEventListener('settingsUpdated', handleSettingsUpdate);
   }, []);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
+          console.log("[MAP DEBUG] Map section is visible - setting isMapVisible to true");
           setIsMapVisible(true);
           observer.disconnect();
         }
       },
       { rootMargin: "600px" } // Pre-load the map slightly before it scrolls into view
     );
-    if (mapSectionRef.current) observer.observe(mapSectionRef.current);
+    if (mapSectionRef.current) {
+      observer.observe(mapSectionRef.current);
+    } else {
+      console.warn("[MAP DEBUG] mapSectionRef is not set");
+    }
     return () => observer.disconnect();
   }, []);
   
@@ -149,6 +180,60 @@ export default function Home() {
     }, 2000);
     return () => clearInterval(timer);
   }, [activeBanners.length, isHovered]);
+
+  // Check store opening hours
+  useEffect(() => {
+    const checkOpenStatus = () => {
+      const openingHours = settings?.general?.openingHours || [
+        { label: "Mon - Fri", value: "9:00 AM - 8:00 PM" },
+        { label: "Saturday", value: "10:00 AM - 6:00 PM" },
+        { label: "Sunday", value: "Closed" }
+      ];
+      const now = new Date();
+      const day = now.getDay();
+      const currentTime = now.getHours() + now.getMinutes() / 60;
+      const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      const currentDayName = dayNames[day];
+      
+      let todaysRule = openingHours.find((h: any) => {
+        if (!h.label) return false;
+        const label = h.label.toLowerCase();
+        if (label.includes(currentDayName.toLowerCase())) return true;
+        if (label.includes("mon") && label.includes("fri") && day >= 1 && day <= 5) return true;
+        if (label.includes("weekdays") && day >= 1 && day <= 5) return true;
+        if (label.includes("weekend") && (day === 0 || day === 6)) return true;
+        if (label === "everyday" || label === "daily") return true;
+        return false;
+      });
+
+      if (!todaysRule) { setIsStoreOpen(false); return; }
+      const value = (todaysRule as any).value?.toLowerCase() || "";
+      if (value.includes("closed")) { setIsStoreOpen(false); return; }
+      if (value.includes("24 hours") || value.includes("open 24")) { setIsStoreOpen(true); return; }
+      
+      try {
+        const times = value.split("-").map((t: string) => t.trim());
+        if (times.length === 2) {
+          const parseTime = (timeStr: string) => {
+            const match = timeStr.match(/(\d+)(?::(\d+))?\s*(am|pm)?/);
+            if (!match) return null;
+            let h = parseInt(match[1], 10);
+            const m = parseInt(match[2] || "0", 10);
+            if (match[3] === "pm" && h < 12) h += 12;
+            if (match[3] === "am" && h === 12) h = 0;
+            return h + m / 60;
+          };
+          const openTime = parseTime(times[0]);
+          const closeTime = parseTime(times[1]);
+          if (openTime !== null && closeTime !== null) { setIsStoreOpen(currentTime >= openTime && currentTime < closeTime); return; }
+        }
+      } catch (e) {}
+      setIsStoreOpen(true);
+    };
+    checkOpenStatus();
+    const interval = setInterval(checkOpenStatus, 60000);
+    return () => clearInterval(interval);
+  }, [settings?.general?.openingHours]);
 
   // Swipe Handlers
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -170,6 +255,8 @@ export default function Home() {
     setTouchEnd(null);
   };
 
+  // Use cached localStorage values as instant defaults so the hero renders without waiting for the API
+  const cachedStoreName = typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null;
   const heroTitle = settings?.general?.heroTitle || "Premium Tech, Exceptional Performance";
   const heroDescription = settings?.general?.heroDescription || "Discover the latest laptops, desktops, and accessories from the world's leading brands. Built for professionals, creators, and gamers.";
   const ctaTitle = settings?.general?.ctaTitle || "Ready to Upgrade Your Setup?";
@@ -180,9 +267,10 @@ export default function Home() {
   const Badge1Icon = dynamicIconMap[badge1.icon] || Shield;
   const Badge2Icon = dynamicIconMap[badge2.icon] || Truck;
   
+  const storeName = settings?.general?.storeName || cachedStoreName || 'Store';
+
   // --- SEO Metadata ---
   useEffect(() => {
-    const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || 'Store';
     document.title = storeName;
     
     let metaDesc = document.querySelector('meta[name="description"]');
@@ -201,12 +289,8 @@ export default function Home() {
 
   const lifestyles = settings?.general?.lifestyles || fallbackLifestyles;
 
-  // Only block the initial page render for absolutely critical data
-  const isPageLoading = loadingSettings || loadingBanners || loadingCategories;
-
-  if (isPageLoading) {
-    return <StoreLoader fullScreen />;
-  }
+  // ── No full-page block: render the shell immediately using cached defaults.
+  // Individual sections show skeleton placeholders while their data loads.
 
   // --- Schema.org JSON-LD ---
   const jsonLd = {
@@ -246,13 +330,13 @@ export default function Home() {
       `}} />
 
       {/* ── Promotions Bar ───────────────────────────────────────────────── */}
-      {promotions && promotions.length > 0 && (
+      {(Array.isArray(promotions) ? promotions : []).length > 0 && (
         <div 
           className="text-white py-2.5 px-4 text-center text-sm font-medium relative z-10"
           style={{ backgroundColor: "var(--promo-banner, var(--brand))" }}
         >
           <div className="container flex flex-wrap items-center justify-center gap-x-8 gap-y-2">
-            {promotions.map((p) => (
+            {(Array.isArray(promotions) ? promotions : []).map((p: any) => (
               <div key={p.id} className="flex items-center gap-2">
                 <span className="bg-white/20 px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider">
                   {p.title}
@@ -279,23 +363,23 @@ export default function Home() {
           <div className="absolute top-1/2 -left-40 w-[24rem] h-[24rem] rounded-full bg-purple-500/10 blur-[100px]" />
         </div>
 
-      <div className="container relative pt-6 pb-12 lg:pt-10 lg:pb-20">
-          <div className="grid lg:grid-cols-2 gap-8 lg:gap-12 items-start lg:mt-6">
-            <div className="space-y-5">
+      <div className="container relative pt-4 pb-8 sm:pt-6 sm:pb-12 lg:pt-10 lg:pb-20">
+          <div className="grid lg:grid-cols-2 gap-6 lg:gap-12 items-start lg:mt-6">
+            <div className="space-y-3 sm:space-y-5">
               <Badge className="bg-[var(--brand)]/10 text-[var(--brand)] border-[var(--brand)]/20 hover:bg-[var(--brand)]/15">
                 <Zap className="w-3 h-3 mr-1" /> {settings?.general?.heroBadge || "New Arrivals 2025"}
               </Badge>
               <h1 
-                className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight whitespace-pre-line animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-700"
+                className="font-display text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold leading-tight whitespace-pre-line animate-in fade-in zoom-in-95 slide-in-from-bottom-4 duration-700"
               >
                 {heroTitle}
               </h1>
               <p 
-                className="text-lg text-muted-foreground leading-relaxed max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200 fill-mode-backwards"
+                className="text-base sm:text-lg text-muted-foreground leading-relaxed max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200 fill-mode-backwards"
               >
                 {heroDescription}
               </p>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-2 sm:gap-3">
                 <Link href="/products">
                   <Button size="lg" className="bg-[var(--brand)] text-white hover:opacity-90 gap-2">
                     <ShoppingBag className="w-4 h-4" /> Shop Now
@@ -307,19 +391,19 @@ export default function Home() {
                   </Button>
                 </Link>
               </div>
-              <div className="flex flex-wrap items-center gap-4 sm:gap-6 pt-2">
+              <div className="flex flex-wrap items-center gap-3 sm:gap-4 md:gap-6 pt-1 sm:pt-2">
                 <div>
-                  <p className="font-display font-bold text-2xl">{settings?.general?.statsProductCount || storeStats?.productCount || 0}+</p>
+                  <p className="font-display font-bold text-xl sm:text-2xl">{settings?.general?.statsProductCount || (storeStats as any)?.productCount || 0}+</p>
                   <p className="text-xs text-muted-foreground">Products</p>
                 </div>
-                <div className="w-px h-8 bg-border" />
+                <div className="w-px h-6 sm:h-8 bg-border" />
                 <div>
-                  <p className="font-display font-bold text-2xl">{settings?.general?.statsCustomerCount || storeStats?.customerCount || 0}+</p>
+                  <p className="font-display font-bold text-xl sm:text-2xl">{settings?.general?.statsCustomerCount || (storeStats as any)?.customerCount || 0}+</p>
                   <p className="text-xs text-muted-foreground">Happy Customers</p>
                 </div>
-                <div className="w-px h-8 bg-border" />
+                <div className="w-px h-6 sm:h-8 bg-border" />
                 <div>
-                  <p className="font-display font-bold text-2xl">{settings?.general?.statsAvgRating || storeStats?.avgRating || "4.9"}★</p>
+                  <p className="font-display font-bold text-xl sm:text-2xl">{settings?.general?.statsAvgRating || (storeStats as any)?.avgRating || "4.9"}★</p>
                   <p className="text-xs text-muted-foreground">Avg. Rating</p>
                 </div>
               </div>
@@ -327,7 +411,7 @@ export default function Home() {
 
             {/* ── RIGHT CARD ZONE ────────────────────────────────────────────────── */}
           <div 
-            className="relative flex h-[350px] sm:h-[450px] lg:h-[500px] xl:h-[600px] w-full items-center justify-center mt-8 lg:mt-0 touch-pan-y"
+            className="relative flex h-[280px] sm:h-[350px] md:h-[450px] lg:h-[500px] xl:h-[600px] w-full items-center justify-center mt-6 sm:mt-8 lg:mt-0 touch-pan-y"
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
@@ -457,24 +541,24 @@ export default function Home() {
       </section>
 
       {/* ── Categories ───────────────────────────────────────────────────── */}
-      <section className="py-16">
+      <section className="py-10 sm:py-12 lg:py-16">
         <div className="container">
-          <div className="flex items-end justify-between mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between mb-6 sm:mb-8 gap-2">
             <div>
-              <p className="text-sm font-medium text-[var(--brand)] mb-1">Browse by Category</p>
-              <h2 className="font-display text-2xl sm:text-3xl font-bold">Shop by Category</h2>
+              <p className="text-xs sm:text-sm font-medium text-[var(--brand)] mb-0.5 sm:mb-1">Browse by Category</p>
+              <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold">Shop by Category</h2>
             </div>
-            <Link href="/products" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
-              View all <ChevronRight className="w-4 h-4" />
+            <Link href="/products" className="flex items-center gap-1 text-xs sm:text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors whitespace-nowrap">
+              View all <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4" />
             </Link>
           </div>
 
-          <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
             {loadingCategories ? (
               Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="w-full aspect-[16/9] rounded-3xl" />
-              ))
-            ) : (dbCategories || []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
+          ))
+        ) : (Array.isArray(dbCategories) ? dbCategories : []).filter((c: any) => c.featured && c.active !== false).map((cat: any, i: number) => {
               const style = categoryGradients[i % categoryGradients.length];
               
               const Icon = cat.icon ? dynamicIconMap[cat.icon] || Package : (cat.name.toLowerCase().includes('laptop') ? Monitor : cat.name.toLowerCase().includes('desktop') ? Cpu : Headphones);
@@ -491,14 +575,14 @@ export default function Home() {
                     />
                   </div>
                   <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/40 to-transparent" />
-                  <div className="absolute bottom-0 left-0 right-0 p-5">
-                    <div className={`w-9 h-9 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center mb-2.5 ${style.iconColor}`}>
-                      <Icon className="w-4.5 h-4.5" />
+                  <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 lg:p-5">
+                    <div className={`w-7 h-7 sm:w-9 sm:h-9 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center mb-1.5 sm:mb-2.5 ${style.iconColor}`}>
+                      <Icon className="w-3.5 h-3.5 sm:w-4.5 sm:h-4.5" />
                     </div>
-                    <h3 className="font-display font-bold text-lg">{cat.name}</h3>
-                    <p className="text-sm text-muted-foreground mt-0.5">{cat.description}</p>
-                    <div className="flex items-center gap-1 mt-2 text-[var(--brand)] text-sm font-medium">
-                      Shop now <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                    <h3 className="font-display font-bold text-sm sm:text-base lg:text-lg">{cat.name}</h3>
+                    <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{cat.description}</p>
+                    <div className="flex items-center gap-1 mt-1.5 sm:mt-2 text-[var(--brand)] text-xs sm:text-sm font-medium">
+                      Shop now <ArrowRight className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 group-hover:translate-x-1 transition-transform" />
                     </div>
                   </div>
                 </div>
@@ -509,22 +593,22 @@ export default function Home() {
       </section>
 
       {/* ── Featured Products ─────────────────────────────────────────────── */}
-      <section className="py-20 relative bg-muted/30 overflow-hidden">
+      <section className="py-12 sm:py-16 lg:py-20 relative bg-muted/30 overflow-hidden">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-px bg-gradient-to-r from-transparent via-border to-transparent" />
         <div className="absolute -left-40 top-40 w-96 h-96 bg-[var(--brand)]/5 rounded-full blur-[100px] pointer-events-none" />
         <div className="container relative z-10">
-          <div className="flex items-end justify-between mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between mb-6 sm:mb-8 gap-2">
             <div>
-              <p className="text-sm font-medium text-[var(--brand)] mb-1">Hand-picked for you</p>
-              <h2 className="font-display text-2xl sm:text-3xl font-bold">Featured Products</h2>
+              <p className="text-xs sm:text-sm font-medium text-[var(--brand)] mb-0.5 sm:mb-1">Hand-picked for you</p>
+              <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold">Featured Products</h2>
             </div>
-            <Link href="/products?featured=true" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
-              View all <ChevronRight className="w-4 h-4" />
+            <Link href="/products?featured=true" className="flex items-center gap-1 text-xs sm:text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors whitespace-nowrap">
+              View all <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4" />
             </Link>
           </div>
 
           {loadingFeatured ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="rounded-xl overflow-hidden border border-border">
                   <Skeleton className="aspect-[4/3]" />
@@ -538,37 +622,37 @@ export default function Home() {
               ))}
             </div>
           ) : featuredProducts && featuredProducts.length > 0 ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {featuredProducts.map((product) => (
                 <ProductCard key={product.id} product={product} />
               ))}
             </div>
           ) : (
-            <div className="text-center py-16 text-muted-foreground">
-              <Package className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p>No featured products yet. Check back soon!</p>
+            <div className="text-center py-10 sm:py-16 text-muted-foreground">
+              <Package className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-2 sm:mb-3 opacity-30" />
+              <p className="text-sm sm:text-base">No featured products yet. Check back soon!</p>
             </div>
           )}
         </div>
       </section>
 
       {/* ── Latest Products ───────────────────────────────────────────────── */}
-      <section className="py-20 relative overflow-hidden">
+      <section className="py-12 sm:py-16 lg:py-20 relative overflow-hidden">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-px bg-gradient-to-r from-transparent via-border to-transparent" />
         <div className="absolute -right-40 bottom-40 w-96 h-96 bg-purple-500/5 rounded-full blur-[100px] pointer-events-none" />
         <div className="container relative z-10">
-          <div className="flex items-end justify-between mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between mb-6 sm:mb-8 gap-2">
             <div>
-              <p className="text-sm font-medium text-[var(--brand)] mb-1">Just arrived</p>
-              <h2 className="font-display text-2xl sm:text-3xl font-bold">Latest Products</h2>
+              <p className="text-xs sm:text-sm font-medium text-[var(--brand)] mb-0.5 sm:mb-1">Just arrived</p>
+              <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold">Latest Products</h2>
             </div>
-            <Link href="/products" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors">
-              View all <ChevronRight className="w-4 h-4" />
+            <Link href="/products" className="flex items-center gap-1 text-xs sm:text-sm text-muted-foreground hover:text-[var(--brand)] transition-colors whitespace-nowrap">
+              View all <ChevronRight className="w-3 h-3 sm:w-4 sm:h-4" />
             </Link>
           </div>
 
           {loadingLatest ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="rounded-xl overflow-hidden border border-border">
                   <Skeleton className="aspect-[4/3]" />
@@ -581,17 +665,17 @@ export default function Home() {
               ))}
             </div>
           ) : latestProducts && latestProducts.length > 0 ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {latestProducts.map((product) => (
                 <ProductCard key={product.id} product={product} />
               ))}
             </div>
           ) : (
-            <div className="text-center py-16 text-muted-foreground">
-              <Package className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p>No products yet. Products will appear here once added.</p>
+            <div className="text-center py-10 sm:py-16 text-muted-foreground">
+              <Package className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-2 sm:mb-3 opacity-30" />
+              <p className="text-sm sm:text-base">No products yet. Products will appear here once added.</p>
               <Link href="/admin">
-                <Button className="mt-4 bg-[var(--brand)] text-white hover:opacity-90">Go to Admin Panel</Button>
+                <Button className="mt-3 sm:mt-4 bg-[var(--brand)] text-white hover:opacity-90 text-sm">Go to Admin Panel</Button>
               </Link>
             </div>
           )}
@@ -599,22 +683,22 @@ export default function Home() {
       </section>
 
       {/* ── Shop by Lifestyle ─────────────────────────────────────────────────── */}
-      <section id="shop-by-lifestyle" className="py-20 scroll-mt-20">
+      <section id="shop-by-lifestyle" className="py-12 sm:py-16 lg:py-20 scroll-mt-20">
         <div className="container">
-          <div className="text-center mb-10">
-            <h2 className="font-display text-3xl font-bold">A Laptop for Every Lifestyle</h2>
-            <p className="text-muted-foreground mt-2 max-w-2xl mx-auto">
+          <div className="text-center mb-6 sm:mb-10">
+            <h2 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold">A Laptop for Every Lifestyle</h2>
+            <p className="text-sm sm:text-base text-muted-foreground mt-1.5 sm:mt-2 max-w-2xl mx-auto">
               Whether you're a creative professional, a hardcore gamer, or a student, find the perfect machine tailored to your needs.
             </p>
           </div>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 lg:gap-6">
             {lifestyles.map((lifestyle: any) => {
               const Icon = dynamicIconMap[lifestyle.icon] || Package;
               return (
                 <Link key={lifestyle.title} href={lifestyle.link} className="block">
-                  <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-36 sm:h-40 cursor-pointer">
+                  <div className="group relative overflow-hidden rounded-2xl bg-card border border-border hover:border-[var(--brand)]/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 h-32 sm:h-36 lg:h-40 cursor-pointer">
                     {/* Massive Icon filling the background */}
-                    <div className="absolute inset-0 flex items-center justify-center p-6 pb-12">
+                    <div className="absolute inset-0 flex items-center justify-center p-4 sm:p-6 pb-10 sm:pb-12">
                       <Icon className="w-full h-full opacity-10 group-hover:opacity-30 group-hover:scale-110 transition-all duration-500 text-foreground group-hover:text-[var(--brand)]" strokeWidth={1.5} />
                     </div>
                     
@@ -622,11 +706,11 @@ export default function Home() {
                     <div className="absolute inset-0 bg-gradient-to-t from-background/95 via-background/40 to-transparent opacity-90 group-hover:from-[var(--brand)]/90 group-hover:via-[var(--brand)]/30 group-hover:opacity-100 transition-all duration-500" />
                     
                     {/* Text at the bottom */}
-                    <div className="absolute bottom-0 left-0 right-0 p-5 text-center flex flex-col items-center justify-end">
-                      <h3 className="font-display font-bold text-sm sm:text-base tracking-widest text-foreground uppercase relative z-10 flex items-center justify-center gap-1 transition-colors group-hover:text-white">
-                        {lifestyle.title} <ArrowRight className="w-4 h-4 opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300" />
+                    <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-5 text-center flex flex-col items-center justify-end">
+                      <h3 className="font-display font-bold text-xs sm:text-sm lg:text-base tracking-widest text-foreground uppercase relative z-10 flex items-center justify-center gap-1 transition-colors group-hover:text-white">
+                        {lifestyle.title} <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4 opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-300" />
                       </h3>
-                      <p className="text-xs text-muted-foreground mt-1 relative z-10 opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 transition-all duration-300 px-2 line-clamp-1 group-hover:text-white/80">
+                      <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 relative z-10 opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 transition-all duration-300 px-2 line-clamp-1 group-hover:text-white/80">
                         {lifestyle.description}
                       </p>
                     </div>
@@ -639,7 +723,7 @@ export default function Home() {
       </section>
 
       {/* ── Location / Map ─────────────────────────────────────────────────── */}
-      <section ref={mapSectionRef} className="py-16 bg-muted/30 border-t border-border">
+      <section ref={mapSectionRef} className="py-10 sm:py-12 lg:py-16 bg-muted/30 border-t border-border">
         <div className="container">
           <div className="text-center mb-10">
             <p className="text-sm font-medium text-[var(--brand)] mb-1">Come visit us</p>
@@ -649,41 +733,36 @@ export default function Home() {
           
           <div className="grid lg:grid-cols-3 gap-8 items-start">
             {/* Map Column */}
-            <div className="lg:col-span-2 rounded-2xl overflow-hidden border border-border shadow-lg">
+            <div className="lg:col-span-2 rounded-2xl overflow-hidden border border-border shadow-lg bg-muted relative min-h-[400px]">
               {isMapVisible ? (
-              <MapView 
-                className="h-[400px]" 
-                options={{ styles: darkMapStyle }}
-                onMapReady={(map) => {
-                  if (window.google) {
-                    const geocoder = new window.google.maps.Geocoder();
-                    geocoder.geocode({ address: settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City" }, (results, status) => {
-                      if (status === "OK" && results?.[0]) {
-                        map.setCenter(results[0].geometry.location);
-                        
-                        let markerContent;
-                        if (settings?.appearance?.logoUrl) {
-                          markerContent = document.createElement('div');
-                          markerContent.className = "bg-card border-2 border-[var(--brand)] shadow-xl rounded-full flex items-center justify-center overflow-hidden w-12 h-12 relative z-10";
-                          const img = document.createElement('img');
-                          img.src = settings.appearance.logoUrl;
-                          img.className = "w-full h-full object-contain p-1.5";
-                          markerContent.appendChild(img);
-                        }
-
-                        new window.google.maps.marker.AdvancedMarkerElement({
-                          map,
-                          position: results[0].geometry.location,
-                          title: settings?.general?.storeName || "Store",
-                          content: markerContent,
-                        });
-                      }
-                    });
-                  }
-                }}
-              />
+                <>
+                  <iframe
+                    title="Store Location Map"
+                    className="absolute inset-0 w-full h-full border-0 grayscale-[15%] contrast-[1.1] dark:invert dark:hue-rotate-180"
+                    loading="lazy"
+                    allowFullScreen
+                    referrerPolicy="no-referrer-when-downgrade"
+                    src={`https://maps.google.com/maps?q=${encodeURIComponent(settings?.general?.address || "Nairobi, Kenya")}&t=m&z=15&output=embed`}
+                  />
+                  {/* Professional Floating Store Name Tag */}
+                  <div className="absolute top-4 left-4 z-10 bg-background/95 backdrop-blur-md px-4 py-3 rounded-2xl shadow-[0_8px_30px_rgba(0,0,0,0.12)] border border-border flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-700 pointer-events-none">
+                    <div className="w-10 h-10 rounded-full bg-[var(--brand)]/10 flex items-center justify-center shrink-0">
+                      <Store className="w-5 h-5 text-[var(--brand)]" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-sm text-foreground leading-none">{storeName}</p>
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground mt-1 flex items-center gap-1.5">
+                        {isStoreOpen ? (
+                          <><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]" /> Walk-ins Welcome</>
+                        ) : (
+                          <><span className="w-1.5 h-1.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" /> Currently Closed</>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </>
               ) : (
-                <Skeleton className="h-[400px] w-full" />
+                <Skeleton className="absolute inset-0 w-full h-full" />
               )}
             </div>
             
@@ -709,10 +788,10 @@ export default function Home() {
                  </ul>
               </div>
               <div className="border-t border-border pt-6 mt-6">
-                 <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City")}`} target="_blank" rel="noopener noreferrer">
-                   <Button variant="outline" className="w-full gap-2 hover:bg-[var(--brand)] hover:text-white transition-colors">
-                     Get Directions <ArrowRight className="w-4 h-4" />
-                   </Button>
+                 <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(settings?.general?.address || "123 Innovation Drive, Suite 100, Tech City")}`} target="_blank" rel="noopener noreferrer">
+                  <Button className="w-full gap-2 bg-[var(--brand)] text-white hover:opacity-90 transition-all shadow-md hover:shadow-lg h-12 text-base font-semibold">
+                    <Navigation className="w-4 h-4" /> Get Directions
+                  </Button>
                  </a>
               </div>
             </div>
@@ -721,7 +800,7 @@ export default function Home() {
       </section>
 
       {/* ── CTA Banner ───────────────────────────────────────────────────── */}
-      <section className="py-24 relative overflow-hidden bg-zinc-950 dark:bg-zinc-900 border-t border-border mt-10">
+      <section className="py-16 sm:py-20 lg:py-24 relative overflow-hidden bg-zinc-950 dark:bg-zinc-900 border-t border-border mt-6 sm:mt-10">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#4f4f4f2e_1px,transparent_1px),linear-gradient(to_bottom,#4f4f4f2e_1px,transparent_1px)] bg-[size:14px_24px] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[30rem] h-[30rem] bg-[var(--brand)]/20 rounded-full blur-[120px] pointer-events-none" />
         <div className="container relative z-10 text-center text-white">
@@ -741,7 +820,7 @@ export default function Home() {
 
       {/* ── Recently Viewed ──────────────────────────────────────────────── */}
       {recentProducts.length > 0 && (
-        <section className="py-16 bg-muted/20 border-t border-border">
+        <section className="py-10 sm:py-12 lg:py-16 bg-muted/20 border-t border-border">
           <div className="container">
             <div className="flex items-end justify-between mb-8">
               <div>
@@ -749,7 +828,7 @@ export default function Home() {
                 <h2 className="font-display text-2xl sm:text-3xl font-bold">Recently Viewed</h2>
               </div>
             </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {recentProducts.slice(0, 4).map((product) => (
                 <ProductCard key={`recent-${product.id}`} product={product} />
               ))}

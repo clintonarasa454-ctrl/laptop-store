@@ -19,8 +19,11 @@ import { trpc } from "@/lib/trpc";
 import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Zap, EyeOff, ChevronUp, ChevronDown, Layers, Package } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
 import { toast } from "sonner";
+import { useAuth } from "@/pages/useAuth";
+import { DeletionRequestModal } from "@/components/DeletionRequestModal";
 
 export default function AdminCategories() {
+  const { user } = useAuth();
   const { data: categories, isLoading } = trpc.categories.list.useQuery();
   const utils = trpc.useUtils();
 
@@ -29,12 +32,13 @@ export default function AdminCategories() {
   const [orderedCategories, setOrderedCategories] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rootCategories = orderedCategories.filter(c => !c.parentId);
+  const [deletionRequest, setDeletionRequest] = useState<{ isOpen: boolean; itemId: string; itemName: string } | null>(null);
   
   const iconOptions = ["Package", "Monitor", "Cpu", "Headphones", "Mouse", "Keyboard", "Smartphone", "Tablet", "Speaker", "Printer", "Camera", "Gamepad2", "Tv", "HardDrive", "BatteryCharging", "Cable", "Wifi", "Bluetooth"];
 
   useEffect(() => {
     if (categories) {
-      setOrderedCategories([...categories].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
+      setOrderedCategories([...(Array.isArray(categories) ? categories : [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
     }
   }, [categories]);
 
@@ -215,9 +219,17 @@ export default function AdminCategories() {
                       <Button size="sm" variant="outline" onClick={() => openForm(parent)}>
                         <Edit2 size={16} className="mr-1" /> Edit
                       </Button>
-                      <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive/10" onClick={() => handleDelete(parent.id)} title="Delete category" aria-label="Delete category">
-                        <Trash2 size={16} />
-                      </Button>
+                      {(user?.role === "admin" || user?.role === "manager") && (
+                        <Button size="sm" variant="outline" className="text-destructive hover:bg-destructive/10" onClick={() => {
+                          if (user?.role === "manager") {
+                          setDeletionRequest({ isOpen: true, itemId: parent.id.toString(), itemName: parent.name });
+                          } else {
+                            handleDelete(parent.id);
+                          }
+                        }} title="Delete category" aria-label="Delete category">
+                          <Trash2 size={16} />
+                        </Button>
+                      )}
                     </div>
                   </div>
 
@@ -247,9 +259,17 @@ export default function AdminCategories() {
                             <Button variant="outline" size="sm" className="flex-1 h-8 text-xs gap-1.5" onClick={() => openForm(child)}>
                               <Edit2 size={14} /> Edit
                             </Button>
-                            <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10 shrink-0" onClick={() => handleDelete(child.id)} title="Delete sub-category" aria-label="Delete sub-category">
-                              <Trash2 size={14} />
-                            </Button>
+                            {(user?.role === "admin" || user?.role === "manager") && (
+                              <Button variant="outline" size="sm" className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10 shrink-0" onClick={() => {
+                                if (user?.role === "manager") {
+                              setDeletionRequest({ isOpen: true, itemId: child.id.toString(), itemName: child.name });
+                                } else {
+                                  handleDelete(child.id);
+                                }
+                              }} title="Delete sub-category" aria-label="Delete sub-category">
+                                <Trash2 size={14} />
+                              </Button>
+                            )}
                           </div>
                         </Card>
                       ))}
@@ -406,6 +426,16 @@ export default function AdminCategories() {
             </Card>
           </div>
         )}
+
+    {deletionRequest && (
+      <DeletionRequestModal
+        isOpen={deletionRequest.isOpen}
+        onClose={() => setDeletionRequest(null)}
+        itemType="category"
+        itemId={deletionRequest.itemId}
+        itemName={deletionRequest.itemName}
+      />
+    )}
       </div>
     </AdminLayout>
   );

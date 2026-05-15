@@ -1,0 +1,111 @@
+-- CREATE TYPE "public"."deletion_request_status" AS ENUM('pending', 'approved', 'rejected');--> statement-breakpoint
+-- ALTER TYPE "public"."user_role" ADD VALUE 'manager' BEFORE 'admin';--> statement-breakpoint
+-- CREATE TABLE "deletion_requests" (
+-- 	"id" serial PRIMARY KEY NOT NULL,
+-- 	"item_type" varchar(64) NOT NULL,
+-- 	"item_id" varchar(64) NOT NULL,
+-- 	"item_name" varchar(256) NOT NULL,
+-- 	"manager_id" integer NOT NULL,
+-- 	"reason" text NOT NULL,
+-- 	"status" "deletion_request_status" DEFAULT 'pending' NOT NULL,
+-- 	"admin_id" integer,
+-- 	"created_at" timestamp DEFAULT now() NOT NULL,
+-- 	"updated_at" timestamp DEFAULT now() NOT NULL
+-- );
+--> statement-breakpoint
+-- CREATE TABLE "inventory_transactions" (
+-- 	"id" serial PRIMARY KEY NOT NULL,
+-- 	"product_id" integer NOT NULL,
+-- 	"unit_id" integer,
+-- 	"transaction_type" varchar(50) NOT NULL,
+-- 	"quantity_change" integer,
+-- 	"from_status" varchar(50),
+-- 	"to_status" varchar(50),
+-- 	"reason" text,
+-- 	"order_id" integer,
+-- 	"created_by" integer,
+-- 	"created_at" timestamp DEFAULT now()
+-- );
+--> statement-breakpoint
+-- CREATE TABLE "product_units" (
+-- 	"id" serial PRIMARY KEY NOT NULL,
+-- 	"product_id" integer NOT NULL,
+-- 	"serial_number" varchar(255) NOT NULL,
+-- 	"imei" varchar(255),
+-- 	"barcode" varchar(255),
+-- 	"status" varchar(50) DEFAULT 'IN_STOCK' NOT NULL,
+-- 	"created_at" timestamp DEFAULT now(),
+-- 	"updated_at" timestamp DEFAULT now(),
+-- 	"sold_at" timestamp,
+-- 	"sold_to_order_id" integer,
+-- 	"notes" text,
+-- 	"warehouse_id" integer,
+-- 	CONSTRAINT "product_units_serial_number_unique" UNIQUE("serial_number")
+-- );
+-- --> statement-breakpoint
+-- CREATE TABLE "staff_messages" (
+-- 	"id" serial PRIMARY KEY NOT NULL,
+-- 	"sender_id" integer NOT NULL,
+-- 	"receiver_id" integer NOT NULL,
+-- 	"content" text NOT NULL,
+-- 	"is_read" boolean DEFAULT false NOT NULL,
+-- 	"created_at" timestamp DEFAULT now() NOT NULL
+-- );
+-- --> statement-breakpoint
+-- CREATE TABLE "warehouses" (
+-- 	"id" serial PRIMARY KEY NOT NULL,
+-- 	"name" varchar(256) NOT NULL,
+-- 	"type" varchar(64) NOT NULL,
+-- 	"address" text NOT NULL,
+-- 	"city" varchar(128) NOT NULL,
+-- 	"lat" numeric(10, 7) NOT NULL,
+-- 	"lng" numeric(10, 7) NOT NULL,
+-- 	"active" boolean DEFAULT true NOT NULL,
+-- 	"createdAt" timestamp DEFAULT now() NOT NULL,
+-- 	"updatedAt" timestamp DEFAULT now() NOT NULL
+-- );
+-- --> statement-breakpoint
+-- ALTER TABLE "users" DROP CONSTRAINT "users_email_unique_idx";--> statement-breakpoint
+-- DROP INDEX "orders_created_at_idx";--> statement-breakpoint
+-- DROP INDEX "orders_order_number_idx";--> statement-breakpoint
+-- DROP INDEX "page_views_created_at_idx";--> statement-breakpoint
+-- DROP INDEX "users_email_idx";--> statement-breakpoint
+-- ALTER TABLE "orders" ADD COLUMN "origin_warehouse_id" integer;--> statement-breakpoint
+-- ALTER TABLE "products" ADD COLUMN "has_serial" boolean DEFAULT false;--> statement-breakpoint
+-- ALTER TABLE "users" ADD COLUMN "photo_id" text;--> statement-breakpoint
+-- ALTER TABLE "users" ADD COLUMN "warehouse_id" integer;--> statement-breakpoint
+-- ALTER TABLE "users" ADD COLUMN "requires_password_change" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+-- ALTER TABLE "users" ADD COLUMN "suspended" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+-- ALTER TABLE "deletion_requests" ADD CONSTRAINT "deletion_requests_manager_id_users_id_fk" FOREIGN KEY ("manager_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "deletion_requests" ADD CONSTRAINT "deletion_requests_admin_id_users_id_fk" FOREIGN KEY ("admin_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "inventory_transactions" ADD CONSTRAINT "inventory_transactions_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "inventory_transactions" ADD CONSTRAINT "inventory_transactions_unit_id_product_units_id_fk" FOREIGN KEY ("unit_id") REFERENCES "public"."product_units"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "inventory_transactions" ADD CONSTRAINT "inventory_transactions_order_id_orders_id_fk" FOREIGN KEY ("order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "inventory_transactions" ADD CONSTRAINT "inventory_transactions_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "product_units" ADD CONSTRAINT "product_units_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "product_units" ADD CONSTRAINT "product_units_sold_to_order_id_orders_id_fk" FOREIGN KEY ("sold_to_order_id") REFERENCES "public"."orders"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "product_units" ADD CONSTRAINT "product_units_warehouse_id_warehouses_id_fk" FOREIGN KEY ("warehouse_id") REFERENCES "public"."warehouses"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "staff_messages" ADD CONSTRAINT "staff_messages_sender_id_users_id_fk" FOREIGN KEY ("sender_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "staff_messages" ADD CONSTRAINT "staff_messages_receiver_id_users_id_fk" FOREIGN KEY ("receiver_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- CREATE INDEX "idx_inventory_transactions_product" ON "inventory_transactions" USING btree ("product_id");--> statement-breakpoint
+-- CREATE INDEX "idx_inventory_transactions_unit" ON "inventory_transactions" USING btree ("unit_id");--> statement-breakpoint
+-- CREATE INDEX "idx_inventory_transactions_order" ON "inventory_transactions" USING btree ("order_id");--> statement-breakpoint
+-- CREATE INDEX "idx_inventory_transactions_type" ON "inventory_transactions" USING btree ("transaction_type");--> statement-breakpoint
+-- CREATE INDEX "idx_product_units_product_id" ON "product_units" USING btree ("product_id");--> statement-breakpoint
+-- CREATE INDEX "idx_product_units_serial" ON "product_units" USING btree ("serial_number");--> statement-breakpoint
+-- CREATE INDEX "idx_product_units_status" ON "product_units" USING btree ("status");--> statement-breakpoint
+-- CREATE INDEX "idx_product_units_barcode" ON "product_units" USING btree ("barcode");--> statement-breakpoint
+-- CREATE INDEX "idx_product_units_imei" ON "product_units" USING btree ("imei");--> statement-breakpoint
+-- CREATE INDEX "idx_staff_messages_sender" ON "staff_messages" USING btree ("sender_id");--> statement-breakpoint
+-- CREATE INDEX "idx_staff_messages_receiver" ON "staff_messages" USING btree ("receiver_id");--> statement-breakpoint
+-- CREATE INDEX "idx_staff_messages_created_at" ON "staff_messages" USING btree ("created_at");--> statement-breakpoint
+-- ALTER TABLE "orders" ADD CONSTRAINT "orders_origin_warehouse_id_warehouses_id_fk" FOREIGN KEY ("origin_warehouse_id") REFERENCES "public"."warehouses"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+-- ALTER TABLE "users" ADD CONSTRAINT "users_warehouse_id_warehouses_id_fk" FOREIGN KEY ("warehouse_id") REFERENCES "public"."warehouses"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+-- CREATE INDEX "idx_orders_created_at" ON "orders" USING btree ("createdAt");--> statement-breakpoint
+-- CREATE UNIQUE INDEX "idx_orders_order_number" ON "orders" USING btree ("orderNumber");--> statement-breakpoint
+-- CREATE INDEX "idx_orders_status_payment" ON "orders" USING btree ("status","paymentStatus");--> statement-breakpoint
+-- CREATE INDEX "idx_page_views_created_at" ON "page_views" USING btree ("createdAt");--> statement-breakpoint
+-- CREATE UNIQUE INDEX "idx_products_slug" ON "products" USING btree ("slug");--> statement-breakpoint
+-- CREATE INDEX "idx_products_active_featured" ON "products" USING btree ("active","featured");--> statement-breakpoint
+-- CREATE UNIQUE INDEX "idx_users_email_role" ON "users" USING btree ("email","role");--> statement-breakpoint
+-- CREATE UNIQUE INDEX "idx_users_open_id" ON "users" USING btree ("openId");

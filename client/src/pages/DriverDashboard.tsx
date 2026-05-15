@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Navigation, CheckCircle, Package, Phone, Loader2, Lock, Truck, LogOut, Sparkles, RotateCcw, Search, X, User, Map, PhoneCall, Wifi, WifiOff, DollarSign, History, Mic, Volume2, VolumeX } from "lucide-react";
+import { MapPin, Navigation, CheckCircle, Package, Phone, Loader2, Lock, Truck, LogOut, Sparkles, RotateCcw, Search, X, User, Map, PhoneCall, Wifi, WifiOff, DollarSign, History, Mic, Volume2, VolumeX, MessageSquare, QrCode, Camera, Send, Car, Upload } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/pages/useAuth";
 import { formatPrice } from "@/lib/cart";
 import {
@@ -19,6 +20,9 @@ import {
 import { Link } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { ImageCropperModal } from "@/components/ImageCropperModal";
+import { Html5Qrcode } from "html5-qrcode";
+import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 function TypewriterText({ text, onComplete, renderContent }: { text: string, onComplete: () => void, renderContent: (content: string) => any }) {
   const [displayed, setDisplayed] = useState("");
@@ -39,11 +43,148 @@ function TypewriterText({ text, onComplete, renderContent }: { text: string, onC
 
 export default function DriverDashboard() {
   const { user, isAuthenticated, loading: authLoading } = useAuth();
-  const [activeTab, setActiveTab] = useState<'deliveries' | 'earnings'>('deliveries');
+  const [activeTab, setActiveTab] = useState<'deliveries' | 'vehicle' | 'earnings'>('deliveries');
   const [activeOrderId, setActiveOrderId] = useState<number | null>(null);
   const [otp, setOtp] = useState("");
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const utils = trpc.useUtils();
+
+  const [isForgotPin, setIsForgotPin] = useState(false);
+  const [resetStep, setResetStep] = useState<"phone" | "otp">("phone");
+  const [resetToken, setResetToken] = useState("");
+  const [resetOtpCode, setResetOtpCode] = useState("");
+
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [activeChatOrder, setActiveChatOrder] = useState<any>(null);
+  const [customerChatInput, setCustomerChatInput] = useState("");
+
+  // IMPORTANT: Declare driverInfo and isDriverAuth BEFORE using them in useQuery
+  const [isDriverAuth, setIsDriverAuth] = useState(false);
+  const [driverInfo, setDriverInfo] = useState<{ id: number; name: string } | null>(null);
+
+  const { data: dbMessages } = trpc.fleet.getDeliveryMessages.useQuery(
+    { orderId: activeChatOrder?.id ?? 0, agentId: driverInfo?.id },
+    { enabled: !!activeChatOrder?.id, refetchInterval: 3000 } // Poll for new replies every 3s
+  );
+
+  const { data: unreadChatCount } = trpc.fleet.getUnreadDeliveryMessagesCount.useQuery(
+    { agentId: driverInfo?.id ?? 0, userType: "driver" },
+    { enabled: isDriverAuth && !!driverInfo?.id, refetchInterval: 5000 }
+  );
+
+  const markAsRead = trpc.fleet.markDeliveryMessagesAsRead.useMutation({
+    onSuccess: () => {
+      utils.fleet.getUnreadDeliveryMessagesCount.invalidate();
+      utils.fleet.getDeliveryMessages.invalidate();
+    }
+  });
+
+  useEffect(() => {
+    if (activeChatOrder && dbMessages) {
+      const hasUnread = dbMessages.some((msg: any) => msg.senderType === 'customer' && !msg.isRead);
+      if (hasUnread) {
+        markAsRead.mutate({ orderId: activeChatOrder.id, userType: "driver" });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChatOrder?.id, dbMessages]);
+
+  const sendDeliveryMessage = trpc.fleet.sendDeliveryMessage.useMutation({
+    onSuccess: () => {
+      utils.fleet.getDeliveryMessages.invalidate({ orderId: activeChatOrder?.id, agentId: driverInfo?.id });
+    }
+  });
+
+  const { data: myAssignment, refetch: refetchAssignment } = trpc.fleet.getMyAssignment.useQuery(
+    { driverId: driverInfo?.id ?? 0, agentId: driverInfo?.id ?? 0 } as any, 
+    { enabled: isDriverAuth && !!driverInfo?.id, refetchInterval: 15000 }
+  );
+
+  const [returnModalOpen, setReturnModalOpen] = useState(false);
+  const [returnNotes, setReturnNotes] = useState("");
+  const [returnImage, setReturnImage] = useState<string>("");
+  const [isUploading, setIsUploading] = useState(false);
+  const createPresignedUrl = trpc.fleet.createPresignedUrl.useMutation();
+
+  const requestReturn = trpc.fleet.requestVehicleReturn.useMutation({
+    onSuccess: () => {
+      toast.success("Vehicle return requested! Waiting for admin confirmation.");
+      setReturnModalOpen(false);
+      setReturnNotes("");
+      setReturnImage("");
+      refetchAssignment();
+    }
+  });
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return toast.error("Please upload an image.");
+    setIsUploading(true);
+    try {
+      const result = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
+      if (result.uploadUrl && result.publicUrl) {
+        await fetch(result.uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+        setReturnImage(result.publicUrl);
+        toast.success("Photo uploaded!");
+      } else {
+        const reader = new FileReader();
+        reader.onload = (event) => setReturnImage(event.target?.result as string);
+        reader.readAsDataURL(file);
+      }
+    } catch (err) {
+      toast.error("Upload failed");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [fileToCrop, setFileToCrop] = useState<File | null>(null);
+  const upsertDriver = trpc.fleet.upsertDriver.useMutation({
+    onSuccess: () => {
+      toast.success("Profile photo updated successfully!");
+      refetchProfile();
+    },
+    onError: (err) => toast.error("Failed to update photo: " + err.message)
+  });
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setFileToCrop(file);
+    e.target.value = '';
+  };
+
+  const handleProfilePhotoUpload = async (file: File) => {
+    setFileToCrop(null);
+    setIsUploadingPhoto(true);
+    try {
+      const result = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
+      if (result.uploadUrl && result.publicUrl) {
+        await fetch(result.uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+        upsertDriver.mutate({
+          ...driverProfile,
+          generatePin: false,
+          photoUrl: result.publicUrl
+        } as any);
+      }
+    } catch (err) {
+      toast.error("Upload failed");
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  // --- Offline Sync Queue ---
+  const [syncQueue, setSyncQueue] = useState<{orderId: number, otp: string}[]>(() => {
+    if (typeof window !== "undefined") {
+      try { return JSON.parse(localStorage.getItem("delivery_sync_queue") || "[]"); } catch { return []; }
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("delivery_sync_queue", JSON.stringify(syncQueue));
+  }, [syncQueue]);
 
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
@@ -60,15 +201,13 @@ export default function DriverDashboard() {
     window.addEventListener('offline', handleOffline);
     return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
-
-  const [isDriverAuth, setIsDriverAuth] = useState(false);
-  const [driverInfo, setDriverInfo] = useState<{ id: number; name: string } | null>(null);
   const [pin, setPin] = useState("");
   const [phone, setPhone] = useState("");
 
-  const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance"] });
+  const { data: settings } = trpc.settings.public.useQuery({ keys: ["general", "appearance", "ai"] });
   const storeName = settings?.general?.storeName || (typeof localStorage !== 'undefined' ? localStorage.getItem("store_name_cache") : null) || "Store";
   const logoUrl = settings?.appearance?.logoUrl ?? (typeof localStorage !== 'undefined' ? localStorage.getItem("store_logo_cache") : null);
+  const isAiEnabled = (settings as any)?.ai?.enabled !== false;
 
   useEffect(() => {
     const savedToken = localStorage.getItem("driver_auth_token");
@@ -78,28 +217,134 @@ export default function DriverDashboard() {
         setDriverInfo(info);
         setIsDriverAuth(true);
       } catch {
-        setIsDriverAuth(true);
+        localStorage.removeItem("driver_auth_token");
+        setIsDriverAuth(false);
       }
     }
   }, []);
 
-  // Assume a dedicated endpoint for drivers to get their assigned deliveries
-  const { data: deliveries, isLoading } = trpc.delivery.myDeliveries.useQuery({ agentId: driverInfo?.id }, {
+  const [offlineDeliveries, setOfflineDeliveries] = useState<any[]>(() => {
+    if (typeof window !== "undefined") {
+      try { return JSON.parse(localStorage.getItem("offline_deliveries") || "[]"); }
+      catch { return []; }
+    }
+    return [];
+  });
+
+  const { data: liveDeliveries, isLoading } = trpc.fleet.myDeliveries.useQuery({ agentId: driverInfo?.id }, {
     refetchInterval: 10000,
     enabled: isDriverAuth,
   });
 
-  type Delivery = NonNullable<typeof deliveries>[number];
+  // Automatically ask for permission and subscribe the driver to Push Notifications
+  usePushNotifications(driverInfo?.id);
 
-  const { data: driverProfile, refetch: refetchProfile } = trpc.delivery.getDriverProfile.useQuery(
-    { agentId: driverInfo?.id as number },
+  // Real-time Location Tracking for Active Delivery
+  const updateDriverLocation = trpc.fleet.updateDriverLocation.useMutation();
+  const latestPositionRef = useRef<{lat: number, lng: number} | null>(null);
+  
+  useEffect(() => {
+    if (!isDriverAuth || !driverInfo?.id || !activeOrderId) return;
+
+    if (!navigator.geolocation) {
+      toast.error("Geolocation is not supported. HTTPS is required on mobile devices.");
+      return;
+    }
+
+    // Request permission if needed
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: 'geolocation' }).then(() => {
+        // Permission already handled by geolocation calls
+      });
+    }
+
+    // Start tracking location in real-time
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        latestPositionRef.current = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+      },
+      (error) => {
+        console.warn("Geolocation error:", error);
+        if (error.code === 1) {
+          toast.error("Please allow location access. (Note: HTTPS is required on mobile)");
+        } else {
+          toast.error(`Location error: ${error.message}`);
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 0 }
+    );
+
+    // Broadcast the latest position every 5s
+    const intervalId = setInterval(() => {
+      if (latestPositionRef.current) {
+        updateDriverLocation.mutate({
+          agentId: driverInfo.id,
+          orderId: activeOrderId,
+          lat: latestPositionRef.current.lat,
+          lng: latestPositionRef.current.lng
+        });
+      }
+    }, 5000);
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      clearInterval(intervalId);
+    };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isDriverAuth, driverInfo?.id, activeOrderId]);
+
+  useEffect(() => {
+    if (liveDeliveries) {
+      // Detect new assignments for Push Notifications
+      const prevCount = offlineDeliveries.length;
+      if (liveDeliveries.length > prevCount && prevCount > 0) {
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("New Delivery Assigned", {
+            body: "You have a new package ready for delivery!",
+            icon: "/favicon.ico"
+          });
+        } else {
+          toast.info("You have a new delivery assigned!");
+        }
+      }
+      setOfflineDeliveries(liveDeliveries);
+      localStorage.setItem("offline_deliveries", JSON.stringify(liveDeliveries));
+    }
+  }, [liveDeliveries, offlineDeliveries.length]);
+
+  const deliveries = (isOnline && liveDeliveries) ? liveDeliveries : offlineDeliveries;
+
+  type Delivery = any;
+
+  const { data: dailyEarnings } = trpc.fleet.getEarnings.useQuery(
+    { agentId: driverInfo?.id ?? 0, timeRange: 'week' },
+    { enabled: isDriverAuth && !!driverInfo?.id }
+  );
+
+  const { data: driverProfile, isError: profileError, error: profileErrorObj, refetch: refetchProfile } = trpc.fleet.getDriverProfile.useQuery(
+    { agentId: driverInfo?.id ?? 0 },
     { 
       refetchInterval: 10000,
-      enabled: isDriverAuth && !!driverInfo?.id 
+      enabled: isDriverAuth && !!driverInfo?.id,
+      retry: false // Don't retry if driver doesn't exist
     }
   );
 
-  const updateAvailability = trpc.delivery.updateAvailability.useMutation({
+  // If driver profile query fails, clear the stale auth token
+  useEffect(() => {
+    if (profileError && isDriverAuth && profileErrorObj?.data?.code === 'NOT_FOUND') {
+      console.warn("❌ Driver profile not found. Clearing stale auth token...");
+      localStorage.removeItem("driver_auth_token");
+      setIsDriverAuth(false);
+      setDriverInfo(null);
+      toast.error("Your driver session is no longer valid. Please log in again.");
+    }
+  }, [profileError, isDriverAuth]);
+
+  const updateAvailability = trpc.fleet.updateAvailability.useMutation({
     onSuccess: () => {
       toast.success("Status updated successfully!");
       refetchProfile();
@@ -107,59 +352,86 @@ export default function DriverDashboard() {
     onError: (err) => toast.error(err.message),
   });
 
-  const completeDelivery = trpc.delivery.verifyOtpAndComplete.useMutation({
+  const completeDelivery = trpc.fleet.verifyOtpAndComplete.useMutation({
     onSuccess: () => {
       toast.success("Delivery marked as completed!");
       setActiveOrderId(null);
       setOtp("");
-      if (ws) ws.close();
-      utils.delivery.myDeliveries.invalidate();
+      utils.fleet.myDeliveries.invalidate();
     },
     onError: (err) => toast.error(err.message || "Invalid OTP"),
   });
 
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const watchIdRef = useRef<number | null>(null);
+  // Process sync queue when coming online
+  useEffect(() => {
+    if (isOnline && syncQueue.length > 0) {
+      toast.info(`Syncing ${syncQueue.length} offline delivery record(s)...`);
+      const queue = [...syncQueue];
+      setSyncQueue([]); // clear queue immediately to prevent double-firing
+      queue.forEach(item => {
+        completeDelivery.mutate(item);
+      });
+    }
+  }, [isOnline, syncQueue.length, completeDelivery]);
+
+  const handleVerifyOtp = (order: any, enteredOtp: string) => {
+    if (isOnline) {
+      completeDelivery.mutate({ orderId: order.id, otp: enteredOtp });
+    } else {
+      // Offline verification
+      if (order.deliveryOtp === enteredOtp) {
+        setSyncQueue(prev => [...prev, { orderId: order.id, otp: enteredOtp }]);
+        setOfflineDeliveries(prev => prev.filter((d: any) => d.id !== order.id));
+        setActiveOrderId(null);
+        setOtp("");
+        toast.success("Offline Mode: Delivery marked completed! It will sync automatically when your connection is restored.");
+      } else {
+        toast.error("Invalid OTP code.");
+      }
+    }
+  };
+
+  // --- QR Scanner Camera Logic ---
+  useEffect(() => {
+    if (!isScannerOpen) return;
+
+    let html5QrCode: Html5Qrcode;
+    
+    const startCamera = async () => {
+      try {
+        html5QrCode = new Html5Qrcode("qr-reader-container");
+        await html5QrCode.start(
+          { facingMode: "environment" }, // Forces rear camera on mobile
+          { fps: 10, qrbox: { width: 224, height: 224 } },
+          (decodedText) => {
+            html5QrCode.stop().catch(console.error);
+            toast.success(`Package ${decodedText} verified successfully!`);
+            setIsScannerOpen(false);
+          },
+          undefined // Ignore individual frame errors to prevent console spam
+        );
+      } catch (err) {
+        console.error("Camera start error:", err);
+        // Fails gracefully (e.g. on Desktop without a webcam)
+      }
+    };
+
+    const timer = setTimeout(startCamera, 100);
+    return () => {
+      clearTimeout(timer);
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(console.error);
+      }
+    };
+  }, [isScannerOpen]);
+
 
   const startTrip = (orderId: number) => {
     setActiveOrderId(orderId);
     toast.success("Trip started! Broadcasting location...");
-
-    const connectWs = () => {
-      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/delivery/${orderId}`);
-      
-      socket.onopen = () => {
-        setWs(socket);
-        if (navigator.geolocation) {
-          if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
-          watchIdRef.current = navigator.geolocation.watchPosition(
-            (position) => {
-              if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                  lat: position.coords.latitude,
-                  lng: position.coords.longitude,
-                  heading: position.coords.heading || 0
-                }));
-              }
-            },
-            (err) => console.error(err),
-            { enableHighAccuracy: true, maximumAge: 0 }
-          );
-        } else {
-          toast.error("Geolocation is not supported by your browser");
-        }
-      };
-
-      socket.onclose = () => {
-        reconnectTimeoutRef.current = setTimeout(connectWs, 3000);
-      };
-    };
-
-    connectWs();
   };
 
-  const verifyPin = trpc.delivery.verifyDriverPin.useMutation({
+  const verifyPin = trpc.fleet.verifyDriverPin.useMutation({
     onSuccess: (data) => {
       const info = { id: data.agentId, name: data.agentName };
       localStorage.setItem("driver_auth_token", JSON.stringify(info));
@@ -179,9 +451,26 @@ export default function DriverDashboard() {
     window.dispatchEvent(new Event("driverAuthChanged"));
   };
 
-  useEffect(() => {
-    return () => { if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current); if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current); };
-  }, []);
+  const requestOtp = trpc.fleet.requestDriverPinOtp.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Verification code sent to ${data.email}`);
+      setResetToken(data.token);
+      setResetStep("otp");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const verifyOtpAndReset = trpc.fleet.verifyDriverPinOtpAndReset.useMutation({
+    onSuccess: () => {
+      toast.success("Success! A new access PIN has been sent to your email.");
+      setIsForgotPin(false);
+      setResetStep("phone");
+      setResetToken("");
+      setResetOtpCode("");
+      setPin("");
+    },
+    onError: (err) => toast.error(err.message),
+  });
 
   const getDirections = (order: any) => {
     if (!navigator.geolocation) {
@@ -332,6 +621,17 @@ export default function DriverDashboard() {
   const handleAiSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || aiMutation.isPending) return;
+    
+    // Check if driver is authenticated before allowing AI queries about deliveries
+    if (!isDriverAuth) {
+      toast.error("Please log in to access the delivery assistant. Use your phone and PIN to sign in.");
+      const name = driverInfo?.name || "Driver";
+      setChatMessages([
+        { role: 'assistant', content: `Hi, ${name}! I'm your delivery assistant. To help you with your deliveries, please log in first using the login section above.` }
+      ]);
+      return;
+    }
+    
     const userMsg = chatInput.trim();
     setChatInput("");
     const newMessages: { role: 'user' | 'assistant', content: string, suggestions?: string[] }[] = [...chatMessages, { role: 'user', content: userMsg }];
@@ -423,38 +723,82 @@ export default function DriverDashboard() {
               <div className="w-16 h-16 rounded-full bg-[var(--brand)]/10 flex items-center justify-center mx-auto mb-4">
                 <Truck className="w-8 h-8 text-[var(--brand)]" />
               </div>
-              <h1 className="text-2xl font-bold font-display">Driver Portal</h1>
-              <p className="text-muted-foreground text-sm mt-1">Enter your credentials to view your deliveries</p>
+              <h1 className="text-2xl font-bold font-display">
+                {isForgotPin ? "Reset Access PIN" : "Driver Portal"}
+              </h1>
+              <p className="text-muted-foreground text-sm mt-1">
+                {isForgotPin 
+                  ? (resetStep === "phone" ? "Enter your phone or email to receive a reset code" : "Enter the 6-digit code sent to your email")
+                  : "Enter your credentials to view your deliveries"}
+              </p>
             </div>
-            <form onSubmit={handleDriverLogin} className="space-y-5">
-              <div className="space-y-2">
-                <Label htmlFor="phone">Phone Number</Label>
-                <div className="relative">
-                  <Phone className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input id="phone" placeholder="e.g. +254712345678" className="pl-10 h-11" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+            
+            {!isForgotPin ? (
+              <form onSubmit={handleDriverLogin} className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="phone">Email or Phone Number</Label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input id="phone" placeholder="e.g. driver@store.com or +254..." className="pl-10 h-11" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="pin">Access PIN</Label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="pin"
-                    type="password"
-                    placeholder="••••"
-                    className="pl-10 font-mono tracking-widest text-lg h-11"
-                    value={pin}
-                    onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-                    maxLength={4}
-                    autoFocus
-                    required
-                  />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="pin">Access PIN</Label>
+                    <button type="button" onClick={() => setIsForgotPin(true)} className="text-xs text-[var(--brand)] hover:underline">Forgot PIN?</button>
+                  </div>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="pin"
+                      type="password"
+                      placeholder="••••••"
+                      className="pl-10 font-mono tracking-widest text-lg h-11"
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value)}
+                      maxLength={6}
+                      autoFocus
+                      required
+                    />
+                  </div>
                 </div>
-              </div>
-              <Button type="submit" className="w-full h-11 bg-[var(--brand)] text-white hover:opacity-90" disabled={pin.length < 4 || !phone || verifyPin.isPending}>
-                {verifyPin.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Login as Driver"}
-              </Button>
-            </form>
+                <Button type="submit" className="w-full h-11 bg-[var(--brand)] text-white hover:opacity-90" disabled={pin.length !== 6 || !phone || verifyPin.isPending}>
+                  {verifyPin.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Login as Driver"}
+                </Button>
+              </form>
+            ) : resetStep === "phone" ? (
+              <form onSubmit={(e) => { e.preventDefault(); requestOtp.mutate({ phone: phone.trim() }); }} className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="forgot-phone">Email or Phone Number</Label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input id="forgot-phone" placeholder="e.g. driver@store.com or +254..." className="pl-10 h-11" value={phone} onChange={(e) => setPhone(e.target.value)} required autoFocus />
+                  </div>
+                </div>
+                <Button type="submit" className="w-full h-11 bg-[var(--brand)] text-white hover:opacity-90" disabled={!phone || requestOtp.isPending}>
+                  {requestOtp.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Send Verification Code"}
+                </Button>
+                <div className="text-center">
+                  <button type="button" onClick={() => setIsForgotPin(false)} className="text-sm text-muted-foreground hover:underline">Back to Login</button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={(e) => { e.preventDefault(); verifyOtpAndReset.mutate({ token: resetToken, code: resetOtpCode }); }} className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="otp">6-Digit Verification Code</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input id="otp" placeholder="000000" className="pl-10 font-mono tracking-widest text-lg h-11" value={resetOtpCode} onChange={(e) => setResetOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))} maxLength={6} autoFocus required />
+                  </div>
+                </div>
+                <Button type="submit" className="w-full h-11 bg-[var(--brand)] text-white hover:opacity-90" disabled={resetOtpCode.length !== 6 || verifyOtpAndReset.isPending}>
+                  {verifyOtpAndReset.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Verify & Reset PIN"}
+                </Button>
+                <div className="text-center">
+                  <button type="button" onClick={() => setResetStep("phone")} className="text-sm text-muted-foreground hover:underline">Back</button>
+                </div>
+              </form>
+            )}
           </Card>
         </div>
     );
@@ -463,9 +807,41 @@ export default function DriverDashboard() {
       <div className="container pt-6 pb-8 max-w-lg mx-auto flex-1">
         <div className="mb-8">
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
-            <div>
-              <h1 className="font-display text-2xl font-bold mb-1">Driver Dashboard</h1>
-              <p className="text-muted-foreground">Hello, {driverInfo?.name || user?.name || "Driver"}</p>
+            <div className="flex items-center gap-4">
+              <div className="relative group shrink-0">
+                {driverProfile?.photoUrl ? (
+                  <img src={driverProfile.photoUrl} alt="Driver" className="w-16 h-16 rounded-full object-cover border-2 border-border shadow-sm" />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-[var(--brand)]/10 flex items-center justify-center border-2 border-[var(--brand)]/20 shadow-sm">
+                    <User className="w-8 h-8 text-[var(--brand)]" />
+                  </div>
+                )}
+                {isUploadingPhoto ? (
+                  <div className="absolute inset-0 bg-black/50 text-white rounded-full flex items-center justify-center">
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  </div>
+                ) : (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <div className="absolute inset-0 bg-black/50 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity">
+                        <Camera className="w-5 h-5" />
+                      </div>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-48">
+                  <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="cursor-pointer">
+                        <label className="flex items-center w-full gap-2"><Camera className="w-4 h-4"/> Take Selfie <input type="file" accept="image/*" capture="user" className="hidden" onChange={handleFileSelect} disabled={isUploadingPhoto} /></label>
+                      </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="cursor-pointer">
+                        <label className="flex items-center w-full gap-2"><Upload className="w-4 h-4"/> Choose from Gallery <input type="file" accept="image/*" className="hidden" onChange={handleFileSelect} disabled={isUploadingPhoto} /></label>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+              <div>
+                <h1 className="font-display text-2xl font-bold mb-1">Driver Dashboard</h1>
+                <p className="text-muted-foreground">Hello, {driverInfo?.name || user?.name || "Driver"}</p>
+              </div>
             </div>
             
             {driverProfile && (
@@ -477,11 +853,11 @@ export default function DriverDashboard() {
                 <div className="w-px h-6 bg-border" />
                 <div className="flex items-center gap-3 pl-1">
                   <div className="flex flex-col">
-                    <span className="text-sm font-semibold">{driverProfile.isAvailable ? "Available" : "Offline"}</span>
+                    <span className="text-sm font-semibold">{driverProfile.status === 'active' ? "Available" : "Offline"}</span>
                     <span className="text-xs text-muted-foreground">{activeOrderId ? "Out for delivery" : "Awaiting orders"}</span>
                   </div>
                   <Switch 
-                    checked={driverProfile.isAvailable ?? false} 
+                    checked={driverProfile.status === 'active'} 
                     onCheckedChange={(checked) => updateAvailability.mutate({ agentId: driverProfile.id, isAvailable: checked })}
                     disabled={updateAvailability.isPending || !!activeOrderId || !isOnline}
                   />
@@ -490,20 +866,25 @@ export default function DriverDashboard() {
             )}
           </div>
           
-          <div className="grid grid-cols-2 gap-4">
-            <Card className="p-4 flex flex-col items-center justify-center text-center bg-card border-border shadow-sm">
-              <Package className="w-5 h-5 text-[var(--brand)] mb-2 opacity-80" />
-              <p className="text-2xl font-bold text-foreground leading-none mb-1">{deliveries?.length || 0}</p>
-              <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Packages in Vehicle</p>
-            </Card>
-            <Card className="p-4 flex flex-col items-center justify-center text-center bg-card border-border shadow-sm">
-              <CheckCircle className="w-5 h-5 text-green-500 mb-2 opacity-80" />
-              <p className="text-2xl font-bold text-foreground leading-none mb-1">{activeOrderId ? 1 : 0}</p>
-              <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Active Trip</p>
-            </Card>
-          </div>
-        </div>
-
+           <div className="grid grid-cols-3 gap-4">
+             <Card className="p-4 flex flex-col items-center justify-center text-center bg-card border-border shadow-sm">
+               <Package className="w-5 h-5 text-[var(--brand)] mb-2 opacity-80" />
+               <p className="text-2xl font-bold text-foreground leading-none mb-1">{deliveries?.length || 0}</p>
+               <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Packages</p>
+             </Card>
+             <Card className="p-4 flex flex-col items-center justify-center text-center bg-card border-border shadow-sm">
+               <CheckCircle className="w-5 h-5 text-green-500 mb-2 opacity-80" />
+               <p className="text-2xl font-bold text-foreground leading-none mb-1">{activeOrderId ? 1 : 0}</p>
+               <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Active Trip</p>
+             </Card>
+             <Card className="p-4 flex flex-col items-center justify-center text-center bg-card border-border shadow-sm">
+               <DollarSign className="w-5 h-5 text-blue-500 mb-2 opacity-80" />
+               <p className="text-xl font-bold text-foreground leading-none mb-1">{dailyEarnings ? formatPrice(dailyEarnings.summary.today) : formatPrice(0)}</p>
+               <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Earned Today</p>
+             </Card>
+           </div>
+         </div>
+ 
         <div className="border-b border-border mb-6">
           <div className="flex gap-1">
             <button
@@ -515,6 +896,16 @@ export default function DriverDashboard() {
               }`}
             >
               Deliveries
+            </button>
+            <button
+              onClick={() => setActiveTab('vehicle')}
+              className={`px-4 py-2.5 text-sm font-semibold rounded-t-lg border-b-2 transition-colors ${
+                activeTab === 'vehicle'
+                  ? 'text-[var(--brand)] border-[var(--brand)]'
+                  : 'text-muted-foreground border-transparent hover:bg-muted/50'
+              }`}
+            >
+              Assigned Vehicle
             </button>
             <button
               onClick={() => setActiveTab('earnings')}
@@ -531,6 +922,12 @@ export default function DriverDashboard() {
 
         {activeTab === 'deliveries' && (
           <div className="space-y-4">
+            <div className="flex justify-between items-center mb-2 px-1">
+              <h3 className="font-semibold text-muted-foreground">Assigned Packages</h3>
+              <Button variant="outline" size="sm" className="gap-2 text-[var(--brand)] border-[var(--brand)]/30 hover:bg-[var(--brand)]/10" onClick={() => setIsScannerOpen(true)}>
+                <QrCode className="w-4 h-4" /> Scan QR
+              </Button>
+            </div>
             {deliveries && deliveries.length > 0 ? (
               deliveries.map((order: Delivery) => {
                 const isActive = activeOrderId === order.id;
@@ -561,11 +958,14 @@ export default function DriverDashboard() {
                       </div>
                       
                       <div className="flex gap-2 mt-4 pt-4 border-t border-border/50">
-                         <Button variant="secondary" className="flex-1 gap-2 text-xs h-9 bg-background hover:bg-muted shadow-sm" onClick={() => getDirections(order)}>
-                           <Map className="w-3.5 h-3.5" /> Directions
+                         <Button variant="secondary" className="flex-1 gap-2 text-xs h-9 bg-background hover:bg-muted shadow-sm px-0" onClick={() => getDirections(order)}>
+                           <Map className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Directions</span><span className="sm:hidden">Map</span>
                          </Button>
-                         <Button variant="secondary" className="flex-1 gap-2 text-xs h-9 bg-background hover:bg-muted shadow-sm" onClick={() => window.location.href = `tel:${order.shippingPhone}`}>
-                           <PhoneCall className="w-3.5 h-3.5" /> Call Customer
+                         <Button variant="secondary" className="flex-1 gap-2 text-xs h-9 bg-background hover:bg-muted shadow-sm px-0" onClick={() => window.location.href = `tel:${order.shippingPhone}`}>
+                           <PhoneCall className="w-3.5 h-3.5" /> Call
+                         </Button>
+                         <Button variant="secondary" className="flex-1 gap-2 text-xs h-9 bg-background hover:bg-muted shadow-sm px-0" onClick={() => setActiveChatOrder(order)}>
+                           <MessageSquare className="w-3.5 h-3.5" /> Message
                          </Button>
                       </div>
                     </div>
@@ -593,8 +993,8 @@ export default function DriverDashboard() {
                               className="text-center font-mono text-2xl tracking-[0.5em] h-12 bg-background shadow-inner"
                             />
                             <Button 
-                              onClick={() => completeDelivery.mutate({ orderId: order.id, otp })}
-                              disabled={otp.length !== 4 || completeDelivery.isPending || !isOnline}
+                              onClick={() => handleVerifyOtp(order, otp)}
+                              disabled={otp.length !== 4 || completeDelivery.isPending}
                               className="bg-green-600 text-white hover:bg-green-700 h-12 px-6 shadow-md transition-all"
                             >
                               {completeDelivery.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
@@ -614,6 +1014,36 @@ export default function DriverDashboard() {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'vehicle' && (
+          <Card className="p-5 border-border shadow-sm">
+            <h3 className="font-semibold text-muted-foreground flex items-center gap-2 mb-4"><Car className="w-4 h-4" /> My Assigned Vehicle</h3>
+            {myAssignment ? (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-muted/30 rounded-xl border border-border/50 gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center shrink-0">
+                    <Car className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-foreground">{myAssignment.vehicleName} <span className="text-xs font-mono bg-background px-2 py-0.5 rounded border border-border ml-2">{myAssignment.vehiclePlate}</span></p>
+                    <p className="text-sm text-muted-foreground capitalize mt-0.5">{myAssignment.vehicleType}</p>
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  {myAssignment.status === 'pending_return' ? (
+                    <Badge variant="outline" className="bg-orange-100 text-orange-800 border-orange-200">Pending Confirmation</Badge>
+                  ) : (
+                    <Button onClick={() => { if(confirm("Request to return this vehicle?")) { requestReturn.mutate({ assignmentId: myAssignment.id }); } }} variant="outline" className="border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10 w-full sm:w-auto" disabled={requestReturn.isPending}>
+                      {requestReturn.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Request Return"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-6 text-muted-foreground bg-muted/20 rounded-xl border border-dashed border-border"><p>No vehicle currently assigned to you.</p></div>
+            )}
+          </Card>
         )}
 
         {activeTab === 'earnings' && (
@@ -642,18 +1072,53 @@ export default function DriverDashboard() {
             </div>
 
             <div className="flex items-center gap-2 z-10">
-              <Button variant="ghost" size="icon" onClick={() => setAiChatOpen(!aiChatOpen)} aria-label="Toggle AI Assistant">
-                <Sparkles className="w-4.5 h-4.5 text-[var(--brand)]" />
-              </Button>
+              {isAiEnabled && (
+                <Button variant="ghost" size="icon" onClick={() => setAiChatOpen(!aiChatOpen)} aria-label="Toggle AI Assistant">
+                  <Sparkles className="w-4.5 h-4.5 text-[var(--brand)]" />
+                </Button>
+              )}
+              {isDriverAuth && (
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="relative hover:bg-[var(--brand)]/10" 
+                  onClick={() => {
+                    if (activeOrderId) {
+                      const order = deliveries?.find((d: any) => d.id === activeOrderId);
+                      if (order) setActiveChatOrder(order);
+                    } else if (deliveries?.length === 1) {
+                      setActiveChatOrder(deliveries[0]);
+                    } else if (deliveries?.length > 1) {
+                      toast.info("Please tap 'Message' on a specific package below.");
+                      setActiveTab('deliveries');
+                    } else {
+                      setActiveTab('deliveries');
+                      toast.info("Start a delivery to chat with the customer.");
+                    }
+                  }} 
+                  aria-label="Messages"
+                >
+                  <MessageSquare className="w-5 h-5 text-muted-foreground hover:text-[var(--brand)] transition-colors" />
+                  {unreadChatCount && unreadChatCount > 0 ? (
+                    <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-destructive shadow-[0_0_0_2px_var(--background)]" />
+                  ) : null}
+                </Button>
+              )}
               {isAuthenticated && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="rounded-full ring-2 ring-transparent hover:ring-[var(--brand)]/30 transition-all ml-1" aria-label="Driver menu">
-                      <div className="w-8 h-8 rounded-full bg-[var(--brand)]/10 flex items-center justify-center border border-[var(--brand)]/20">
-                        <span className="text-sm font-semibold text-[var(--brand)]">
-                          {(isDriverAuth ? driverInfo?.name : user?.name)?.charAt(0)?.toUpperCase() ?? "U"}
-                        </span>
-                      </div>
+                      {isDriverAuth && driverProfile?.photoUrl ? (
+                        <img src={driverProfile.photoUrl} alt={driverInfo?.name || "Driver"} className="w-8 h-8 rounded-full object-cover border border-[var(--brand)]/20 shadow-sm" />
+                      ) : user?.photoId ? (
+                        <img src={user.photoId} alt={user.name || "User"} className="w-8 h-8 rounded-full object-cover border border-[var(--brand)]/20 shadow-sm" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-[var(--brand)]/10 flex items-center justify-center border border-[var(--brand)]/20 shadow-sm">
+                          <span className="text-sm font-semibold text-[var(--brand)]">
+                            {(isDriverAuth ? driverInfo?.name : user?.name)?.charAt(0)?.toUpperCase() ?? "U"}
+                          </span>
+                        </div>
+                      )}
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56">
@@ -687,6 +1152,14 @@ export default function DriverDashboard() {
             </div>
           </div>
         </div>
+        
+        {/* Global Offline Mode Indicator */}
+        {!isOnline && (
+          <div className="absolute top-full left-0 w-full bg-destructive text-destructive-foreground text-center py-1.5 text-xs font-bold flex items-center justify-center gap-2 shadow-md animate-in slide-in-from-top-2">
+            <WifiOff className="w-4 h-4 animate-pulse" />
+            OFFLINE MODE — Your deliveries will sync automatically when connection is restored
+          </div>
+        )}
       </header>
 
       {/* Main Content Render */}
@@ -703,6 +1176,149 @@ export default function DriverDashboard() {
           </div>
         </div>
       </footer>
+
+      {/* QR Scanner Modal */}
+      {isScannerOpen && (
+        <div className="fixed inset-0 bg-black/80 z-[110] flex flex-col items-center justify-center p-4 animate-in fade-in">
+          <style dangerouslySetInnerHTML={{__html: `
+            @keyframes scan-line { 0% { top: 0%; } 50% { top: 100%; } 100% { top: 0%; } }
+            .animate-scan { animation: scan-line 2.5s ease-in-out infinite; }
+          `}} />
+          <div className="w-full max-w-sm bg-card rounded-2xl overflow-hidden shadow-2xl">
+            <div className="p-4 border-b border-border flex justify-between items-center bg-muted/30">
+              <h3 className="font-bold flex items-center gap-2"><QrCode className="w-5 h-5 text-[var(--brand)]"/> Scan Package</h3>
+              <Button variant="ghost" size="icon" onClick={() => setIsScannerOpen(false)} className="h-8 w-8 rounded-full"><X className="w-4 h-4"/></Button>
+            </div>
+            <div className="aspect-square bg-black relative flex items-center justify-center overflow-hidden">
+              {/* The live camera feed mounts inside this div */}
+              <div id="qr-reader-container" className="absolute inset-0 w-full h-full object-cover [&>video]:object-cover [&>video]:h-full [&>video]:w-full"></div>
+              <div className="absolute inset-0 opacity-30 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMDUiLz4KPC9zdmc+')] mix-blend-overlay pointer-events-none"></div>
+              <div className="w-56 h-56 border-2 border-[var(--brand)]/50 rounded-2xl relative shadow-[0_0_0_999px_rgba(0,0,0,0.5)] pointer-events-none">
+                <div className="absolute top-0 left-0 w-full h-0.5 bg-[var(--brand)] animate-scan shadow-[0_0_8px_2px_var(--brand)]" />
+                {/* Corner markers */}
+                <div className="absolute -top-0.5 -left-0.5 w-6 h-6 border-t-4 border-l-4 border-[var(--brand)] rounded-tl-xl" />
+                <div className="absolute -top-0.5 -right-0.5 w-6 h-6 border-t-4 border-r-4 border-[var(--brand)] rounded-tr-xl" />
+                <div className="absolute -bottom-0.5 -left-0.5 w-6 h-6 border-b-4 border-l-4 border-[var(--brand)] rounded-bl-xl" />
+                <div className="absolute -bottom-0.5 -right-0.5 w-6 h-6 border-b-4 border-r-4 border-[var(--brand)] rounded-br-xl" />
+              </div>
+              <p className="absolute bottom-6 text-white/70 text-sm font-medium tracking-wide">Align QR code within frame</p>
+            </div>
+            <div className="p-5 bg-card">
+              <p className="text-xs text-muted-foreground text-center mb-3 uppercase tracking-wider font-semibold">Or enter package ID manually</p>
+              <div className="flex gap-2">
+                <Input placeholder="PKG-12345" className="bg-muted/50 h-10" id="pkg-input" />
+                <Button className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-6" onClick={() => {
+                  const val = (document.getElementById('pkg-input') as HTMLInputElement)?.value;
+                  if(val) {
+                    toast.success(`Package ${val} verified!`);
+                    setIsScannerOpen(false);
+                  } else {
+                    toast.error("Please enter a package ID");
+                  }
+                }}>Verify</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Return Vehicle Modal */}
+      {returnModalOpen && myAssignment && (
+        <div className="fixed inset-0 bg-black/80 z-[120] flex items-center justify-center p-4">
+          <Card className="w-full max-w-md p-6 space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-lg">Return Vehicle</h3>
+              <Button variant="ghost" size="icon" onClick={() => setReturnModalOpen(false)} className="h-8 w-8 rounded-full"><X className="w-4 h-4"/></Button>
+            </div>
+            <div className="space-y-2">
+              <Label>Condition Photo (Optional)</Label>
+              <div className="border-2 border-dashed border-border rounded-lg p-4 text-center">
+                {returnImage ? (
+                  <div className="relative">
+                    <img src={returnImage} className="w-full h-40 object-cover rounded" alt="Vehicle condition" />
+                    <Button variant="destructive" size="icon" className="absolute top-2 right-2 h-6 w-6" onClick={() => setReturnImage("")}><X className="w-3 h-3"/></Button>
+                  </div>
+                ) : (
+                  <label className="cursor-pointer flex flex-col items-center">
+                    <input type="file" className="hidden" accept="image/*" onChange={handlePhotoUpload} disabled={isUploading} />
+                    {isUploading ? <Loader2 className="w-8 h-8 animate-spin text-[var(--brand)]" /> : <Camera className="w-8 h-8 text-muted-foreground mb-2" />}
+                    <span className="text-sm font-medium">{isUploading ? "Uploading..." : "Tap to take a photo"}</span>
+                  </label>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Return Notes (Optional)</Label>
+              <Textarea placeholder="e.g. Returned with full tank..." value={returnNotes} onChange={(e) => setReturnNotes(e.target.value)} />
+            </div>
+            <Button className="w-full bg-[var(--brand)] text-white hover:opacity-90" disabled={requestReturn.isPending || isUploading} onClick={() => requestReturn.mutate({ assignmentId: myAssignment.id, imageUrl: returnImage, notes: returnNotes })}>
+              {requestReturn.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Submit Return Request
+            </Button>
+          </Card>
+        </div>
+      )}
+
+      {/* Customer Chat Modal */}
+      {activeChatOrder && (
+        <div className="fixed inset-0 bg-black/60 z-[110] flex flex-col justify-end sm:justify-center sm:items-center sm:p-4 animate-in fade-in">
+          <div className="w-full sm:max-w-md bg-card sm:rounded-3xl overflow-hidden shadow-2xl flex flex-col h-[85vh] sm:h-[600px] animate-in slide-in-from-bottom-10 sm:slide-in-from-bottom-0 sm:zoom-in-95">
+            <div className="p-4 border-b border-border bg-muted/30 flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[var(--brand)]/10 flex items-center justify-center border border-[var(--brand)]/20">
+                  <User className="w-5 h-5 text-[var(--brand)]" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">{activeChatOrder.shippingFullName}</h3>
+                  <p className="text-xs text-muted-foreground">Order #{activeChatOrder.orderNumber}</p>
+                </div>
+              </div>
+              <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-destructive/10 hover:text-destructive" onClick={() => setActiveChatOrder(null)}><X className="w-4 h-4"/></Button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-background">
+              <div className="text-center my-4">
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider bg-muted px-2 py-1 rounded-full">Secure Chat Started</span>
+              </div>
+              {(dbMessages || []).map((msg) => (
+                <div key={msg.id} className={`flex flex-col ${msg.senderType === 'driver' ? 'items-end' : 'items-start'}`}>
+                  <div className={`px-4 py-2.5 rounded-2xl max-w-[85%] shadow-sm ${msg.senderType === 'driver' ? 'bg-[var(--brand)] text-white rounded-tr-sm' : 'bg-muted text-foreground border border-border/50 rounded-tl-sm'}`}>
+                    <p className="text-sm">{msg.content}</p>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground mt-1.5 mx-1 font-medium">{new Date(msg.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                </div>
+              ))}
+            </div>
+            <div className="p-3 border-t border-border bg-card shrink-0">
+              <div className="flex gap-2 overflow-x-auto pb-2 mb-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                {["I'll be there in 5 minutes!", "Traffic is heavy, running late.", "I've arrived!"].map(reply => (
+                  <button 
+                    key={reply} 
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      sendDeliveryMessage.mutate({ orderId: activeChatOrder.id, content: reply, senderType: 'driver', agentId: driverInfo?.id });
+                    }}
+                    className="shrink-0 bg-muted hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] text-xs px-3 py-1.5 rounded-full border border-border/50 whitespace-nowrap transition-colors"
+                  >
+                    {reply}
+                  </button>
+                ))}
+              </div>
+              <form className="flex gap-2" onSubmit={(e) => {
+                e.preventDefault();
+                if(!customerChatInput.trim() || sendDeliveryMessage.isPending) return;
+                sendDeliveryMessage.mutate({ orderId: activeChatOrder.id, content: customerChatInput.trim(), senderType: 'driver', agentId: driverInfo?.id });
+                setCustomerChatInput("");
+              }}>
+                <Input placeholder="Message customer..." value={customerChatInput} onChange={e => setCustomerChatInput(e.target.value)} disabled={sendDeliveryMessage.isPending} className="bg-muted/50 border-transparent focus-visible:ring-[var(--brand)]/50 h-11 rounded-xl" autoFocus />
+                <Button type="submit" size="icon" className="bg-[var(--brand)] text-white shrink-0 hover:opacity-90 disabled:opacity-50 h-11 w-11 rounded-xl" disabled={!customerChatInput.trim() || sendDeliveryMessage.isPending}>
+                  {sendDeliveryMessage.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-5 h-5 ml-1" />}
+                </Button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating AI Chat Card */}
       {aiChatOpen && (
@@ -814,16 +1430,26 @@ export default function DriverDashboard() {
             <div className="px-4 py-3 border-t border-border/50 bg-background/80 backdrop-blur-sm flex-shrink-0">
               <form className="flex gap-2" onSubmit={handleAiSubmit}>
                 <div className="relative flex-1">
-                  <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={isListening ? "Listening..." : "Ask about deliveries..."} className="w-full h-10 pl-3.5 pr-9 text-sm rounded-lg border border-input/60 bg-background hover:border-input focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/50 focus:border-[var(--brand)] transition-all placeholder:text-muted-foreground/50" />
-                  <button type="button" onClick={toggleListening} className={`absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors p-1 rounded hover:bg-muted/50 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'}`} title="Voice Search">
+                  <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} aria-label="Chat input" placeholder={!isDriverAuth ? "Sign in to ask about deliveries..." : isListening ? "Listening..." : "Ask about deliveries..."} disabled={!isDriverAuth} className="w-full h-10 pl-3.5 pr-9 text-sm rounded-lg border border-input/60 bg-background hover:border-input focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/50 focus:border-[var(--brand)] transition-all placeholder:text-muted-foreground/50 disabled:opacity-50 disabled:cursor-not-allowed" />
+                  <button type="button" onClick={toggleListening} disabled={!isDriverAuth} className={`absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors p-1 rounded hover:bg-muted/50 ${isListening ? 'text-destructive animate-pulse' : 'text-muted-foreground hover:text-foreground'} ${!isDriverAuth ? 'opacity-50 cursor-not-allowed' : ''}`} title="Voice Search">
                     <Mic className="w-4 h-4" />
                   </button>
                 </div>
-                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-4 rounded-lg font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed" disabled={!chatInput.trim() || aiMutation.isPending}>Send</Button>
+                <Button type="submit" size="sm" className="bg-[var(--brand)] text-white hover:opacity-90 h-10 px-4 rounded-lg font-medium shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed" disabled={!chatInput.trim() || aiMutation.isPending || !isDriverAuth}>Send</Button>
               </form>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Simple Image Cropper Modal */}
+      {fileToCrop && (
+        <ImageCropperModal
+          file={fileToCrop}
+          onCrop={(file) => handleProfilePhotoUpload(file)}
+          onCancel={() => setFileToCrop(null)}
+          title="Crop Profile Photo"
+        />
       )}
     </div>
   );
@@ -833,21 +1459,21 @@ function EarningsContent({ agentId }: { agentId: number | null }) {
   const [showPayoutModal, setShowPayoutModal] = useState(false);
   const utils = trpc.useUtils();
 
-  const { data: earningsData, isLoading } = trpc.delivery.getEarnings.useQuery(
+  const { data: earningsData, isLoading } = trpc.fleet.getEarnings.useQuery(
     { agentId: agentId!, timeRange: 'week' },
     { enabled: !!agentId }
   );
 
-  const { data: payoutHistory, isLoading: historyLoading } = trpc.delivery.getPayoutHistory.useQuery(
+  const { data: payoutHistory, isLoading: historyLoading } = trpc.fleet.getPayoutHistory.useQuery(
     { agentId: agentId! },
     { enabled: !!agentId }
   );
 
-  const requestPayout = trpc.delivery.requestPayout.useMutation({
+  const requestPayout = trpc.fleet.requestPayout.useMutation({
     onSuccess: () => {
       toast.success("Payout request submitted! It will be processed shortly.");
       setShowPayoutModal(false);
-      utils.delivery.getEarnings.invalidate({ agentId: agentId! });
+      utils.fleet.getEarnings.invalidate({ agentId: agentId! });
     },
     onError: (err) => {
       toast.error(err.message || "Failed to request payout.");

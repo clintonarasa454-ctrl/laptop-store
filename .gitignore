@@ -108,3 +108,8 @@ temp/
 
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
+
+# IDE and Debug Artifacts
+.cursor/
+.manus/
+__manus__/

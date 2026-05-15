@@ -1,7 +1,10 @@
 import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
+import { SettingsResponse } from "@shared/settingsTypes";
 import { addToGuestCart, formatPrice } from "@/lib/cart";
+import { useCurrency } from "@/_core/hooks/useCurrency";
+import { useGeolocation } from "@/hooks/useGeolocation";
 import {
   ArrowLeft,
   CheckCircle,
@@ -19,6 +22,7 @@ import {
   XCircle,
   Zap,
   Share2,
+  Box,
 } from "lucide-react";
 import { dynamicIconMap } from "@/lib/iconMap";
 import { useState, useEffect, useMemo } from "react";
@@ -28,19 +32,23 @@ import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
 import ProductCard from "@/components/ProductCard";
 import { Badge } from "@/components/ui/badge";
+import DeliveryEstimate from "@/components/DeliveryEstimate";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+import "@google/model-viewer";
 
 export default function ProductDetail() {
   const { slug } = useParams<{ slug: string }>();
   const { isAuthenticated } = useAuth();
   const utils = trpc.useUtils();
-  const { data: settings } = trpc.settings.public.useQuery(
+  const geoLocation = useGeolocation(); // Get user's geolocation for warehouse filtering
+  const { data: settingsData } = trpc.settings.public.useQuery(
     { keys: ["general", "shipping"] },
     { staleTime: Infinity }
   );
+  const settings = settingsData as SettingsResponse;
 
   const { data: product, isLoading } = trpc.products.bySlug.useQuery(
     { slug: slug! },
@@ -74,7 +82,7 @@ export default function ProductDetail() {
   }, [categoryArray, product?.categoryId]);
 
   const { data: relatedProducts } = trpc.products.list.useQuery(
-    { categoryId: crossSellCategoryId, limit: 4 },
+    { categoryId: crossSellCategoryId, limit: 4, lat: geoLocation?.lat, lng: geoLocation?.lng },
     { enabled: !!product && !!categories, staleTime: 1000 * 60 * 5 }
   );
   const { data: reviews, isLoading: loadingReviews } = trpc.products.reviews.useQuery(
@@ -93,6 +101,7 @@ export default function ProductDetail() {
 
   const [selectedImage, setSelectedImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
+  const [isViewing3D, setIsViewing3D] = useState(false);
   const [reviewForm, setReviewForm] = useState({ rating: 5, title: "", body: "" });
 
   const upsertCart = trpc.cart.upsert.useMutation({
@@ -209,6 +218,7 @@ export default function ProductDetail() {
 
   const tags = (Array.isArray(product.tags) ? product.tags : []) as string[];
   const specs = (product.specifications as Record<string, string>) ?? {};
+  const modelUrl = specs["3D Model URL"] || specs["3D Model"] || specs["model3d"];
   const comparePrice = product.comparePrice ? parseFloat(product.comparePrice) : 0;
   const price = parseFloat(product.price);
   const discount = comparePrice > price ? Math.round((1 - price / comparePrice) * 100) : 0;
@@ -283,14 +293,48 @@ export default function ProductDetail() {
           {/* Images */}
           <div className="space-y-3">
             <div className="relative aspect-square rounded-2xl overflow-hidden bg-muted border border-border">
-              <img
-                src={images[selectedImage]}
-                alt={product.name}
-                className="w-full h-full object-cover"
-                fetchPriority="high"
-                decoding="async"
-              />
-              {images.length > 1 && (
+              {isViewing3D && modelUrl ? (
+                <>
+                  {/* @ts-ignore */}
+                  <model-viewer
+                    src={modelUrl}
+                    alt={product.name}
+                    auto-rotate="true"
+                    camera-controls="true"
+                    ar="true"
+                    ar-modes="webxr scene-viewer quick-look"
+                    shadow-intensity="1"
+                    style={{ width: "100%", height: "100%", backgroundColor: "transparent" }}
+                  >
+                    <Button slot="ar-button" className="absolute bottom-4 right-4 bg-white text-black hover:bg-gray-100 shadow-lg">
+                      👋 View in your space (AR)
+                    </Button>
+                    {/* @ts-ignore */}
+                  </model-viewer>
+                </>
+              ) : (
+                <img
+                  src={images[selectedImage]}
+                  alt={product.name}
+                  className="w-full h-full object-cover"
+                  fetchPriority="high"
+                  decoding="async"
+                />
+              )}
+              
+              {modelUrl && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setIsViewing3D(!isViewing3D)}
+                  className="absolute top-3 right-3 shadow-md backdrop-blur-md bg-background/80 hover:bg-background z-10 gap-2"
+                >
+                  <Box className="w-4 h-4" />
+                  {isViewing3D ? "View Images" : "View in 3D / AR"}
+                </Button>
+              )}
+
+              {!isViewing3D && images.length > 1 && (
                 <>
                   <button
                     onClick={() => setSelectedImage((i) => (i - 1 + images.length) % images.length)}
@@ -450,7 +494,29 @@ export default function ProductDetail() {
                 <ShoppingCart className="w-4 h-4" />
                 {upsertCart.isPending ? "Adding..." : "Add to Cart"}
               </Button>
+              <Button
+                onClick={() => {
+                  if (!isAuthenticated) {
+                    window.location.href = getLoginUrl();
+                    return;
+                  }
+                  toggleWishlist.mutate({ productId: product.id });
+                }}
+                disabled={toggleWishlist.isPending}
+                variant={isWishlisted ? "default" : "outline"}
+                size="icon"
+                className={`h-10 w-10 rounded-lg ${
+                  isWishlisted ? "bg-destructive text-white hover:bg-destructive/90" : ""
+                }`}
+                title={isWishlisted ? "Remove from Wishlist" : "Add to Wishlist"}
+                aria-label={isWishlisted ? "Remove from Wishlist" : "Add to Wishlist"}
+              >
+                <Heart className={`w-4 h-4 ${isWishlisted ? "fill-current" : ""}`} />
+              </Button>
             </div>
+
+              {/* Delivery Estimate */}
+              <DeliveryEstimate productId={product.id} />
 
             {/* Trust badges */}
             <div className="grid grid-cols-3 gap-3 pt-2">
@@ -569,8 +635,8 @@ export default function ProductDetail() {
               <div className="flex justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-[var(--brand)]" /></div>
             ) : reviews && reviews.length > 0 ? (
               <div className="space-y-4 mt-4">
-                {reviews.map((r, i) => (
-                  <div key={i} className="bg-card border border-border rounded-lg p-5">
+                {reviews.map((r) => (
+                  <div key={r.review.id} className="bg-card border border-border rounded-lg p-5">
                     <div className="flex items-center gap-2 mb-2">
                       <div className="flex">
                         {[1, 2, 3, 4, 5].map((star) => (
@@ -624,7 +690,7 @@ export default function ProductDetail() {
         {relatedProducts && relatedProducts.filter((p) => p.id !== product.id).length > 0 && (
           <div>
             <h2 className="font-display text-xl font-bold mb-6">{crossSellTitle}</h2>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {relatedProducts
                 .filter((p) => p.id !== product.id)
                 .slice(0, 4)
@@ -639,7 +705,7 @@ export default function ProductDetail() {
         {recentProducts.length > 0 && (
           <div className="mt-16">
             <h2 className="font-display text-xl font-bold mb-6 text-muted-foreground">Recently Viewed</h2>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
               {recentProducts.slice(0, 4).map((p) => (
                 <ProductCard key={p.id} product={p} />
               ))}

@@ -1,5 +1,7 @@
 import { useAuth } from "@/pages/useAuth";
 import { trpc } from "@/lib/trpc";
+import { SettingsResponse } from "@shared/settingsTypes";
+import type { Address } from "@shared/types";
 import { formatPrice, clearGuestCart, getGuestCart } from "@/lib/cart";
 import {
   Check,
@@ -27,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { MapPicker } from "@/components/Map";
 import { KENYA_COUNTIES } from "@/lib/kenya-locations";
 
 type Step = "shipping" | "review" | "payment";
@@ -81,18 +84,72 @@ export default function Checkout() {
     saveAddress: false,
   });
 
-  const formatPhone = (value: string) => {
+  const formatPhone = (value: string, country: string) => {
+    // Remove any non-digit characters for processing
     const numbers = value.replace(/\D/g, "");
     if (numbers.length === 0) return "";
-    const cc = numbers.slice(0, 1);
-    const area = numbers.slice(1, 4);
-    const prefix = numbers.slice(4, 7);
-    const line = numbers.slice(7, 11);
-    let res = `+${cc}`;
-    if (numbers.length > 1) res += ` (${area}`;
-    if (numbers.length > 4) res += `) ${prefix}`;
-    if (numbers.length > 7) res += `-${line}`;
-    return res;
+    
+    if (country === "United States" || country === "Canada") {
+      // Format: +1 (555) 123-4567
+      const cc = "1";
+      const rest = numbers.startsWith("1") ? numbers.slice(1) : numbers;
+      const area = rest.slice(0, 3);
+      const prefix = rest.slice(3, 6);
+      const line = rest.slice(6, 10);
+      let res = `+${cc}`;
+      if (area) res += ` (${area}`;
+      if (prefix) res += `) ${prefix}`;
+      if (line) res += `-${line}`;
+      return res;
+    } 
+    
+    if (country === "Kenya") {
+      // Format: +254 XXX XXX XXX
+      const hasCc = numbers.startsWith("254");
+      const hasZero = numbers.startsWith("0");
+      const cc = "254";
+      const rest = hasCc ? numbers.slice(3) : (hasZero ? numbers.slice(1) : numbers);
+      const prefix = rest.slice(0, 3);
+      const line = rest.slice(3, 9);
+      let res = `+${cc}`;
+      if (prefix) res += ` ${prefix}`;
+      if (line) res += ` ${line}`;
+      return res;
+    }
+
+    if (country === "United Kingdom") {
+      // Format: +44 XXXX XXXXXX
+      const hasCc = numbers.startsWith("44");
+      const hasZero = numbers.startsWith("0");
+      const cc = "44";
+      const rest = hasCc ? numbers.slice(2) : (hasZero ? numbers.slice(1) : numbers);
+      const prefix = rest.slice(0, 4);
+      const line = rest.slice(4, 10);
+      let res = `+${cc}`;
+      if (prefix) res += ` ${prefix}`;
+      if (line) res += ` ${line}`;
+      return res;
+    }
+
+    // Generic fallback for other countries: +CCC XXXXXXX
+    return "+" + numbers.slice(0, 15);
+  };
+
+  const handlePhoneChange = (value: string, country: string) => {
+    // Allow user to type only digits, spaces, +, (, ), -
+    const filtered = value.replace(/[^\d\s+\-()]/g, "");
+    const formatted = formatPhone(filtered, country);
+    return formatted;
+  };
+
+  const getPhonePlaceholder = (country: string) => {
+    switch(country) {
+      case "United States":
+      case "Canada": return "e.g. +1 (555) 123-4567";
+      case "Kenya": return "e.g. +254 712 345678";
+      case "United Kingdom": return "e.g. +44 7911 123456";
+      default: return "e.g. +123 456 7890";
+    }
   };
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("stripe");
@@ -103,6 +160,10 @@ export default function Checkout() {
   const [discountCode, setDiscountCode] = useState("");
   const [appliedDiscount, setAppliedDiscount] = useState<{code: string, amount: number} | null>(null);
 
+  const [mapLocation, setMapLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [dynamicShippingCost, setDynamicShippingCost] = useState<number | null>(null);
+  const [dynamicDistance, setDynamicDistance] = useState<number | null>(null);
+
   const { data: cartItems, isLoading: cartLoading } = trpc.cart.get.useQuery(undefined, {
     enabled: isAuthenticated,
   });
@@ -110,10 +171,11 @@ export default function Checkout() {
     enabled: isAuthenticated,
   });
 
-  const { data: settings } = trpc.settings.public.useQuery(
+  const { data: settingsData } = trpc.settings.public.useQuery(
     { keys: ["payment_methods", "shipping", "general"] },
     { staleTime: Infinity }
   );
+  const settings = settingsData as SettingsResponse | undefined;
   const activePaymentMethods = settings?.payment_methods || { mpesa: true, paypal: true, stripe: true };
   
   const availableMethods = [
@@ -129,6 +191,16 @@ export default function Checkout() {
       setStep("payment");
     },
     onError: (err) => toast.error(err.message),
+  });
+
+  const calculateShipping = trpc.checkout.calculateShipping.useMutation({
+    onSuccess: (data) => {
+      if (data.cost !== null) {
+        setDynamicShippingCost(data.cost);
+        setDynamicDistance(data.distance);
+      }
+    },
+    onError: () => toast.error("Failed to calculate dynamic shipping")
   });
 
   useEffect(() => {
@@ -168,12 +240,16 @@ export default function Checkout() {
     );
   }
 
-  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 50000;
-  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 50;
-  const expressFee = settings?.shipping?.expressDelivery ? parseFloat(settings.shipping.expressDelivery) : 100;
+  const settingsTyped = settings as SettingsResponse;  // Already cast above
+  const freeThreshold = settingsTyped?.shipping?.freeShippingThreshold ? Number(settingsTyped.shipping.freeShippingThreshold) : 50000;
+  const standardFee = settingsTyped?.shipping?.standardFee ? Number(settingsTyped.shipping.standardFee) : 50;
+  const expressFee = settingsTyped?.shipping?.expressDelivery ? Number(settingsTyped.shipping.expressDelivery) : 100;
 
   const subtotal = cartItems.reduce((s, i) => s + parseFloat(i.product.price) * i.quantity, 0);
-  const baseShipping = subtotal >= freeThreshold ? 0 : standardFee;
+  let baseShipping = subtotal >= freeThreshold ? 0 : standardFee;
+  if (dynamicShippingCost !== null) {
+    baseShipping = subtotal >= freeThreshold ? 0 : dynamicShippingCost;
+  }
   const shippingCost = isExpress ? expressFee : baseShipping;
   const discountAmount = appliedDiscount ? subtotal * 0.1 : 0; // 10% discount logic
   const total = Math.max(0, subtotal + shippingCost - discountAmount);
@@ -204,18 +280,25 @@ export default function Checkout() {
       isExpress,
       discountCode: appliedDiscount?.code,
       saveAddress: shipping.saveAddress,
+      lat: mapLocation?.lat,
+      lng: mapLocation?.lng,
     });
   };
 
-  const loadAddress = (addr: typeof savedAddresses extends (infer T)[] | undefined ? T : never) => {
+  const handleLocationPick = (lat: number, lng: number) => {
+    setMapLocation({ lat, lng });
+    calculateShipping.mutate({ lat, lng });
+  };
+
+  const loadAddress = (addr: Address) => {
     if (!addr) return;
     const parts = addr.fullName.split(" ");
     setShipping((s) => ({
       ...s,
       firstName: parts[0] || "",
       lastName: parts.slice(1).join(" "),
-      phone: addr.phone,
-      county: (addr as any).county || "",
+      phone: formatPhone(addr.phone, addr.country),
+      county: "",
       address: addr.addressLine,
       city: addr.city,
       postalCode: addr.postalCode ?? "",
@@ -334,8 +417,8 @@ export default function Checkout() {
                       <Input
                         id="phone"
                         value={shipping.phone}
-                        onChange={(e) => setShipping((s) => ({ ...s, phone: formatPhone(e.target.value) }))}
-                        placeholder="e.g. +1 (555) 123-4567"
+                        onChange={(e) => setShipping((s) => ({ ...s, phone: handlePhoneChange(e.target.value, s.country) }))}
+                        placeholder={getPhonePlaceholder(shipping.country)}
                         required
                       />
                     </div>
@@ -356,7 +439,7 @@ export default function Checkout() {
                       <Label htmlFor="country">Country *</Label>
                       <Select
                         value={shipping.country}
-                        onValueChange={(val) => setShipping((s) => ({ ...s, country: val, county: "", city: "" }))}
+                    onValueChange={(val) => setShipping((s) => ({ ...s, country: val, county: "", city: "", phone: formatPhone(s.phone, val) }))}
                       >
                         <SelectTrigger id="country"><SelectValue placeholder="Select country" /></SelectTrigger>
                         <SelectContent>
@@ -412,6 +495,24 @@ export default function Checkout() {
                         placeholder="10001"
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-1.5 pb-2">
+                    <Label className="flex items-center justify-between">
+                      <span>Pinpoint Delivery Location</span>
+                      <span className="text-xs text-muted-foreground font-normal">(Recommended for nearest warehouse routing)</span>
+                    </Label>
+                    <div className="h-[250px] w-full rounded-lg overflow-hidden border border-border">
+                      <MapPicker 
+                        onLocationSelect={handleLocationPick} 
+                        defaultLocation={mapLocation || undefined} 
+                      />
+                    </div>
+                    {dynamicShippingCost !== null && (
+                      <p className="text-xs text-[var(--brand)] font-medium mt-1.5 bg-[var(--brand)]/10 p-2 rounded-md border border-[var(--brand)]/20 inline-block">
+                        ✓ Nearest warehouse assigned. Route: {dynamicDistance?.toFixed(1)} km
+                      </p>
+                    )}
                   </div>
 
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -702,9 +803,9 @@ function PaymentStep({
     return () => window.removeEventListener("message", handleMessage);
   }, [orderId, confirmPaypal.mutate]);
 
-  const processCard = trpc.checkout.processCard.useMutation({
+  const processCard = (trpc.checkout as any).processCard?.useMutation({
     onSuccess: () => onSuccess(),
-    onError: (err) => toast.error(err.message),
+    onError: (err: any) => toast.error(err.message),
   });
 
   const isLoading = initiateMpesa.isPending || verifyMpesa.isPending || initiatePaypal.isPending || confirmPaypal.isPending || processCard.isPending;

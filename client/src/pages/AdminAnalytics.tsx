@@ -32,20 +32,25 @@ const COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981"];
 
 export default function AdminAnalytics() {
   const [timeRange, setTimeRange] = useState("30d");
-  const { data: stats, isLoading } = trpc.admin.stats.useQuery({ timeRange }, {
-    refetchInterval: 15000,
+  const { data: stats, isLoading, error } = trpc.admin.stats.useQuery({ timeRange }, {
+    staleTime: 0, // Data is immediately stale for real-time updates
+    refetchInterval: 5000, // Poll every 5 seconds for live analytics
+    refetchOnWindowFocus: true, // Always refresh when user focuses the tab
+    refetchOnReconnect: true, // Refresh when reconnecting
+    refetchOnMount: true, // Always fetch fresh data on mount
   });
 
-  const revenueData = stats?.revenueData || [];
-  const categoryData = stats?.categoryData || [];
-  const brandData = stats?.brandData || [];
-  const trafficSourceData = stats?.trafficSourceData || [];
+  const typedStats = stats as any;
+  const revenueData = typedStats?.revenueData || [];
+  const categoryData = typedStats?.categoryData || [];
+  const brandData = typedStats?.brandData || [];
+  const trafficSourceData = typedStats?.trafficSourceData || [];
 
-  const totalVisitors = revenueData.reduce((sum: number, day: any) => sum + (day.visitors || 0), 0) || 1;
-  const totalOrders = stats?.totalOrders || 0;
-  const conversionRate = ((totalOrders / totalVisitors) * 100).toFixed(1);
-  const avgOrderValue = totalOrders > 0 ? (parseFloat(stats?.totalRevenue as string) / totalOrders).toFixed(2) : "0.00";
-  const returningUsersPercentage = stats?.totalCustomers ? Math.round(((stats?.returningUsersCount || 0) / stats.totalCustomers) * 100) : 0;
+  const totalVisitors = revenueData.reduce((sum: number, day: any) => sum + (day.visitors || 0), 0);
+  const totalOrders = typedStats?.totalOrders || 0;
+  const conversionRate = totalVisitors > 0 ? ((totalOrders / totalVisitors) * 100).toFixed(1) : "0.0";
+  const avgOrderValue = totalOrders > 0 ? (parseFloat((typedStats?.totalRevenue as string) || "0") / totalOrders).toFixed(2) : "0.00";
+  const returningUsersPercentage = typedStats?.totalCustomers ? Math.round(((typedStats?.returningUsersCount || 0) / typedStats.totalCustomers) * 100) : 0;
 
   const handleExport = () => {
     if (!revenueData || revenueData.length === 0) return;
@@ -72,6 +77,24 @@ export default function AdminAnalytics() {
     );
   }
 
+  if (error) {
+    return (
+      <AdminLayout activeTab="analytics">
+        <Card className="p-6 border-red-200 bg-red-50 dark:bg-red-950 dark:border-red-800">
+          <div className="flex items-start gap-4">
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-900 dark:text-red-100">Failed to load analytics data</h3>
+              <p className="text-sm text-red-800 dark:text-red-200 mt-1">{error.message}</p>
+              <p className="text-xs text-red-700 dark:text-red-300 mt-2 font-mono bg-red-100 dark:bg-red-900 p-2 rounded">
+                {error.data?.code || "Unknown error"}
+              </p>
+            </div>
+          </div>
+        </Card>
+      </AdminLayout>
+    );
+  }
+
   return (
     <AdminLayout activeTab="analytics">
       <div className="space-y-6">
@@ -85,15 +108,20 @@ export default function AdminAnalytics() {
           </div>
           <div className="flex items-center gap-3">
             <Select value={timeRange} onValueChange={setTimeRange}>
-              <SelectTrigger className="w-40 h-10">
+              <SelectTrigger className="w-44 h-10">
                 <Calendar className="w-4 h-4 mr-2 text-muted-foreground" />
                 <SelectValue placeholder="Select range" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="7d">Last 7 days</SelectItem>
-                <SelectItem value="30d">Last 30 days</SelectItem>
-                <SelectItem value="90d">Last 90 days</SelectItem>
-                <SelectItem value="12m">Last 12 months</SelectItem>
+                <SelectItem value="1d">Today / 24h</SelectItem>
+                <SelectItem value="2d">Last 2 Days</SelectItem>
+                <SelectItem value="3d">Last 3 Days</SelectItem>
+                <SelectItem value="4d">Last 4 Days</SelectItem>
+                <SelectItem value="7d">Last 7 Days</SelectItem>
+                <SelectItem value="30d">Last 30 Days</SelectItem>
+                <SelectItem value="90d">Last 90 Days</SelectItem>
+                <SelectItem value="12m">Last 12 Months</SelectItem>
+                <SelectItem value="all">All Time</SelectItem>
               </SelectContent>
             </Select>
             <Button variant="outline" className="gap-2 h-10" onClick={handleExport}>
@@ -111,8 +139,8 @@ export default function AdminAnalytics() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">Page Views</p>
               <h4 className="text-2xl font-bold">{totalVisitors.toLocaleString()}</h4>
-              <p className={`text-xs font-medium flex items-center mt-1 ${(stats?.trends?.pageViews ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-                <TrendingUp className={`w-3 h-3 mr-1 ${(stats?.trends?.pageViews ?? 0) < 0 ? "rotate-180" : ""}`} /> {(stats?.trends?.pageViews ?? 0) > 0 ? "+" : ""}{stats?.trends?.pageViews ?? 0}%
+              <p className={`text-xs font-medium flex items-center mt-1 ${(typedStats?.trends?.pageViews ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+                <TrendingUp className={`w-3 h-3 mr-1 ${(typedStats?.trends?.pageViews ?? 0) < 0 ? "rotate-180" : ""}`} /> {(typedStats?.trends?.pageViews ?? 0) > 0 ? "+" : ""}{typedStats?.trends?.pageViews ?? 0}%
               </p>
             </div>
           </Card>
@@ -123,8 +151,8 @@ export default function AdminAnalytics() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">Conversion Rate</p>
               <h4 className="text-2xl font-bold">{conversionRate}%</h4>
-              <p className={`text-xs font-medium flex items-center mt-1 ${(stats?.trends?.conversion ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-                <TrendingUp className={`w-3 h-3 mr-1 ${(stats?.trends?.conversion ?? 0) < 0 ? "rotate-180" : ""}`} /> {(stats?.trends?.conversion ?? 0) > 0 ? "+" : ""}{stats?.trends?.conversion ?? 0}%
+              <p className={`text-xs font-medium flex items-center mt-1 ${(typedStats?.trends?.conversion ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+                <TrendingUp className={`w-3 h-3 mr-1 ${(typedStats?.trends?.conversion ?? 0) < 0 ? "rotate-180" : ""}`} /> {(typedStats?.trends?.conversion ?? 0) > 0 ? "+" : ""}{typedStats?.trends?.conversion ?? 0}%
               </p>
             </div>
           </Card>
@@ -135,8 +163,8 @@ export default function AdminAnalytics() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">Avg. Order Value</p>
               <h4 className="text-2xl font-bold">{formatPrice(avgOrderValue)}</h4>
-              <p className={`text-xs font-medium flex items-center mt-1 ${(stats?.trends?.aov ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-                <TrendingUp className={`w-3 h-3 mr-1 ${(stats?.trends?.aov ?? 0) < 0 ? "rotate-180" : ""}`} /> {(stats?.trends?.aov ?? 0) > 0 ? "+" : ""}{stats?.trends?.aov ?? 0}%
+              <p className={`text-xs font-medium flex items-center mt-1 ${(typedStats?.trends?.aov ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+                <TrendingUp className={`w-3 h-3 mr-1 ${(typedStats?.trends?.aov ?? 0) < 0 ? "rotate-180" : ""}`} /> {(typedStats?.trends?.aov ?? 0) > 0 ? "+" : ""}{typedStats?.trends?.aov ?? 0}%
               </p>
             </div>
           </Card>
@@ -147,8 +175,8 @@ export default function AdminAnalytics() {
             <div>
               <p className="text-sm font-medium text-muted-foreground">Returning Users</p>
               <h4 className="text-2xl font-bold">{returningUsersPercentage}%</h4>
-              <p className={`text-xs font-medium flex items-center mt-1 ${(stats?.trends?.returning ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
-                <TrendingUp className={`w-3 h-3 mr-1 ${(stats?.trends?.returning ?? 0) < 0 ? "rotate-180" : ""}`} /> {(stats?.trends?.returning ?? 0) > 0 ? "+" : ""}{stats?.trends?.returning ?? 0}%
+              <p className={`text-xs font-medium flex items-center mt-1 ${(typedStats?.trends?.returning ?? 0) >= 0 ? "text-green-500" : "text-red-500"}`}>
+                <TrendingUp className={`w-3 h-3 mr-1 ${(typedStats?.trends?.returning ?? 0) < 0 ? "rotate-180" : ""}`} /> {(typedStats?.trends?.returning ?? 0) > 0 ? "+" : ""}{typedStats?.trends?.returning ?? 0}%
               </p>
             </div>
           </Card>
@@ -198,7 +226,7 @@ export default function AdminAnalytics() {
           <h3 className="font-semibold mb-6 flex items-center gap-2"><Sparkles className="w-5 h-5 text-pink-500" /> AI vs Organic Revenue</h3>
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats?.aiRevenueData || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <AreaChart data={typedStats?.aiRevenueData || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorAi" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#ec4899" stopOpacity={0.3} />

@@ -14,9 +14,22 @@ import type {
   GetUserInfoWithJwtRequest,
   GetUserInfoWithJwtResponse,
 } from "./types/manusTypes";
+
 // Utility function
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
+
+// ─── Secure JWT Secret Configuration ───────────────────────────────────────
+function getSecureJWTSecret(): Uint8Array {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || jwtSecret.trim().length === 0) {
+    throw new Error(
+      "FATAL: JWT_SECRET is not configured. Set the JWT_SECRET environment variable before starting the server. " +
+      "This is required for authentication security."
+    );
+  }
+  return new TextEncoder().encode(jwtSecret);
+}
 
 export type SessionPayload = {
   openId: string;
@@ -147,11 +160,6 @@ class SDKServer {
     return new Map(Object.entries(parsed));
   }
 
-  private getSessionSecret() {
-    const secret = ENV.cookieSecret;
-    return new TextEncoder().encode(secret);
-  }
-
   /**
    * Create a session token for a Manus user openId
    * @example
@@ -178,7 +186,7 @@ class SDKServer {
     const issuedAt = Date.now();
     const expiresInMs = options.expiresInMs ?? ONE_YEAR_MS;
     const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
-    const secretKey = this.getSessionSecret();
+    const secretKey = getSecureJWTSecret();
 
     return new SignJWT({
       openId: payload.openId,
@@ -198,7 +206,7 @@ class SDKServer {
     }
 
     try {
-      const secretKey = new TextEncoder().encode(process.env.JWT_SECRET || "default_jwt_secret_for_development_only");
+      const secretKey = getSecureJWTSecret();
       const { payload } = await jwtVerify(cookieValue, secretKey, {
         algorithms: ["HS256"],
       });

@@ -6,8 +6,11 @@ import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, Plus, Trash2, Tag } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "@/pages/useAuth";
+import { DeletionRequestModal } from "@/components/DeletionRequestModal";
 
 export default function AdminBrands() {
+  const { user } = useAuth();
   const { data: dbBrands, isLoading } = trpc.admin.getSetting.useQuery({ key: "brands" });
   const updateSetting = trpc.admin.updateSetting.useMutation();
   const utils = trpc.useUtils();
@@ -16,6 +19,7 @@ export default function AdminBrands() {
   const defaultBrands = ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
   const [brands, setBrands] = useState<string[]>(defaultBrands);
   const [newBrand, setNewBrand] = useState("");
+  const [deletionRequest, setDeletionRequest] = useState<{ isOpen: boolean; itemId: string; itemName: string } | null>(null);
 
   useEffect(() => {
     if (dbBrands && Array.isArray(dbBrands)) {
@@ -50,6 +54,9 @@ export default function AdminBrands() {
   };
 
   const removeBrand = (brandToRemove: string) => {
+    if (user?.role === "manager") {
+      return setDeletionRequest({ isOpen: true, itemId: brandToRemove, itemName: brandToRemove });
+    }
     if (!confirm(`Are you sure you want to remove ${brandToRemove}?`)) return;
     const updated = brands.filter(b => b !== brandToRemove);
     setBrands(updated);
@@ -87,6 +94,16 @@ export default function AdminBrands() {
             </div>
           )}
         </Card>
+
+    {deletionRequest && (
+      <DeletionRequestModal
+        isOpen={deletionRequest.isOpen}
+        onClose={() => setDeletionRequest(null)}
+        itemType="brand"
+        itemId={deletionRequest.itemId}
+        itemName={deletionRequest.itemName}
+      />
+    )}
       </div>
     </AdminLayout>
   );

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import AdminLayout from "@/components/AdminLayout";
+import EmailTemplateEditor from "@/components/EmailTemplateEditor";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,12 +14,15 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Save, Upload, X, Loader2, Plus } from "lucide-react";
+import { Save, Upload, X, Loader2, Plus, Mail } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/pages/useAuth";
 
 export default function AdminSettings() {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState("general");
+  const [showEmailTemplateEditor, setShowEmailTemplateEditor] = useState(false);
   const [generalSettings, setGeneralSettings] = useState({
     storeName: "Store",
     storeDescription: "Premium Computer & Laptop Store",
@@ -124,6 +128,22 @@ export default function AdminSettings() {
 
   const [backupSettings, setBackupSettings] = useState({ schedule: "weekly" });
 
+  const [aiSettings, setAiSettings] = useState({
+    enabled: true,
+    systemPrompt: "You are a helpful AI assistant for our store. Answer customer queries politely and concisely.",
+    adminPrompt: "You are the administrative AI. You have full access to the store's backend data and statistics. Assist the admin with operational tasks.",
+    allowProductSearch: true,
+    allowOrderTracking: true,
+    allowAdminStats: true,
+    trainingFiles: [] as { name: string; url: string; type: string }[],
+  });
+
+  const [inventorySettings, setInventorySettings] = useState({
+    lowStockThreshold: "5",
+    notifyAdmin: true,
+    adminEmail: "",
+  });
+
   const updateSetting = trpc.admin.updateSetting.useMutation();
   const utils = trpc.useUtils();
 
@@ -138,6 +158,8 @@ export default function AdminSettings() {
   const { data: dbSecurity } = trpc.admin.getSetting.useQuery({ key: "security" });
   const { data: dbSocial } = trpc.admin.getSetting.useQuery({ key: "social" });
   const { data: dbBackup } = trpc.admin.getSetting.useQuery({ key: "backup" });
+  const { data: dbAi } = trpc.admin.getSetting.useQuery({ key: "ai" });
+  const { data: dbInventory } = trpc.admin.getSetting.useQuery({ key: "inventory" });
 
   const logoInputRef = useRef<HTMLInputElement>(null);
   const faviconInputRef = useRef<HTMLInputElement>(null);
@@ -188,17 +210,28 @@ export default function AdminSettings() {
   useEffect(() => { if (dbSecurity) setSecuritySettings(prev => JSON.stringify(prev) === JSON.stringify(dbSecurity) ? prev : (dbSecurity as any)); }, [dbSecurity]);
   useEffect(() => { if (dbSocial) setSocialSettings(prev => JSON.stringify(prev) === JSON.stringify(dbSocial) ? prev : (dbSocial as any)); }, [dbSocial]);
   useEffect(() => { if (dbBackup) setBackupSettings(prev => JSON.stringify(prev) === JSON.stringify(dbBackup) ? prev : (dbBackup as any)); }, [dbBackup]);
+  useEffect(() => { if (dbAi) setAiSettings(prev => JSON.stringify(prev) === JSON.stringify(dbAi) ? prev : (dbAi as any)); }, [dbAi]);
+  useEffect(() => { if (dbInventory) setInventorySettings(prev => JSON.stringify(prev) === JSON.stringify(dbInventory) ? prev : (dbInventory as any)); }, [dbInventory]);
 
   const handleSave = async (key: string, data: any, label: string) => {
     try {
       await updateSetting.mutateAsync({ key, value: data });
+      // Invalidate admin specific query
       utils.admin.getSetting.invalidate({ key });
+      // Invalidate all settings queries to force refetch on next use
       utils.settings.public.invalidate();
+      // Dispatch event to notify other pages to refetch if needed
+      window.dispatchEvent(new Event('settingsUpdated'));
       toast.success(`${label} settings saved successfully`);
     } catch (error) {
       toast.error(`Failed to save ${label} settings`);
     }
   };
+
+  const triggerRestock = trpc.admin.triggerAutoRestock.useMutation({
+    onSuccess: () => toast.success("Auto-restock check triggered successfully! Check your email."),
+    onError: (err) => toast.error(err.message),
+  });
 
   // Handle file uploads by converting them to secure Base64 strings
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, key: 'logoUrl' | 'faviconUrl') => {
@@ -266,6 +299,32 @@ export default function AdminSettings() {
     if (e.target) e.target.value = "";
   };
 
+  // Handle file uploads specifically for AI training data
+  const handleAiFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("File size should be less than 5MB.");
+      return;
+    }
+
+    let toastId: string | number | undefined;
+    try {
+      toastId = toast.loading("Uploading training file...");
+      const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
+      
+      if (uploadUrl && publicUrl) {
+        const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+        if (!res.ok) throw new Error("S3 Upload Failed");
+        
+        setAiSettings(prev => ({ ...prev, trainingFiles: [...(prev.trainingFiles || []), { name: file.name, url: publicUrl, type: file.type }] }));
+        toast.success("Training file uploaded successfully!", { id: toastId });
+      } else throw new Error("Failed to get presigned URL");
+    } catch (err) { toast.error("Failed to upload training file", { id: toastId }); }
+    if (e.target) e.target.value = "";
+  };
+
   const handleDownloadBackup = async () => {
     try {
       const backupData = await utils.admin.exportDatabase.fetch();
@@ -298,7 +357,7 @@ export default function AdminSettings() {
 
         {/* Settings Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8">
+          <TabsList className="grid w-full grid-cols-3 md:grid-cols-5 lg:grid-cols-9">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="appearance">Appearance</TabsTrigger>
             <TabsTrigger value="payment">Payment</TabsTrigger>
@@ -307,6 +366,7 @@ export default function AdminSettings() {
             <TabsTrigger value="security">Security</TabsTrigger>
             <TabsTrigger value="social">Social</TabsTrigger>
             <TabsTrigger value="backup">Backup</TabsTrigger>
+            <TabsTrigger value="ai">AI Assistant</TabsTrigger>
           </TabsList>
 
           {/* General Settings */}
@@ -1103,119 +1163,127 @@ export default function AdminSettings() {
             <Card className="p-6">
               <h3 className="text-lg font-semibold mb-4">Payment Gateway Credentials</h3>
               <div className="space-y-6">
-                <div>
-                  <h4 className="font-medium mb-3">M-Pesa</h4>
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Consumer Key</label>
-                        <Input
-                          placeholder="Consumer Key"
-                          type="password"
-                          value={paymentSettings.mpesaKey}
-                          onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaKey: e.target.value })}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Consumer Secret</label>
-                        <Input
-                          placeholder="Consumer Secret"
-                          type="password"
-                          value={paymentSettings.mpesaSecret}
-                          onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaSecret: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Business Shortcode</label>
-                        <Input
-                          placeholder="e.g. 174379"
-                          value={paymentSettings.mpesaShortcode}
-                          onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaShortcode: e.target.value })}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">Environment</label>
-                        <Select
-                          value={paymentSettings.mpesaEnv || "sandbox"}
-                          onValueChange={(val) => setPaymentSettings({ ...paymentSettings, mpesaEnv: val })}
-                        >
-                          <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="sandbox">Sandbox (Testing)</SelectItem>
-                            <SelectItem value="production">Production (Live)</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
+                {user?.role === "admin" ? (
+                  <>
                     <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">STK Passkey</label>
-                      <Input
-                        placeholder="STK Push Passkey"
-                        type="password"
-                        value={paymentSettings.mpesaPasskey}
-                        onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaPasskey: e.target.value })}
-                      />
+                      <h4 className="font-medium mb-3">M-Pesa</h4>
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Consumer Key</label>
+                            <Input
+                              placeholder="Consumer Key"
+                              type="password"
+                              value={paymentSettings.mpesaKey}
+                              onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaKey: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Consumer Secret</label>
+                            <Input
+                              placeholder="Consumer Secret"
+                              type="password"
+                              value={paymentSettings.mpesaSecret}
+                              onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaSecret: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Business Shortcode</label>
+                            <Input
+                              placeholder="e.g. 174379"
+                              value={paymentSettings.mpesaShortcode}
+                              onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaShortcode: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Environment</label>
+                            <Select
+                              value={paymentSettings.mpesaEnv || "sandbox"}
+                              onValueChange={(val) => setPaymentSettings({ ...paymentSettings, mpesaEnv: val })}
+                            >
+                              <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="sandbox">Sandbox (Testing)</SelectItem>
+                                <SelectItem value="production">Production (Live)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">STK Passkey</label>
+                          <Input
+                            placeholder="STK Push Passkey"
+                            type="password"
+                            value={paymentSettings.mpesaPasskey}
+                            onChange={(e) => setPaymentSettings({ ...paymentSettings, mpesaPasskey: e.target.value })}
+                          />
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
 
-                <div className="border-t border-border pt-6">
-                  <h4 className="font-medium mb-3">PayPal</h4>
-                  <div className="space-y-3">
-                    <Input
-                      placeholder="PayPal Client ID"
-                      type="password"
-                      value={paymentSettings.paypalClientId}
-                      onChange={(e) =>
-                        setPaymentSettings({
-                          ...paymentSettings,
-                          paypalClientId: e.target.value,
-                        })
-                      }
-                    />
-                    <Input
-                      placeholder="PayPal Secret"
-                      type="password"
-                      value={paymentSettings.paypalSecret}
-                      onChange={(e) =>
-                        setPaymentSettings({
-                          ...paymentSettings,
-                          paypalSecret: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
+                    <div className="border-t border-border pt-6">
+                      <h4 className="font-medium mb-3">PayPal</h4>
+                      <div className="space-y-3">
+                        <Input
+                          placeholder="PayPal Client ID"
+                          type="password"
+                          value={paymentSettings.paypalClientId}
+                          onChange={(e) =>
+                            setPaymentSettings({
+                              ...paymentSettings,
+                              paypalClientId: e.target.value,
+                            })
+                          }
+                        />
+                        <Input
+                          placeholder="PayPal Secret"
+                          type="password"
+                          value={paymentSettings.paypalSecret}
+                          onChange={(e) =>
+                            setPaymentSettings({
+                              ...paymentSettings,
+                              paypalSecret: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
 
-                <div className="border-t border-border pt-6">
-                  <h4 className="font-medium mb-3">Stripe</h4>
-                  <div className="space-y-3">
-                    <Input
-                      placeholder="Stripe Publishable Key"
-                      type="password"
-                      value={paymentSettings.stripePublishable}
-                      onChange={(e) =>
-                        setPaymentSettings({
-                          ...paymentSettings,
-                          stripePublishable: e.target.value,
-                        })
-                      }
-                    />
-                    <Input
-                      placeholder="Stripe Secret Key"
-                      type="password"
-                      value={paymentSettings.stripeSecret}
-                      onChange={(e) =>
-                        setPaymentSettings({
-                          ...paymentSettings,
-                          stripeSecret: e.target.value,
-                        })
-                      }
-                    />
+                    <div className="border-t border-border pt-6">
+                      <h4 className="font-medium mb-3">Stripe</h4>
+                      <div className="space-y-3">
+                        <Input
+                          placeholder="Stripe Publishable Key"
+                          type="password"
+                          value={paymentSettings.stripePublishable}
+                          onChange={(e) =>
+                            setPaymentSettings({
+                              ...paymentSettings,
+                              stripePublishable: e.target.value,
+                            })
+                          }
+                        />
+                        <Input
+                          placeholder="Stripe Secret Key"
+                          type="password"
+                          value={paymentSettings.stripeSecret}
+                          onChange={(e) =>
+                            setPaymentSettings({
+                              ...paymentSettings,
+                              stripeSecret: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-4 bg-secondary/50 border border-border rounded-lg text-center">
+                    <p className="text-sm text-muted-foreground">API Keys and Gateway configuration are restricted to administrators.</p>
                   </div>
-                </div>
+                )}
 
                 <div className="border-t border-border pt-6 mt-6 flex items-center justify-between p-4 bg-secondary/50 rounded-lg">
                   <div>
@@ -1311,26 +1379,44 @@ export default function AdminSettings() {
           {/* Email Settings */}
           <TabsContent value="email" className="space-y-4">
             <Card className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Email Settings</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Email Settings</h3>
+                <Button 
+                  onClick={() => setShowEmailTemplateEditor(true)} 
+                  variant="outline" 
+                  className="gap-2"
+                >
+                  <Mail size={18} />
+                  Edit Email Templates
+                </Button>
+              </div>
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">SMTP Host</label>
-              <Input value={emailSettings.smtpHost} onChange={(e) => setEmailSettings({ ...emailSettings, smtpHost: e.target.value })} title="SMTP Host" aria-label="SMTP Host" placeholder="smtp.example.com" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-2">SMTP Port</label>
-                <Input value={emailSettings.smtpPort} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPort: e.target.value })} title="SMTP Port" aria-label="SMTP Port" placeholder="587" />
+                {user?.role === "admin" ? (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">SMTP Host</label>
+                      <Input value={emailSettings.smtpHost} onChange={(e) => setEmailSettings({ ...emailSettings, smtpHost: e.target.value })} title="SMTP Host" aria-label="SMTP Host" placeholder="smtp.example.com" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-2">SMTP Port</label>
+                        <Input value={emailSettings.smtpPort} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPort: e.target.value })} title="SMTP Port" aria-label="SMTP Port" placeholder="587" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2">SMTP User</label>
+                        <Input value={emailSettings.smtpUser} onChange={(e) => setEmailSettings({ ...emailSettings, smtpUser: e.target.value })} title="SMTP User" aria-label="SMTP User" placeholder="user@example.com" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">SMTP Password</label>
+                      <Input type="password" value={emailSettings.smtpPassword} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })} title="SMTP Password" aria-label="SMTP Password" placeholder="********" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-4 bg-secondary/50 border border-border rounded-lg text-center">
+                    <p className="text-sm text-muted-foreground">SMTP Server Credentials are restricted to administrators.</p>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">SMTP User</label>
-                <Input value={emailSettings.smtpUser} onChange={(e) => setEmailSettings({ ...emailSettings, smtpUser: e.target.value })} title="SMTP User" aria-label="SMTP User" placeholder="user@example.com" />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">SMTP Password</label>
-              <Input type="password" value={emailSettings.smtpPassword} onChange={(e) => setEmailSettings({ ...emailSettings, smtpPassword: e.target.value })} title="SMTP Password" aria-label="SMTP Password" placeholder="********" />
-                </div>
+                )}
                 <div className="space-y-3 border-t border-border pt-4">
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium">Order Confirmation Emails</label>
@@ -1483,44 +1569,54 @@ export default function AdminSettings() {
                 aria-label="Enable CAPTCHA"
                   />
                 </div>
-                <div className="border-t border-border pt-6 mt-6">
-                  <h4 className="font-medium mb-3">Google OAuth Login</h4>
-                  <div className="space-y-3">
-                    <Input
-                      placeholder="Google Client ID"
-                      value={securitySettings.googleClientId || ""}
-                      onChange={(e) => setSecuritySettings({ ...securitySettings, googleClientId: e.target.value })}
-                    />
-                    <Input
-                      placeholder="Google Client Secret"
-                      type="password"
-                      value={securitySettings.googleClientSecret || ""}
-                      onChange={(e) => setSecuritySettings({ ...securitySettings, googleClientSecret: e.target.value })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Leave these blank to use the .env fallbacks or disable Google Login entirely.
-                    </p>
+                {user?.role === "admin" ? (
+                  <>
+                    <div className="border-t border-border pt-6 mt-6">
+                      <h4 className="font-medium mb-3">Google OAuth Login</h4>
+                      <div className="space-y-3">
+                        <Input
+                          placeholder="Google Client ID"
+                          value={securitySettings.googleClientId || ""}
+                          onChange={(e) => setSecuritySettings({ ...securitySettings, googleClientId: e.target.value })}
+                        />
+                        <Input
+                          placeholder="Google Client Secret"
+                          type="password"
+                          value={securitySettings.googleClientSecret || ""}
+                          onChange={(e) => setSecuritySettings({ ...securitySettings, googleClientSecret: e.target.value })}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Leave these blank to use the .env fallbacks or disable Google Login entirely.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="border-t border-border pt-6 mt-6">
+                      <h4 className="font-medium mb-3">Facebook OAuth Login</h4>
+                      <div className="space-y-3">
+                        <Input
+                          placeholder="Facebook App ID"
+                          value={securitySettings.facebookAppId || ""}
+                          onChange={(e) => setSecuritySettings({ ...securitySettings, facebookAppId: e.target.value })}
+                        />
+                        <Input
+                          placeholder="Facebook App Secret"
+                          type="password"
+                          value={securitySettings.facebookAppSecret || ""}
+                          onChange={(e) => setSecuritySettings({ ...securitySettings, facebookAppSecret: e.target.value })}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Leave these blank to use the .env fallbacks or disable Facebook Login entirely.
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="border-t border-border pt-6 mt-6">
+                    <div className="p-4 bg-secondary/50 border border-border rounded-lg text-center">
+                      <p className="text-sm text-muted-foreground">OAuth App configuration is restricted to administrators.</p>
+                    </div>
                   </div>
-                </div>
-                <div className="border-t border-border pt-6 mt-6">
-                  <h4 className="font-medium mb-3">Facebook OAuth Login</h4>
-                  <div className="space-y-3">
-                    <Input
-                      placeholder="Facebook App ID"
-                      value={securitySettings.facebookAppId || ""}
-                      onChange={(e) => setSecuritySettings({ ...securitySettings, facebookAppId: e.target.value })}
-                    />
-                    <Input
-                      placeholder="Facebook App Secret"
-                      type="password"
-                      value={securitySettings.facebookAppSecret || ""}
-                      onChange={(e) => setSecuritySettings({ ...securitySettings, facebookAppSecret: e.target.value })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Leave these blank to use the .env fallbacks or disable Facebook Login entirely.
-                    </p>
-                  </div>
-                </div>
+                )}
                 <Button onClick={() => handleSave("security", securitySettings, "Security")} className="gap-2" disabled={updateSetting.isPending}>
                   {updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
                   Save Changes
@@ -1569,17 +1665,23 @@ export default function AdminSettings() {
                 <p className="text-sm text-muted-foreground">
                   Create and manage database backups
                 </p>
-                <div className="space-y-3">
-                  <Button variant="outline" className="w-full" onClick={() => {
-                    handleDownloadBackup();
-                    toast.success("Manual backup triggered");
-                  }}>
-                    Create Manual Backup
-                  </Button>
-                  <Button variant="outline" className="w-full" onClick={handleDownloadBackup}>
-                    Download Latest Backup
-                  </Button>
-                </div>
+                {user?.role === "admin" ? (
+                  <div className="space-y-3">
+                    <Button variant="outline" className="w-full" onClick={() => {
+                      handleDownloadBackup();
+                      toast.success("Manual backup triggered");
+                    }}>
+                      Create Manual Backup
+                    </Button>
+                    <Button variant="outline" className="w-full" onClick={handleDownloadBackup}>
+                      Download Latest Backup
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-secondary/50 border border-border rounded-lg text-center">
+                    <p className="text-xs text-muted-foreground">Database export is restricted to administrators.</p>
+                  </div>
+                )}
                 <div className="border-t border-border pt-4">
                   <h4 className="font-medium mb-3">Auto Backup Schedule</h4>
                   <Select
@@ -1603,8 +1705,150 @@ export default function AdminSettings() {
               </div>
             </Card>
           </TabsContent>
+
+          {/* AI Settings */}
+          <TabsContent value="ai" className="space-y-4">
+            <Card className="p-6">
+              <h3 className="text-lg font-semibold mb-4">AI Assistant Configuration</h3>
+              <div className="space-y-6">
+                
+                <div className="flex items-center justify-between p-4 bg-secondary rounded-lg border border-border">
+                  <div>
+                    <label className="text-sm font-medium">Enable AI Assistant</label>
+                    <p className="text-xs text-muted-foreground mt-0.5">Turn the AI chat widget on or off for the entire store.</p>
+                  </div>
+                  <Switch checked={aiSettings.enabled} onCheckedChange={(c) => setAiSettings({ ...aiSettings, enabled: c })} />
+                </div>
+
+                <div className="border-t border-border pt-6">
+                  <h4 className="font-medium mb-3">System Prompts & Personality</h4>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Customer Persona (Storefront)</label>
+                      <Textarea 
+                        value={aiSettings.systemPrompt} 
+                        onChange={(e) => setAiSettings({ ...aiSettings, systemPrompt: e.target.value })}
+                        placeholder="You are a helpful AI assistant for our store..."
+                        rows={4}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1.5">Instructions defining how the AI behaves when talking to customers.</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Admin Persona (Dashboard)</label>
+                      <Textarea 
+                        value={aiSettings.adminPrompt} 
+                        onChange={(e) => setAiSettings({ ...aiSettings, adminPrompt: e.target.value })}
+                        placeholder="You are the administrative AI. You have full access to..."
+                        rows={4}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1.5">Instructions defining how the AI should assist you in the admin panel.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-border pt-6">
+                  <h4 className="font-medium mb-3">AI Capabilities (Tool Access)</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between"><label className="text-sm">Allow Product Search</label><Switch checked={aiSettings.allowProductSearch} onCheckedChange={(c) => setAiSettings({ ...aiSettings, allowProductSearch: c })} /></div>
+                    <div className="flex items-center justify-between"><label className="text-sm">Allow Order Tracking</label><Switch checked={aiSettings.allowOrderTracking} onCheckedChange={(c) => setAiSettings({ ...aiSettings, allowOrderTracking: c })} /></div>
+                    <div className="flex items-center justify-between"><label className="text-sm">Allow Admin Stats & Data (Admin Only)</label><Switch checked={aiSettings.allowAdminStats} onCheckedChange={(c) => setAiSettings({ ...aiSettings, allowAdminStats: c })} /></div>
+                  </div>
+                </div>
+
+                <div className="border-t border-border pt-6">
+                  <h4 className="font-medium mb-3">AI Training Data & Reference Images</h4>
+                  <p className="text-xs text-muted-foreground mb-4">Upload images or documents for the AI to learn about your specific products or policies.</p>
+                  
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {aiSettings.trainingFiles?.map((file: any, index: number) => (
+                        <div key={index} className="relative border border-border rounded-lg p-3 flex items-center gap-3 bg-secondary/30">
+                          {file.type.startsWith('image/') ? (
+                            <img src={file.url} alt={file.name} className="w-10 h-10 object-cover rounded border border-border" />
+                          ) : (
+                            <div className="w-10 h-10 bg-muted flex items-center justify-center rounded border border-border text-[10px] font-bold uppercase">{file.name.split('.').pop()}</div>
+                          )}
+                          <div className="overflow-hidden flex-1"><p className="text-xs font-medium truncate" title={file.name}>{file.name}</p><p className="text-[10px] text-muted-foreground">Ready</p></div>
+                          <Button type="button" variant="ghost" size="icon" className="text-destructive h-8 w-8 shrink-0" onClick={() => setAiSettings(prev => ({ ...prev, trainingFiles: prev.trainingFiles.filter((_, i) => i !== index) }))}><X size={14} /></Button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="border-2 border-dashed border-border rounded-lg p-4 text-center hover:bg-muted/50 transition-colors">
+                      <input type="file" className="hidden" id="ai-training-upload" accept="image/*,.pdf,.txt,.csv" onChange={handleAiFileUpload} />
+                      <label htmlFor="ai-training-upload" className="cursor-pointer flex flex-col items-center py-4">
+                        <Upload size={24} className="mb-2 text-muted-foreground" /><p className="text-sm font-medium">Click to upload training files</p><p className="text-xs text-muted-foreground mt-1">Supports Images, PDF, TXT, CSV up to 5MB</p>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+              <div className="border-t border-border pt-6">
+                <h4 className="font-medium mb-3">AI Auto-Restock Notifications</h4>
+                <p className="text-xs text-muted-foreground mb-4">Managers automatically receive auto-restock alerts. Configure admin notifications below.</p>
+                
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-secondary rounded-lg border border-border">
+                    <div>
+                      <label className="text-sm font-medium">Low Stock Threshold</label>
+                      <p className="text-xs text-muted-foreground mt-0.5">Trigger an AI auto-restock email when stock falls below this number.</p>
+                    </div>
+                    <Input 
+                      type="number" 
+                      min="1" 
+                      className="w-20 bg-background" 
+                      value={inventorySettings.lowStockThreshold} 
+                      onChange={(e) => setInventorySettings({ ...inventorySettings, lowStockThreshold: e.target.value })} 
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-4 bg-secondary rounded-lg border border-border">
+                    <div>
+                      <label className="text-sm font-medium">Send Alerts to Admin</label>
+                      <p className="text-xs text-muted-foreground mt-0.5">Toggle whether the admin should receive auto-restock emails.</p>
+                    </div>
+                    <Switch 
+                      checked={inventorySettings.notifyAdmin} 
+                      onCheckedChange={(c) => setInventorySettings({ ...inventorySettings, notifyAdmin: c })} 
+                    />
+                  </div>
+
+                  {inventorySettings.notifyAdmin && (
+                    <div className="flex items-center justify-between p-4 bg-secondary rounded-lg border border-border">
+                      <div>
+                        <label className="text-sm font-medium">Admin Notification Email</label>
+                        <p className="text-xs text-muted-foreground mt-0.5">Overrides the default contact email for admin alerts.</p>
+                      </div>
+                      <Input 
+                        type="email" 
+                        placeholder="admin@example.com" 
+                        className="max-w-[250px] bg-background" 
+                        value={inventorySettings.adminEmail} 
+                        onChange={(e) => setInventorySettings({ ...inventorySettings, adminEmail: e.target.value })} 
+                      />
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-3 mt-4">
+                    <Button onClick={() => handleSave("inventory", inventorySettings, "Inventory Settings")} className="gap-2" disabled={updateSetting.isPending}>
+                      {updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} Save Inventory Settings
+                    </Button>
+                    <Button variant="outline" onClick={() => triggerRestock.mutate()} disabled={triggerRestock.isPending} className="gap-2">
+                      {triggerRestock.isPending ? <Loader2 size={18} className="animate-spin" /> : null} Test Auto-Restock Now
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+                <Button onClick={() => handleSave("ai", aiSettings, "AI")} className="gap-2" disabled={updateSetting.isPending}>{updateSetting.isPending ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} Save AI Settings</Button>
+              </div>
+            </Card>
+          </TabsContent>
         </Tabs>
       </div>
+
+      {/* Email Template Editor Modal */}
+      {showEmailTemplateEditor && (
+        <EmailTemplateEditor onClose={() => setShowEmailTemplateEditor(false)} />
+      )}
     </AdminLayout>
   );
 }

@@ -225,3 +225,104 @@
     }
   }
 }
+
+/* ─── Modern Map Styling ─── */
+@layer utilities {
+  /* Professional map tile styling - CartoDB Light */
+  .map-tiles-light {
+    filter: brightness(1.05) contrast(1.1);
+  }
+
+  /* Smooth animations for map markers */
+  @keyframes marker-pulse {
+    0%, 100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.08);
+      opacity: 0.8;
+    }
+  }
+
+  @keyframes marker-bounce {
+    0%, 100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+
+  @keyframes ring-grow {
+    0% {
+      transform: scale(0.8);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1.6);
+      opacity: 0;
+    }
+  }
+
+  .marker-pulse {
+    animation: marker-pulse 2s ease-in-out infinite;
+  }
+
+  .marker-bounce {
+    animation: marker-bounce 0.8s ease-in-out infinite;
+  }
+
+  .marker-ring {
+    animation: ring-grow 1.5s ease-out infinite;
+  }
+
+  /* Leaflet map customizations */
+  .leaflet-container {
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--background);
+  }
+
+  .leaflet-control-zoom-in,
+  .leaflet-control-zoom-out {
+    color: var(--foreground) !important;
+    background-color: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    font-weight: 600;
+    font-size: 16px;
+    width: 36px !important;
+    height: 36px !important;
+    line-height: 36px !important;
+    transition: all 0.3s ease;
+  }
+
+  .leaflet-control-zoom-in:hover,
+  .leaflet-control-zoom-out:hover {
+    background-color: var(--muted) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  .leaflet-popup-content-wrapper {
+    background-color: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15) !important;
+    padding: 0 !important;
+  }
+
+  .leaflet-popup-content {
+    color: var(--foreground) !important;
+    margin: 0 !important;
+    width: auto !important;
+  }
+
+  .leaflet-popup-tip {
+    background-color: var(--card) !important;
+    border: 1px solid var(--border) !important;
+  }
+
+  /* Custom marker styling */
+  .custom-marker-overflow-visible {
+    overflow: visible !important;
+  }
+}

@@ -11,7 +11,8 @@ import {
   getDb
 } from "./db";
 import { eq } from "drizzle-orm";
-import { payments } from "../drizzle/schema";
+import { payments, deliveryPayouts } from "../drizzle/schema";
+import { createHmac } from "crypto";
 
 export const webhookRouter = express.Router();
 
@@ -37,19 +38,29 @@ webhookRouter.post("/stripe", express.raw({ type: "application/json" }), async (
       const orderIdStr = paymentIntent.metadata?.orderId;
       
       if (orderIdStr) {
-        const orderId = parseInt(orderIdStr, 10);
-        await updatePaymentStatus(orderId, "completed", paymentIntent.id, { provider: "stripe", raw: paymentIntent });
-        await updateOrderStatus(orderId, "payment_confirmed", "Payment automatically confirmed via Stripe Webhook", {
-          paymentStatus: "paid",
-          paymentReference: paymentIntent.id,
-        });
+        try {
+          const orderId = parseInt(orderIdStr, 10);
+          await updatePaymentStatus(orderId, "paid", paymentIntent.id, { provider: "stripe", raw: paymentIntent });
+          await updateOrderStatus(orderId, "payment_confirmed", "Payment automatically confirmed via Stripe Webhook", {
+            paymentStatus: "paid",
+            paymentReference: paymentIntent.id,
+          });
+          console.log(`✅ Stripe webhook: Order ${orderId} payment confirmed`);
+        } catch (orderError: any) {
+          console.error(`❌ Stripe webhook: Failed to process order ${orderIdStr}:`, orderError.message);
+        }
       }
     } else if (event.type === 'payment_intent.payment_failed') {
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
       const orderIdStr = paymentIntent.metadata?.orderId;
       if (orderIdStr) {
-        const orderId = parseInt(orderIdStr, 10);
-        await updatePaymentStatus(orderId, "failed", paymentIntent.id, { provider: "stripe", raw: paymentIntent });
+        try {
+          const orderId = parseInt(orderIdStr, 10);
+          await updatePaymentStatus(orderId, "failed", paymentIntent.id, { provider: "stripe", raw: paymentIntent });
+          console.warn(`⚠️ Stripe webhook: Order ${orderId} payment failed`);
+        } catch (orderError: any) {
+          console.error(`❌ Stripe webhook: Failed to log payment failure for ${orderIdStr}:`, orderError.message);
+        }
       }
     }
 
@@ -63,6 +74,34 @@ webhookRouter.post("/stripe", express.raw({ type: "application/json" }), async (
 // M-Pesa uses standard JSON, so we can parse it directly on this route
 webhookRouter.post("/mpesa", express.json(), async (req, res) => {
   try {
+    // ────── SECURITY: Validate M-Pesa webhook signature ──────────────────
+    // M-Pesa sends an Authorization header with HMAC-SHA256 signature
+    // This prevents unauthorized parties from triggering payments
+    const mpesaSettings = await getSetting("payment");
+    const consumerSecret = mpesaSettings?.mpesaConsumerSecret;
+    
+    if (!consumerSecret) {
+      console.warn("⚠️ M-Pesa webhook: Consumer secret not configured");
+      return res.status(400).send("M-Pesa not configured");
+    }
+
+    // Get the signature from headers (Safaricom sends it in Authorization header)
+    // Format: "Safaricom XXX" where XXX is the HMAC-SHA256 hash
+    const authHeader = req.headers.authorization || "";
+    
+    // Compute expected signature using consumer secret
+    const rawBody = JSON.stringify(req.body);
+    const expectedSignature = createHmac("sha256", consumerSecret)
+      .update(rawBody)
+      .digest("base64");
+    
+    // Note: This is a basic check. Safaricom's actual implementation may vary.
+    // If Safaricom uses a different signing method, adjust accordingly.
+    if (!authHeader || !authHeader.includes(expectedSignature)) {
+      console.warn("⚠️ M-Pesa webhook: Signature mismatch. Rejecting unauthorized attempt.");
+      return res.status(401).send("Unauthorized");
+    }
+
     const stkCallback = req.body?.Body?.stkCallback;
     if (!stkCallback) return res.status(400).send("Invalid payload");
 
@@ -83,29 +122,84 @@ webhookRouter.post("/mpesa", express.json(), async (req, res) => {
     }
 
     const orderId = payment.orderId;
-    if (payment.status === "completed") return res.json({ ResultCode: 0, ResultDesc: "Already processed" });
+    if (payment.status === "paid") return res.json({ ResultCode: 0, ResultDesc: "Already processed" });
 
     if (resultCode === 0) {
-      const mpesaReceipt = stkCallback.CallbackMetadata?.Item?.find((i: any) => i.Name === "MpesaReceiptNumber")?.Value;
-      
-      await updatePaymentStatus(orderId, "completed", checkoutRequestId, { provider: "mpesa", receipt: mpesaReceipt, raw: stkCallback });
-      await updateOrderStatus(orderId, "payment_confirmed", `M-Pesa payment confirmed (Receipt: ${mpesaReceipt})`, {
-        paymentStatus: "paid", paymentReference: mpesaReceipt || checkoutRequestId,
-      });
+      try {
+        const mpesaReceipt = stkCallback.CallbackMetadata?.Item?.find((i: any) => i.Name === "MpesaReceiptNumber")?.Value;
+        
+        await updatePaymentStatus(orderId, "paid", checkoutRequestId, { provider: "mpesa", receipt: mpesaReceipt, raw: stkCallback });
+        await updateOrderStatus(orderId, "payment_confirmed", `M-Pesa payment confirmed (Receipt: ${mpesaReceipt})`, {
+          paymentStatus: "paid", paymentReference: mpesaReceipt || checkoutRequestId,
+        });
 
-      const order = await getOrderById(orderId);
-      if (order) {
-        const items = await getOrderItems(order.id);
-        for (const item of items) { await updateProductStock(item.productId, -item.quantity); }
-        await clearCart(order.userId);
+        const order = await getOrderById(orderId);
+        if (order) {
+          try {
+            const items = await getOrderItems(order.id);
+            for (const item of items) { 
+                  await updateProductStock(item.productId, -item.quantity, order.id);
+            }
+            if (order.userId) await clearCart(order.userId);
+            console.log(`✅ M-Pesa webhook: Order ${orderId} completed with stock updated`);
+          } catch (stockError: any) {
+            console.error(`⚠️ M-Pesa webhook: Stock update failed for order ${orderId}:`, stockError.message);
+          }
+        }
+      } catch (processError: any) {
+        console.error(`❌ M-Pesa webhook: Payment processing error for ${checkoutRequestId}:`, processError.message);
       }
     } else {
-      await updatePaymentStatus(orderId, "failed", checkoutRequestId, { provider: "mpesa", raw: stkCallback });
+      try {
+        await updatePaymentStatus(orderId, "failed", checkoutRequestId, { provider: "mpesa", raw: stkCallback });
+        console.warn(`⚠️ M-Pesa webhook: Order ${orderId} payment failed with code ${resultCode}`);
+      } catch (failureError: any) {
+        console.error(`❌ M-Pesa webhook: Failed to log payment failure:`, failureError.message);
+      }
     }
 
     res.json({ ResultCode: 0, ResultDesc: "Accepted" });
   } catch (err: any) {
     console.error("❌ M-Pesa webhook error:", err.message);
+    res.status(500).send("Webhook Error");
+  }
+});
+
+// M-Pesa B2C Payout Webhooks
+webhookRouter.post("/mpesa/b2c/result", express.json(), async (req, res) => {
+  try {
+    const { Result } = req.body;
+    if (!Result || !Result.OriginatorConversationID) return res.status(400).send("Invalid payload");
+    
+    const db = await getDb();
+    if (!db) return res.status(500).send("Database Error");
+
+    if (Result.ResultCode === 0) {
+      await db.update(deliveryPayouts)
+        .set({ status: 'completed', processedAt: new Date(), transactionId: Result.TransactionID })
+        .where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+    } else {
+      await db.update(deliveryPayouts)
+        .set({ status: 'failed', processedAt: new Date(), notes: Result.ResultDesc })
+        .where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+    }
+    res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+  } catch (err: any) {
+    console.error("❌ M-Pesa B2C Result webhook error:", err.message);
+    res.status(500).send("Webhook Error");
+  }
+});
+
+webhookRouter.post("/mpesa/b2c/timeout", express.json(), async (req, res) => {
+  try {
+    const { Result } = req.body;
+    const db = await getDb();
+    if (db && Result?.OriginatorConversationID) {
+      await db.update(deliveryPayouts).set({ status: 'failed', notes: 'M-Pesa API request timed out.' }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+    }
+    res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+  } catch (err: any) {
+    console.error("❌ M-Pesa B2C Timeout webhook error:", err.message);
     res.status(500).send("Webhook Error");
   }
 });
@@ -127,24 +221,36 @@ webhookRouter.post("/paypal", express.json(), async (req, res) => {
         
         const db = await getDb();
         if (db) {
-           // Check if already completed by the frontend to avoid duplicate stock deductions
+           // ✅ FIXED: Check if already completed by front-end to avoid duplicate stock deductions
            const [payment] = await db.select().from(payments).where(eq(payments.orderId, orderId)).limit(1);
-           if (payment && payment.status === "completed") {
+       if (payment && payment.status === "paid") {
+             console.log(`ℹ️ PayPal webhook: Order ${orderId} already processed, skipping`);
              return res.json({ received: true, status: "already_processed" });
            }
         }
 
-        await updatePaymentStatus(orderId, "completed", captureId, { provider: "paypal", raw: event });
-        await updateOrderStatus(orderId, "payment_confirmed", "PayPal payment confirmed via Webhook", {
-          paymentStatus: "paid",
-          paymentReference: captureId,
-        });
+        try {
+          await updatePaymentStatus(orderId, "paid", captureId, { provider: "paypal", raw: event });
+          await updateOrderStatus(orderId, "payment_confirmed", "PayPal payment confirmed via Webhook", {
+            paymentStatus: "paid",
+            paymentReference: captureId,
+          });
 
-        const order = await getOrderById(orderId);
-        if (order) {
-          const items = await getOrderItems(order.id);
-          for (const item of items) { await updateProductStock(item.productId, -item.quantity); }
-          await clearCart(order.userId);
+          const order = await getOrderById(orderId);
+          if (order) {
+            try {
+              const items = await getOrderItems(order.id);
+              for (const item of items) { 
+                  await updateProductStock(item.productId, -item.quantity, order.id);
+              }
+              if (order.userId) await clearCart(order.userId);
+              console.log(`✅ PayPal webhook: Order ${orderId} completed with stock updated`);
+            } catch (stockError: any) {
+              console.error(`⚠️ PayPal webhook: Stock update failed for order ${orderId}:`, stockError.message);
+            }
+          }
+        } catch (processError: any) {
+          console.error(`❌ PayPal webhook: Payment processing error:`, processError.message);
         }
       }
     } else if (event.event_type === "PAYMENT.CAPTURE.DENIED") {

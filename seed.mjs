@@ -1,24 +1,56 @@
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
+import { randomBytes, scryptSync } from "crypto";
+import postgres from "postgres";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-const connection = await mysql.createConnection(process.env.DATABASE_URL);
-const db = drizzle(connection);
+const DB_TYPE = process.env.DATABASE_TYPE || "mysql";
+
+let connection;
+let db; // db is not used in this script, but keeping for consistency
+
+if (DB_TYPE === 'supabase') {
+    console.log("🌱 Seeding Supabase (PostgreSQL) database...");
+    // For Supabase, we need to disable prepared statements for the pooler
+    connection = postgres(process.env.DATABASE_URL, { prepare: false });
+    // db = drizzlePostgres(connection); // If you were to use drizzle-orm queries
+} else {
+    console.log("🌱 Seeding MySQL database...");
+    connection = await mysql.createConnection(process.env.DATABASE_URL);
+    db = drizzle(connection);
+}
 
 // Insert categories
-await connection.execute(`
-  INSERT IGNORE INTO categories (name, slug, description, imageUrl) VALUES
-  ('Laptops', 'laptops', 'High-performance laptops for work, gaming, and creativity', 'https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=800&q=80'),
-  ('Desktop PCs', 'desktops', 'Powerful desktop computers for every need', 'https://images.unsplash.com/photo-1587202372775-e229f172b9d7?w=800&q=80'),
-  ('Accessories', 'accessories', 'Keyboards, mice, monitors, and more', 'https://images.unsplash.com/photo-1527864550417-7fd91fc51a46?w=800&q=80'),
-  ('Monitors', 'monitors', 'Crystal-clear displays for work and gaming', 'https://images.unsplash.com/photo-1593640408182-31c228b6e5e8?w=800&q=80'),
-  ('Components', 'components', 'CPUs, GPUs, RAM, and storage upgrades', 'https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?w=800&q=80')
-`);
+const categoryValues = [
+  ['Laptops', 'laptops', 'High-performance laptops for work, gaming, and creativity', 'https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=800&q=80'],
+  ['Desktop PCs', 'desktops', 'Powerful desktop computers for every need', 'https://images.unsplash.com/photo-1587202372775-e229f172b9d7?w=800&q=80'],
+  ['Accessories', 'accessories', 'Keyboards, mice, monitors, and more', 'https://images.unsplash.com/photo-1527864550417-7fd91fc51a46?w=800&q=80'],
+  ['Monitors', 'monitors', 'Crystal-clear displays for work and gaming', 'https://images.unsplash.com/photo-1593640408182-31c228b6e5e8?w=800&q=80'],
+  ['Components', 'components', 'CPUs, GPUs, RAM, and storage upgrades', 'https://images.unsplash.com/photo-1591799264318-7e6ef8ddb7ea?w=800&q=80']
+];
+
+if (DB_TYPE === 'supabase') {
+    // PostgreSQL uses ON CONFLICT
+    for (const cat of categoryValues) {
+        await connection.unsafe(
+            `INSERT INTO categories (name, slug, description, "imageUrl") VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING`,
+            cat
+        );
+    }
+} else {
+    // MySQL uses INSERT IGNORE
+    await connection.query(
+        `INSERT IGNORE INTO categories (name, slug, description, imageUrl) VALUES ?`,
+        [categoryValues]
+    );
+}
 console.log("✅ Categories seeded");
 
 // Get category IDs
-const [cats] = await connection.execute("SELECT id, slug FROM categories");
+const cats = DB_TYPE === 'supabase' 
+    ? await connection`SELECT id, slug FROM categories` 
+    : (await connection.execute("SELECT id, slug FROM categories"))[0];
 const catMap = Object.fromEntries(cats.map(c => [c.slug, c.id]));
 console.log("Category IDs:", catMap);
 
@@ -249,14 +281,109 @@ const products = [
 
 for (const product of products) {
   try {
-    await connection.execute(
-      `INSERT IGNORE INTO products (categoryId, name, slug, shortDescription, description, price, comparePrice, brand, sku, stock, images, specifications, featured, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)`,
-      [product.categoryId, product.name, product.slug, product.shortDescription, product.description, product.price, product.comparePrice || null, product.brand, product.sku, product.stock, product.images, product.specifications, product.featured ? 1 : 0]
-    );
+    const params = [product.categoryId, product.name, product.slug, product.shortDescription, product.description, product.price, product.comparePrice || null, product.brand, product.sku, product.stock, product.images, product.specifications, product.featured ? 1 : 0];
+    if (DB_TYPE === 'supabase') {
+        await connection.unsafe(
+            `INSERT INTO products ("categoryId", name, slug, "shortDescription", description, price, "comparePrice", brand, sku, stock, images, specifications, featured, active) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true) ON CONFLICT (slug) DO NOTHING`,
+            params
+        );
+    } else {
+        await connection.execute(
+            `INSERT IGNORE INTO products (categoryId, name, slug, shortDescription, description, price, comparePrice, brand, sku, stock, images, specifications, featured, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)`,
+            params
+        );
+    }
     console.log(`✅ Inserted: ${product.name}`);
   } catch (err) {
     console.error(`❌ Failed: ${product.name}`, err.message);
   }
+}
+
+console.log("🌱 Seeding Users and Reviews...");
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const derivedKey = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derivedKey}`;
+}
+
+const usersToSeed = [
+  {
+    openId: `local-seed-user-1`,
+    name: 'Alice Johnson',
+    email: 'alice@example.com',
+    password: hashPassword('Password123!'),
+    loginMethod: "email",
+    role: "user",
+    emailVerified: true,
+  },
+  {
+    openId: `local-seed-user-2`,
+    name: 'Bob Williams',
+    email: 'bob@example.com',
+    password: hashPassword('Password123!'),
+    loginMethod: "email",
+    role: "user",
+    emailVerified: true,
+  }
+];
+
+if (DB_TYPE === 'supabase') {
+    for (const user of usersToSeed) {
+        await connection.unsafe(
+            `INSERT INTO users ("openId", name, email, password, "loginMethod", role, "emailVerified") 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) 
+             ON CONFLICT (email) DO NOTHING`,
+            [user.openId, user.name, user.email, user.password, user.loginMethod, user.role, user.emailVerified]
+        );
+    }
+} else {
+    const userValues = usersToSeed.map(u => [u.openId, u.name, u.email, u.password, u.loginMethod, u.role, u.emailVerified]);
+    await connection.query(
+        `INSERT IGNORE INTO users (openId, name, email, password, loginMethod, role, emailVerified) VALUES ?`,
+        [userValues]
+    );
+}
+console.log("✅ Users seeded");
+
+const seededUsers = DB_TYPE === 'supabase'
+    ? await connection`SELECT id, email FROM users WHERE email IN ('alice@example.com', 'bob@example.com')`
+    : (await connection.execute("SELECT id, email FROM users WHERE email IN ('alice@example.com', 'bob@example.com')"))[0];
+
+const productsFromDb = DB_TYPE === 'supabase'
+    ? await connection`SELECT id, slug FROM products`
+    : (await connection.execute("SELECT id, slug FROM products"))[0];
+
+const macbookId = productsFromDb.find(p => p.slug === 'macbook-pro-16-m3-pro')?.id;
+const xpsId = productsFromDb.find(p => p.slug === 'dell-xps-15-oled')?.id;
+
+if (seededUsers.length >= 2 && macbookId && xpsId) {
+    const reviewsToSeed = [
+        { productId: macbookId, userId: seededUsers[0].id, rating: 5, title: 'Absolutely stunning!', body: 'The performance is incredible and the display is the best I have ever seen on a laptop. Worth every penny.' },
+        { productId: macbookId, userId: seededUsers[1].id, rating: 4, title: 'Great, but expensive', body: 'A powerhouse of a machine. It handles everything I throw at it. The price is steep, but you get what you pay for.' },
+        { productId: xpsId, userId: seededUsers[0].id, rating: 4, title: 'Beautiful OLED screen', body: 'The 4K OLED screen is just gorgeous for photo editing. The laptop gets a bit hot under load, but performance is solid.' }
+    ];
+
+    for (const review of reviewsToSeed) {
+        if (DB_TYPE === 'supabase') {
+            await connection.unsafe(`INSERT INTO reviews ("productId", "userId", rating, title, body) VALUES ($1, $2, $3, $4, $5) ON CONFLICT ("productId", "userId") DO NOTHING`, [review.productId, review.userId, review.rating, review.title, review.body]);
+        } else {
+            await connection.query(`INSERT IGNORE INTO reviews (productId, userId, rating, title, body) VALUES (?, ?, ?, ?, ?)`, [review.productId, review.userId, review.rating, review.title, review.body]);
+        }
+    }
+
+    const productIdsWithNewReviews = [...new Set(reviewsToSeed.map(r => r.productId))];
+    for (const productId of productIdsWithNewReviews) {
+        const allReviews = DB_TYPE === 'supabase' ? await connection`SELECT rating FROM reviews WHERE "productId" = ${productId}` : (await connection.execute("SELECT rating FROM reviews WHERE productId = ?", [productId]))[0];
+        const newCount = allReviews.length;
+        const newAvg = allReviews.reduce((sum, r) => sum + r.rating, 0) / newCount;
+        if (DB_TYPE === 'supabase') {
+            await connection.unsafe(`UPDATE products SET rating = $1, "reviewCount" = $2 WHERE id = $3`, [newAvg.toFixed(2), newCount, productId]);
+        } else {
+            await connection.execute(`UPDATE products SET rating = ?, reviewCount = ? WHERE id = ?`, [newAvg.toFixed(2), newCount, productId]);
+        }
+    }
+    console.log("✅ Reviews seeded and product ratings updated");
 }
 
 console.log("\n🎉 Seeding complete!");

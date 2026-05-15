@@ -67,25 +67,36 @@ export function removeFromGuestCart(productId: number): void {
 
 export function formatPrice(price: string | number): string {
   const num = typeof price === "string" ? parseFloat(price) : price;
-  if (isNaN(num)) return "Ksh0.00";
+  if (isNaN(num)) return "$0.00";
 
   let currency = "KES";
   let rates: Record<string, number> | null = null;
 
   try {
-    currency = localStorage.getItem("nexus_currency") || "KES";
-    const ratesStr = localStorage.getItem("nexus_exchange_rates");
+    currency = localStorage.getItem("store_currency") || "KES";
+    const ratesStr = localStorage.getItem("store_exchange_rates");
     if (ratesStr) rates = JSON.parse(ratesStr);
   } catch (e) {
     // ignore localStorage errors in strict environments
   }
 
   let finalPrice = num;
-  if (rates && currency !== "KES" && rates[currency]) {
-    finalPrice = num * rates[currency];
+
+  const generalSettingsStr = localStorage.getItem("store_general_settings");
+  const baseCurrency = generalSettingsStr ? JSON.parse(generalSettingsStr).currency || "KES" : "KES";
+
+  // If display currency is different from base, and we have a rate for it, convert.
+  // The `num` is always in the `baseCurrency`. The `rates` are from `baseCurrency` to others.
+  if (currency !== baseCurrency && rates && rates[currency]) {
+      finalPrice = num * rates[currency];
   }
 
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(finalPrice);
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(finalPrice);
+  } catch {
+    // Fallback if currency is not supported by Intl
+    return `${currency} ${finalPrice.toFixed(2)}`;
+  }
 }
 
 export function getOrderStatusLabel(status: string): string {

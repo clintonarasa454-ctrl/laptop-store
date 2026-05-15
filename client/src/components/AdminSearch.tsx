@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   CommandDialog,
   CommandEmpty,
@@ -24,8 +24,11 @@ export function AdminSearch() {
 
   const { data, isLoading, isFetching, hasNextPage, fetchNextPage } = trpc.admin.globalSearch.useInfiniteQuery(
     { query: debouncedQuery, limit: 10 },
-    { enabled: debouncedQuery.trim().length > 0,
-      getNextPageParam: (lastPage) => lastPage.nextCursor }
+    { 
+      enabled: debouncedQuery.trim().length > 0,
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+      staleTime: 1000 * 60 * 5 // Cache results for 5 minutes
+    }
   );
 
   useEffect(() => {
@@ -45,10 +48,10 @@ export function AdminSearch() {
     command();
   };
 
-  const products = data?.pages.flatMap((p) => p.products) || [];
-  const orders = data?.pages.flatMap((p) => p.orders) || [];
-  const customers = data?.pages.flatMap((p) => p.customers) || [];
-  const categories = data?.pages.flatMap((p) => p.categories) || [];
+  const products = useMemo(() => data?.pages.flatMap((p) => p.products) || [], [data?.pages]);
+  const orders = useMemo(() => data?.pages.flatMap((p) => p.orders) || [], [data?.pages]);
+  const customers = useMemo(() => data?.pages.flatMap((p) => p.customers) || [], [data?.pages]);
+  const categories = useMemo(() => data?.pages.flatMap((p) => p.categories) || [], [data?.pages]);
 
   const hasResults = products.length > 0 || orders.length > 0 || customers.length > 0 || categories.length > 0;
 

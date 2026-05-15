@@ -8,6 +8,40 @@ import App from "./App";
 import { getLoginUrl } from "./const";
 import "./index.css";
 
+// ─── Preload cached assets immediately to prevent loading state ───
+// This runs synchronously before React renders, avoiding the "box" loader
+if (typeof document !== "undefined") {
+  const cachedFavicon = localStorage.getItem("store_favicon_cache");
+  if (cachedFavicon) {
+    let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement;
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = cachedFavicon;
+  }
+
+  const cachedStoreName = localStorage.getItem("store_name_cache");
+  if (cachedStoreName) {
+    document.title = cachedStoreName;
+  }
+
+  const cachedPrimaryColor = localStorage.getItem("store_primary_color");
+  if (cachedPrimaryColor) {
+    document.documentElement.style.setProperty("--brand", cachedPrimaryColor);
+  }
+
+  const cachedLogo = localStorage.getItem("store_logo_cache");
+  if (cachedLogo) {
+    const preloadLink = document.createElement("link");
+    preloadLink.rel = "preload";
+    preloadLink.as = "image";
+    preloadLink.href = cachedLogo;
+    document.head.appendChild(preloadLink);
+  }
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -27,7 +61,14 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 
   if (!isUnauthorized) return;
 
-  window.location.href = getLoginUrl();
+  // Check if the user was trying to access an admin or manager route
+  if (window.location.pathname.startsWith('/manager') || window.location.pathname.startsWith('/admin')) {
+    // Do not force a hard redirect for admin/manager routes. 
+    // AdminLayout natively handles unauthenticated states and renders its own login UI.
+    return;
+  } else {
+    window.location.href = getLoginUrl();
+  }
 };
 
 queryClient.getQueryCache().subscribe(event => {
@@ -50,6 +91,7 @@ const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
       url: "/api/trpc",
+      // @ts-ignore
       transformer: superjson,
       fetch(input, init) {
         return globalThis.fetch(input, {

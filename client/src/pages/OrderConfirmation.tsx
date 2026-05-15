@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { formatPrice, getOrderStatusColor, getOrderStatusLabel } from "@/lib/cart";
+import { useCurrency } from "@/_core/hooks/useCurrency";
 import {
   CheckCircle,
   ChevronRight,

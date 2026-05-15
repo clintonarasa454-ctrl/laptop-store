@@ -5,6 +5,8 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { hashPassword, verifyPassword } from "./_core/passwordHash";
+import { cacheGet, cacheSet, cacheDelPattern } from "./cache";
 import {
   clearCart,
   createAddress,
@@ -68,19 +70,37 @@ import {
   logPriceChange,
   getPricingSuggestions,
   getDemandPrediction,
+  logAuditAction,
 } from "./db";
-import { eq, and, lt, or, like, sql, inArray, desc } from "drizzle-orm";
-import { users, categories as categoriesSchema, banners as bannersSchema, orders, payments, deliveryAgents, products, deliveryPayouts, aiConversations, orderItems, productViews } from "../drizzle/schema";
+import {
+  estimateDeliveryDays,
+  getStockHeatmapByWarehouse,
+  getStockVelocityTrends,
+  getWarehouseImbalances,
+  getDemandForecasts,
+  getInventoryAging
+} from "./inventoryAnalytics";
+import { eq, and, lt, lte, gt, or, like, sql, inArray, desc, count } from "drizzle-orm";
+import { users, categories as categoriesSchema, banners as bannersSchema, orders, payments, drivers, vehicles, assignments, products, deliveryPayouts, aiConversations, orderItems, productViews, deliveryMessages, productUnits, inventoryTransactions, warehouses, deletionRequests, staffMessages, pageViews, productInventory, inventoryTransfers, auditLogs } from "../drizzle/schema";
 import nodemailer from "nodemailer";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { SignJWT, jwtVerify } from "jose";
-import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { randomBytes } from "crypto";
 import Stripe from "stripe";
-import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmationEmailHtml, getShippingNotificationEmailHtml, getAbandonedCartEmailHtml, getOrderCancelledEmailHtml, getAdminOrderCancelledEmailHtml } from "./emailTemplates";
+import { getVerificationEmailHtml, getResetPasswordEmailHtml, getOrderConfirmationEmailHtml, getShippingNotificationEmailHtml, getAbandonedCartEmailHtml, getOrderCancelledEmailHtml, getAdminOrderCancelledEmailHtml, getDriverPinEmailHtml, getBroadcastEmailHtml, getAIMarketingEmailHtml, getAutoRestockEmailHtml, getManagerWelcomeEmailHtml, getDismissalEmailHtml, getAppealResultEmailHtml } from "./emailTemplates";
 import { getPaypalAccessToken, getMpesaAccessToken, getMpesaTimestamp, formatMpesaPhone, initiateB2CPayout } from "./paymentUtils";
 import { makeRequest } from "./_core/map";
 import OpenAI from "openai";
+import webpush from "web-push";
+
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    'mailto:support@store.com',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
 
 // ─── Validation Helpers ───────────────────────────────────────────────────────
 function sanitizeMessageForDb(message: string): string {
@@ -100,21 +120,36 @@ function validateAIResponse(reply: string): { valid: boolean; message: string } 
   return { valid: true, message: reply };
 }
 
-// ─── Simple In-Memory Cache ───────────────────────────────────────────────────
-const serverCache = new Map<string, { data: any, expires: number }>();
-
-function getCache<T>(key: string): T | null {
-  const cached = serverCache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.data;
-  return null;
-}
-function setCache(key: string, data: any, ttlSeconds: number) {
-  serverCache.set(key, { data, expires: Date.now() + ttlSeconds * 1000 });
-}
-function clearCachePrefix(prefix: string) {
-  for (const key of Array.from(serverCache.keys())) {
-    if (key.startsWith(prefix)) serverCache.delete(key);
+// ─── Address Sanitization Helper ───────────────────────────────────────────────
+function sanitizeAddressField(value: any): string {
+  if (!value || typeof value !== 'string') {
+    return '';
   }
+  
+  let cleaned = value.trim();
+  // Filter out "undefined", "null", "na", "n/a" (case-insensitive)
+  if (/^(undefined|null|na|n\/a)$/i.test(cleaned)) {
+    return '';
+  }
+  
+  // Remove multiple spaces
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  
+  // Max length 256 for safety
+  return cleaned.slice(0, 256);
+}
+
+function sanitizeOrderAddress(data: any) {
+  return {
+    ...data,
+    shippingFullName: sanitizeAddressField(data.shippingFullName),
+    shippingEmail: data.shippingEmail ? sanitizeAddressField(data.shippingEmail) : undefined,
+    shippingAddress: sanitizeAddressField(data.shippingAddress),
+    shippingCity: sanitizeAddressField(data.shippingCity),
+    shippingCounty: data.shippingCounty ? sanitizeAddressField(data.shippingCounty) : undefined,
+    shippingPostalCode: data.shippingPostalCode ? sanitizeAddressField(data.shippingPostalCode) : undefined,
+    shippingCountry: sanitizeAddressField(data.shippingCountry),
+  };
 }
 
 // ─── Admin guard ──────────────────────────────────────────────────────────────
@@ -127,18 +162,16 @@ const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx });
 });
 
-function hashPassword(password: string) {
-  const salt = randomBytes(16).toString("hex");
-  const derivedKey = scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${derivedKey}`;
-}
+// ─── Manager guard ────────────────────────────────────────────────────────────
+const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== "admin" && ctx.user.role !== "manager") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Manager or Admin access required" });
+  }
+  return next({ ctx });
+});
 
-function verifyPassword(password: string, hash: string) {
-  const [salt, key] = hash.split(":");
-  const keyBuffer = Buffer.from(key, "hex");
-  const derivedKey = scryptSync(password, salt, 64);
-  return timingSafeEqual(keyBuffer, derivedKey);
-}
+// ─── Password Hashing (async, non-blocking) ────────────────────────────────
+// Use the imported functions from passwordHash.ts for secure, non-blocking password operations
 
 // ─── Natural Language Search Parser ──────────────────────────────────────────
 async function parseNaturalLanguageQuery(query: string) {
@@ -214,16 +247,39 @@ async function parseNaturalLanguageQuery(query: string) {
     }
   }
 
-  // Clean up empty terms and leftover conjunctions
   search = search.replace(/\s+/g, ' ').trim();
   search = search.replace(/^(for|with|and|the|a|in|on)\b|\b(for|with|and|the|a|in|on)$/gi, '').trim();
   
   return { search: search || undefined, minPrice, maxPrice, brand, categoryId, sortBy, featured };
 }
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "default_jwt_secret_for_development_only");
+// ─── Secure JWT Secret Configuration ───────────────────────────────────────
+function getSecureJWTSecret(): Uint8Array {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || jwtSecret.trim().length === 0) {
+    throw new Error(
+      "FATAL: JWT_SECRET is not configured. Set the JWT_SECRET environment variable before starting the server. " +
+      "This is required for authentication security."
+    );
+  }
+  return new TextEncoder().encode(jwtSecret);
+}
+
+const JWT_SECRET = getSecureJWTSecret();
 
 export const appRouter = router({
+  // ─── Health Check Endpoint (Blue-Green Deployment Monitoring) ───
+  healthcheck: publicProcedure.query(async () => {
+    try {
+      const db = await getDb();
+      // Lightweight query to ensure the database connection pool is responsive
+      await db.select({ count: sql<number>`1` }).from(users).limit(1);
+      return { status: "ok", db: "connected", timestamp: Date.now() };
+    } catch (error) {
+      return { status: "error", db: "disconnected", timestamp: Date.now() };
+    }
+  }),
+
   system: systemRouter,
 
   // ─── AI Assistant ──────────────────────────────────────────────────────────
@@ -257,6 +313,13 @@ export const appRouter = router({
         userEmail: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
+        const db = await getDb();
+        const aiSettings = db ? await getSetting("ai") : null;
+        
+        if (aiSettings?.enabled === false) {
+          return { reply: "The AI Assistant is currently disabled by the store administrator." };
+        }
+
         if (!process.env.GROQ_API_KEY) {
           return { reply: "I'm offline right now! Please ask the store administrator to configure the `GROQ_API_KEY` in the environment variables." };
         }
@@ -265,7 +328,6 @@ export const appRouter = router({
           apiKey: process.env.GROQ_API_KEY,
           baseURL: "https://api.groq.com/openai/v1"
         });
-        const db = await getDb();
 
         // ─── Detect message type ───
         let messageType: "product_recommendation" | "order_tracking" | "chat" = "chat";
@@ -273,13 +335,6 @@ export const appRouter = router({
           messageType = "order_tracking";
         } else if (input.message.toLowerCase().includes("find") || input.message.toLowerCase().includes("recommend") || input.message.toLowerCase().includes("laptop")) {
           messageType = "product_recommendation";
-        }
-
-        // ─── Detect deep search request ───
-        const enableDeepSearch = /deep\s+search|broader\s+search|external\s+search|research|compare\s+market|market\s+comparison|what\s+else|similar\s+alternatives|industry\s+options/i.test(input.message);
-        let deepSearchNotice = "";
-        if (enableDeepSearch) {
-          deepSearchNotice = "\n\n[Deep search mode enabled - I can reference external sources and broader market options]";
         }
 
         // ─── Build cart context ───
@@ -320,7 +375,7 @@ export const appRouter = router({
         if (db) {
           try {
             const cacheKey = "ai_store_context";
-            const cachedContext = getCache<string>(cacheKey);
+            const cachedContext = await cacheGet<string>(cacheKey);
             if (cachedContext) storeContext = cachedContext;
             else {
               const allCats = await getCategories();
@@ -328,7 +383,7 @@ export const appRouter = router({
               const brandsSetting = await getSetting("brands");
               const brandNames = Array.isArray(brandsSetting) ? brandsSetting.join(", ") : "Samsung, Dell, HP, Lenovo, Asus, Apple, Acer";
               storeContext = `\n\n**Store Catalog Info:**\nWe sell products in these categories: ${catNames}.\nAvailable brands include: ${brandNames}.`;
-              setCache(cacheKey, storeContext, 3600);
+              await cacheSet(cacheKey, storeContext, 3600);
             }
           } catch(e) {}
         }
@@ -336,7 +391,7 @@ export const appRouter = router({
         // ─── Intelligent Product Search ───
         let productContext = "";
         let finalRecommendedProducts: any[] = [];
-        if (db) {
+        if (db && aiSettings?.allowProductSearch !== false) {
           try {
             const parsedQuery = await parseNaturalLanguageQuery(input.message);
             
@@ -366,7 +421,10 @@ export const appRouter = router({
                   .filter(p => !cartProductIds.has(p.id))
                   .map(p => {
                     const specs = (p as any).specifications 
-                      ? Object.entries((p as any).specifications as Record<string, string>).map(([k, v]) => `${k}: ${v}`).join(", ")
+                      ? Object.entries((p as any).specifications as Record<string, string>)
+                          .map(([k, v]) => `${k}: ${String(v).substring(0, 100)}`)
+                          .slice(0, 10)
+                          .join(", ")
                       : "";
                     return {
                       id: p.id,
@@ -386,7 +444,7 @@ export const appRouter = router({
                   finalRecommendedProducts = relevantProducts.slice(0, 3);
                   
                   productContext = `\n\nWe have these matching products available:\n${relevantProducts.slice(0, 5).map((p, idx) => 
-                    `${idx + 1}. **${p.name}** by ${p.brand || "Unknown"}\n` +
+                    `${idx + 1}. ${p.name} by ${p.brand || "Unknown"}\n` +
                     `   Price: KES ${parseFloat(p.price as any).toLocaleString()}\n` +
                     `   Rating: ${p.rating ? parseFloat(p.rating as any).toFixed(1) + "★" : "New"}\n` +
                     `   Specs: ${p.specs || "Standard specs"}\n` +
@@ -402,7 +460,7 @@ export const appRouter = router({
         // ─── Order Tracking Context ───
         let orderContext = "";
         const messageLower = input.message.toLowerCase();
-        if (db && (messageLower.includes("order") || messageLower.includes("track") || messageLower.includes("delivery") || messageLower.includes("ship"))) {
+        if (db && aiSettings?.allowOrderTracking !== false && (messageLower.includes("order") || messageLower.includes("track") || messageLower.includes("delivery") || messageLower.includes("ship"))) {
           const orderMatch = input.message.match(/(?:order\s+)?([A-Z]{0,3}[-]?[0-9]{4,8})/i);
           if (orderMatch) {
             try {
@@ -458,41 +516,100 @@ export const appRouter = router({
         if (db) {
           try {
             const cacheKey = "ai_knowledge";
-            const cachedKb = getCache<string>(cacheKey);
+            const cachedKb = await cacheGet<string>(cacheKey);
             if (cachedKb !== null) {
               knowledgeBaseContext = cachedKb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${cachedKb}` : "";
             } else {
               const kb = await getSetting("ai_knowledge");
               knowledgeBaseContext = kb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${kb}` : "";
-              setCache(cacheKey, kb || "", 3600);
+              await cacheSet(cacheKey, kb || "", 3600);
             }
           } catch(e) {}
         }
 
-        let baseRules = `⚠️ CRITICAL RULES - FOLLOW STRICTLY:
-- ONLY recommend products from the list provided below in "We have these matching products available"
-- NEVER mention products not in our database or from other stores/websites
-- NEVER make up product names or specifications
-- NEVER tell customers to search the internet for products
-- If asked about a product not in our list, say: "I don't have that specific model in stock, but I can recommend similar alternatives from our inventory"
-- When NO products match the search, offer to help them narrow down their requirements`;
+        let baseRules = `⚠️ CRITICAL RULES & RESPONSE FORMAT - FOLLOW STRICTLY:
 
-        let deepSearchRules = `⚠️ DEEP SEARCH MODE - RULES:
-- You can reference external sources, market comparisons, and broader industry options
-- When mentioning external products, clearly distinguish them from our catalog with "➜ From other markets:" prefix
-- Prioritize our database products first, then suggest external alternatives if requested
-- Always emphasize products we have in stock before suggesting external options
-- Format external product mentions clearly so users know they're not in our inventory`;
+🔒 INVENTORY CONTROL (NON-NEGOTIABLE):
+1. ONLY recommend products from the list provided in "We have these matching products available"
+2. NEVER mention products outside our database
+3. NEVER invent product names, specs, or prices
+4. NEVER direct users to external websites or search elsewhere
+5. If a requested product is unavailable, respond:
+   "I don't have that exact model in stock, but I can recommend some great alternatives from our inventory."
+
+🧠 CONVERSATION FLOW (SMART ASSISTANT BEHAVIOR):
+6. ALWAYS understand intent before recommending:
+   - If user asks for a recommendation but DOES NOT specify a price/budget → ASK for their budget first
+   - ⚠️ CRITICAL: If you are asking for their budget, DO NOT list any products in that same response. STOP and wait for their reply!
+   - Example: "I'd love to help you find something great 😊 What budget range are you working with?"
+
+7. GUIDE THE USER (DON’T JUST ANSWER):
+   - If user is unsure → suggest ranges (e.g., low / mid / premium)
+   - If user gives a budget → optimize for BEST VALUE within that range
+
+8. RECOMMENDATION DEPTH:
+   - When you DO recommend products, ALWAYS provide 2–4 options (not just 1)
+   - Mix: best value + best performance + balanced option
+   - Help user COMPARE naturally
+
+💬 TONE & PERSONALITY:
+9. Be warm, natural, and helpful — like a knowledgeable store assistant
+   - Use conversational phrasing (not robotic)
+   - Example: "Nice choice!", "You're in a great range for solid performance", etc.
+   - Avoid labels like "Short Intro:" or "Conclusion:"
+
+10. Keep responses:
+   - Clear
+   - Friendly
+   - Easy to scan
+
+📦 RESPONSE FORMAT (STRICT):
+11. DO NOT use markdown tables
+
+12. ALWAYS structure product recommendations like this:
+
+   1. Product Name — KES [Price]
+
+      **Key Specs:**
+      - [2–4 important specs only]
+
+      **Why it's a great pick:**
+      - [Short, natural explanation tailored to user's need]
+
+13. After listing products:
+   - Add a short guiding sentence like:
+     "If you tell me what matters most (battery, performance, display, etc.), I can narrow it down for you 👍"
+
+🚀 INTELLIGENCE BOOST:
+14. Prioritize relevance over quantity:
+   - Match products to user's use-case (gaming, office work, student, etc.)
+   - Avoid listing random items just to fill space
+
+15. If only 1 product fits:
+   - Still recommend it confidently
+   - Explain clearly why it's the best available option
+
+🧠 MEMORY & ADAPTABILITY:
+16. MEMORY (WITHIN CONVERSATION):
+   - Remember user's previous preferences (budget, brand, use-case)
+   - Do NOT ask the same question twice
+
+17. ADAPTIVE RESPONSES:
+   - If user refines request → update recommendations instead of restarting
+
+🛒 CART ACTIONS:
+18. ${input.userId ? `If the user explicitly asks to add a product to their cart, you MUST append this EXACT tag to your response: ||ADD_TO_CART: [product_id]|| (Replace [product_id] with the numeric ID of the product).` : `If the user asks to add a product to their cart, politely tell them that as a guest, they should click the "Add to Cart" button directly on the product card.`}
+
+IMPORTANT: You MUST format the product name as a clickable markdown link pointing to its exact URL slug!`;
 
         let customDirective = "";
-        try {
-          const aiSettings = await getSetting("ai");
-          if (aiSettings?.systemPrompt) {
+        if (aiSettings?.systemPrompt) {
+          try {
             const generalSettings = await getSetting("general");
             const sName = generalSettings?.storeName || "our store";
             customDirective = `**Core AI Directive:**\n${aiSettings.systemPrompt.replace(/\bNexus\b/gi, sName)}\n\n`;
-          }
-        } catch(e) {}
+          } catch(e) {}
+        }
 
         const systemPrompt = `${customDirective}You are an expert AI sales assistant for a tech store specializing in laptops and accessories. Your role is to:
 1. Help customers find the perfect laptop or accessory from our catalog
@@ -503,9 +620,8 @@ export const appRouter = router({
 6. Reference specific products when relevant
 7. Be concise, friendly, and professional
 
-${enableDeepSearch ? deepSearchRules : baseRules}
+${baseRules}
 
-IMPORTANT: When you mention a specific product, format as a clickable link using [Product Name](/products/slug-name) format.
 For product uploads: When asked to help add products, ask for CSV data or descriptions and help structure the data.
 Keep responses under 3 sentences unless asked for more detail.
 AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up questions formatted exactly like this: ||SUGGESTIONS: Question 1 | Question 2 | Question 3||${cartInfo}${personalizationContext}${storeContext}${productContext}${demandContext}${pricingContext}${orderContext}${knowledgeBaseContext}`;
@@ -534,6 +650,14 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
         let reply = validation.message;
         let suggestions: string[] = [];
 
+        // Pluck the ADD_TO_CART safely out of the response
+        const addToCartMatch = reply.match(/\|\|ADD_TO_CART:\s*(\d+)\s*\|\|/i);
+        let addedProductId: number | null = null;
+        if (addToCartMatch) {
+          addedProductId = parseInt(addToCartMatch[1], 10);
+          reply = reply.replace(addToCartMatch[0], '').trim();
+        }
+
         // Pluck the suggestions safely out of the response  
         const suggestionMatch = reply.match(/\|\|SUGGESTIONS:(.*?)\|\|/gi);
         if (suggestionMatch && suggestionMatch.length > 0) {
@@ -541,34 +665,18 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
           reply = reply.replace(suggestionMatch[0], '').trim();
         }
         
-        // ─── Validate response: Ensure AI only recommended products from our database ───
-        if (db && productContext && productContext.includes("matching products")) {
-          try {
-            // Extract all product names that were provided to the AI
-            const allProducts = await getProducts({ limit: 1000 });
-            const productNames = new Set(allProducts.map(p => p.name.toLowerCase()));
-            
-            // Check if response mentions any product-like terms that aren't in our database
-            const possibleProductMatches = reply.match(/\*\*([^*]+)\*\*/g) || [];
-            for (const match of possibleProductMatches) {
-              const productName = match.replace(/\*\*/g, "").toLowerCase().trim();
-              if (productName.length > 3 && !productNames.has(productName)) {
-                // This looks like a product name that's not in our database
-                const foundInContext = productContext.toLowerCase().includes(productName);
-                if (!foundInContext) {
-                  // Remove this product reference and warn the user
-                  reply = reply.replace(match, "_[Product not currently available]_");
-                }
-              }
-            }
-          } catch (e) {
-            // Silent fail - validation error shouldn't break the response
-          }
-        }
         
-        // ─── Log conversation to database ───
+        // ─── Log conversation & Execute Actions ───
         if (db) {
           try {
+            // Execute Add to Cart action if requested
+            if (addedProductId && input.userId) {
+               const currentCart = await getCartItems(input.userId);
+               const existingItem = currentCart.find(i => i.productId === addedProductId);
+               const newQty = existingItem ? existingItem.quantity + 1 : 1;
+               await upsertCartItem(input.userId, addedProductId, newQty);
+            }
+
             await logAIConversation(input.userId || null, input.userEmail || null, "user", input.message, messageType);
             await logAIConversation(input.userId || null, input.userEmail || null, "assistant", reply, messageType);
             
@@ -577,14 +685,11 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
               const userPrefs = await getUserPreferences(input.userId);
               if (userPrefs) {
                 await updateUserPreferences(input.userId, {
-                  viewCount: (userPrefs.viewCount || 0) + 1,
-                  lastInteractionAt: new Date(),
+                  purchaseCount: (userPrefs.purchaseCount || 0) + 1,
                 });
               } else {
                 await updateUserPreferences(input.userId, {
-                  viewCount: 1,
-                  lastInteractionAt: new Date(),
-                  customerSegment: messageType === "product_recommendation" ? "browser" : "shopper"
+                  purchaseCount: 1,
                 });
               }
             }
@@ -594,7 +699,7 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
         }
 
         return { 
-          reply: reply + deepSearchNotice,
+          reply: reply,
           products: finalRecommendedProducts.length > 0 ? finalRecommendedProducts : undefined,
           suggestions: suggestions.length > 0 ? suggestions : undefined
         };
@@ -608,6 +713,13 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
         agentId: z.number().optional(),
       }))
       .mutation(async ({ input }) => {
+        const db = await getDb();
+        const aiSettings = db ? await getSetting("ai") : null;
+        
+        if (aiSettings?.enabled === false) {
+          return { reply: "The Delivery Assistant is currently disabled.", suggestions: [] };
+        }
+
         if (!process.env.GROQ_API_KEY) {
           return { reply: "I'm offline right now! Please contact the administrator." };
         }
@@ -616,7 +728,6 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
           apiKey: process.env.GROQ_API_KEY,
           baseURL: "https://api.groq.com/openai/v1"
         });
-        const db = await getDb();
 
         let driverContext = "";
         if (db && input.agentId) {
@@ -636,26 +747,25 @@ AT THE VERY END of your response, you MUST append exactly 3 relevant follow-up q
         try {
           if (db) {
             const cacheKey = "ai_knowledge";
-            const cachedKb = getCache<string>(cacheKey);
+            const cachedKb = await cacheGet<string>(cacheKey);
             if (cachedKb !== null) {
               knowledgeBaseContext = cachedKb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${cachedKb}` : "";
             } else {
               const kb = await getSetting("ai_knowledge");
               knowledgeBaseContext = kb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${kb}` : "";
-              setCache(cacheKey, kb || "", 3600);
+              await cacheSet(cacheKey, kb || "", 3600);
             }
           }
         } catch(e) {}
 
         let customDirective = "";
-        try {
-          const aiSettings = await getSetting("ai");
-          if (aiSettings?.systemPrompt) {
+        if (aiSettings?.systemPrompt) {
+          try {
             const generalSettings = await getSetting("general");
             const sName = generalSettings?.storeName || "our store";
             customDirective = `**Core AI Directive:**\n${aiSettings.systemPrompt.replace(/\bNexus\b/gi, sName)}\n\n`;
-          }
-        } catch(e) {}
+          } catch(e) {}
+        }
 
         const systemPrompt = `${customDirective}You are an intelligent Delivery Assistant for store drivers. Your role is to:
 1. Help the driver manage their active deliveries and routes.
@@ -693,12 +803,19 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
       }),
 
     // ─── Admin Chat for Dashboard ───
-    adminChat: adminProcedure
+    adminChat: managerProcedure
       .input(z.object({
         message: z.string().min(1),
         history: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string() })).default([]),
       }))
       .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        const aiSettings = db ? await getSetting("ai") : null;
+        
+        if (aiSettings?.enabled === false) {
+          return { reply: "The AI Assistant is currently disabled globally.", commands: [] };
+        }
+
         if (!process.env.GROQ_API_KEY) {
           return { reply: "Admin AI is offline. Please configure GROQ_API_KEY.", commands: [] };
         }
@@ -707,27 +824,34 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
           apiKey: process.env.GROQ_API_KEY,
           baseURL: "https://api.groq.com/openai/v1"
         });
-        const db = await getDb();
 
         // ─── Admin Context: Sales Stats ───
         let statsContext = "";
-        try {
-          if (db) {
+        if (aiSettings?.allowAdminStats !== false) {
+          try {
+            if (db) {
             const cacheKey = "ai_admin_stats";
-            const cachedStats = getCache<string>(cacheKey);
+            const cachedStats = await cacheGet<string>(cacheKey);
             if (cachedStats) statsContext = cachedStats;
             else {
-              const totalOrdersResult = await db.select({ count: sql<number>`COUNT(*)` }).from(orders);
+              let conditions = [];
+              if (ctx.user.role === "manager" && ctx.user.warehouseId) {
+                conditions.push(eq(orders.originWarehouseId, ctx.user.warehouseId));
+              }
+              const totalOrdersResult = await db.select({ count: sql<number>`COUNT(*)` }).from(orders).where(conditions.length > 0 ? and(...conditions) : undefined);
               const totalOrders = totalOrdersResult[0]?.count || 0;
-              const totalRevenueResult = await db.select({ sum: sql<number>`SUM(CAST(${orders.total} AS DECIMAL(10,2)))` }).from(orders).where(eq(orders.status, 'delivered'));
+              const revConditions = [eq(orders.status, 'delivered')];
+              if (ctx.user.role === "manager" && ctx.user.warehouseId) revConditions.push(eq(orders.originWarehouseId, ctx.user.warehouseId));
+              const totalRevenueResult = await db.select({ sum: sql<number>`SUM(CAST(${orders.total} AS DECIMAL(10,2)))` }).from(orders).where(and(...revConditions));
               const totalRevenue = totalRevenueResult[0]?.sum || 0;
               const topProductsResult = await db.select({ name: products.name, count: sql<number>`COUNT(*)` }).from(orderItems).leftJoin(products, eq(orderItems.productId, products.id)).groupBy(orderItems.productId).orderBy(desc(sql<number>`COUNT(*)`)).limit(3);
               statsContext = `\n\n**Store Analytics:**\nTotal Orders: ${totalOrders}\nTotal Revenue: KES ${parseFloat(totalRevenue as any).toLocaleString()}\nTop Products: ${topProductsResult.map(p => p.name).join(", ")}`;
-              setCache(cacheKey, statsContext, 60);
+              await cacheSet(cacheKey, statsContext, 60);
             }
+            }
+          } catch (e) {
+            // Silent fail
           }
-        } catch (e) {
-          // Silent fail
         }
 
         // ─── Admin Context: Store Catalog ───
@@ -735,7 +859,7 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
         try {
           if (db) {
             const cacheKey = "ai_store_context";
-            const cachedContext = getCache<string>(cacheKey);
+            const cachedContext = await cacheGet<string>(cacheKey);
             if (cachedContext) storeContext = cachedContext;
             else {
               const allCats = await getCategories();
@@ -743,7 +867,7 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
               const brandsSetting = await getSetting("brands");
               const brandNames = Array.isArray(brandsSetting) ? brandsSetting.join(", ") : "Samsung, Dell, HP, Lenovo, Asus, Apple, Acer";
               storeContext = `\n\n**Store Catalog Info:**\nCategories: ${catNames}\nBrands: ${brandNames}`;
-              setCache(cacheKey, storeContext, 3600);
+              await cacheSet(cacheKey, storeContext, 3600);
             }
           }
         } catch (e) {}
@@ -759,6 +883,7 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
               customerName: orders.shippingFullName
             })
               .from(orders)
+              .where(ctx.user.role === "manager" && ctx.user.warehouseId ? eq(orders.originWarehouseId, ctx.user.warehouseId) : undefined)
               .orderBy(desc(orders.createdAt))
               .limit(5);
             
@@ -796,26 +921,25 @@ AT THE VERY END of your response, append exactly 3 relevant follow-up questions 
         try {
           if (db) {
             const cacheKey = "ai_knowledge";
-            const cachedKb = getCache<string>(cacheKey);
+            const cachedKb = await cacheGet<string>(cacheKey);
             if (cachedKb !== null) {
               knowledgeBaseContext = cachedKb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${cachedKb}` : "";
             } else {
               const kb = await getSetting("ai_knowledge");
               knowledgeBaseContext = kb ? `\n\n**Store Knowledge Base (CRITICAL FACTS):**\n${kb}` : "";
-              setCache(cacheKey, kb || "", 3600);
+              await cacheSet(cacheKey, kb || "", 3600);
             }
           }
         } catch(e) {}
 
         let customDirective = "";
-        try {
-          const aiSettings = await getSetting("ai");
-          if (aiSettings?.systemPrompt) {
+        if (aiSettings?.systemPrompt) {
+          try {
             const generalSettings = await getSetting("general");
             const sName = generalSettings?.storeName || "our store";
             customDirective = `**Core AI Directive:**\n${aiSettings.systemPrompt.replace(/\bNexus\b/gi, sName)}\n\n`;
-          }
-        } catch(e) {}
+          } catch(e) {}
+        }
 
         const systemPrompt = `${customDirective}You are an advanced AI ERP/Store Management Assistant for the admin panel. Your role is to act as a highly capable system administrator and data analyst.
 Your capabilities:
@@ -893,13 +1017,69 @@ AI Response (JSON):
       }),
   }),
 
+  // ─── Staff Chat (Admin <-> Manager) ─────────────────────────────────────────
+  staffChat: router({
+    getUnreadCount: managerProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return 0;
+      
+      const result = await db
+        .select({ count: count() })
+        .from(staffMessages)
+        .where(
+          and(
+            eq(staffMessages.receiverId, ctx.user.id),
+            eq(staffMessages.isRead, false)
+          )
+        );
+      return result[0]?.count || 0;
+    }),
+    markAsRead: managerProcedure
+      .input(z.object({ contactId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return;
+        await db.update(staffMessages).set({ isRead: true }).where(and(eq(staffMessages.receiverId, ctx.user.id), eq(staffMessages.senderId, input.contactId), eq(staffMessages.isRead, false)));
+      }),
+    getContacts: managerProcedure.query(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) return [];
+      if (ctx.user.role === "admin") {
+        return await db.select({ id: users.id, name: users.name, email: users.email, role: users.role }).from(users).where(eq(users.role, "manager"));
+      } else if (ctx.user.role === "manager") {
+        return await db.select({ id: users.id, name: users.name, email: users.email, role: users.role }).from(users).where(eq(users.role, "admin"));
+      }
+      return [];
+    }),
+    getMessages: managerProcedure
+      .input(z.object({ contactId: z.number() }))
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) return [];
+        return await db.select().from(staffMessages).where(
+          or(
+            and(eq(staffMessages.senderId, ctx.user.id), eq(staffMessages.receiverId, input.contactId)),
+            and(eq(staffMessages.senderId, input.contactId), eq(staffMessages.receiverId, ctx.user.id))
+          )
+        ).orderBy(staffMessages.createdAt);
+      }),
+    sendMessage: managerProcedure
+      .input(z.object({ receiverId: z.number(), content: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [newMessage] = await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: input.receiverId, content: input.content }).returning();
+        return newMessage;
+      }),
+  }),
+
   // ─── Public Store Stats ──────────────────────────────────────────────────────
   store: router({
     stats: publicProcedure.query(async () => {
-      const cached = getCache("storeStats");
+      const cached = await cacheGet("storeStats");
       if (cached) return cached;
       const data = await getStoreStats();
-      setCache("storeStats", data, 60); // Cache stats for 1 minute
+      await cacheSet("storeStats", data, 60); // Cache stats for 1 minute
       return data;
     }),
     trackPageView: publicProcedure
@@ -914,69 +1094,102 @@ AI Response (JSON):
   settings: router({
     public: publicProcedure
       .input(z.object({ keys: z.array(z.string()) }))
+      .output(z.any())
       .query(async ({ input }) => {
         const cacheKey = `settings-${input.keys.sort().join(",")}`;
-        const cached = getCache<Record<string, any>>(cacheKey);
+        const cached = await cacheGet<Record<string, any>>(cacheKey);
         if (cached) return cached;
 
         // Only allow public-facing settings to be queried unauthenticated
-        const allowed = ["general", "appearance", "social", "payment_methods", "brands", "shipping"];
+        const allowed = ["general", "appearance", "social", "payment_methods", "brands", "shipping", "ai"];
         const result: Record<string, any> = {};
         for (const k of input.keys) {
           if (allowed.includes(k)) {
             result[k] = await getSetting(k);
           }
         }
-        setCache(cacheKey, result, 86400); // Cache for 24 hours (cleared automatically on admin update)
+        await cacheSet(cacheKey, result, 86400); // Cache for 24 hours (cleared automatically on admin update)
         return result;
       }),
   }),
 
   content: router({
     banners: publicProcedure.query(async () => {
-      const cached = getCache("banners-active");
+      const cached = await cacheGet("banners-active");
       if (cached) return cached;
       const data = await getBanners({ activeOnly: true });
-      setCache("banners-active", data, 86400); // Cache for 24 hours
+      await cacheSet("banners-active", data, 86400); // Cache for 24 hours
       return data;
     }),
     promotions: publicProcedure.query(async () => {
-      const cached = getCache("promotions-active");
+      const cached = await cacheGet("promotions-active");
       if (cached) return cached;
       const data = await getPromotions({ activeOnly: true });
-      setCache("promotions-active", data, 86400); // Cache for 24 hours
+      await cacheSet("promotions-active", data, 86400); // Cache for 24 hours
       return data;
     }),
     announcements: publicProcedure.query(async () => {
-      const cached = getCache("announcements-active");
+      const cached = await cacheGet("announcements-active");
       if (cached) return cached;
       const data = await getAnnouncements({ activeOnly: true });
-      setCache("announcements-active", data, 86400); // Cache for 24 hours
+      await cacheSet("announcements-active", data, 86400); // Cache for 24 hours
       return data;
     }),
   }),
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
   auth: router({
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query(({ ctx }) => ctx.user || null),
     logout: publicProcedure.mutation(({ ctx }) => {
       const isSecure = ctx.req.protocol === "https" || ctx.req.headers["x-forwarded-proto"] === "https";
       const cookieOpts = {
         httpOnly: true, path: "/", secure: isSecure, sameSite: (isSecure ? "none" : "lax") as "none" | "lax",
       };
       if (typeof (ctx.res as any).clearCookie === "function") {
-        (ctx.res as any).clearCookie(COOKIE_NAME, { ...cookieOpts, maxAge: -1 });
+        (ctx.res as any).clearCookie(COOKIE_NAME, cookieOpts);
       } else {
         const sameSiteStr = cookieOpts.sameSite === "none" ? "None" : "Lax";
         (ctx.res as any).setHeader("Set-Cookie", `${COOKIE_NAME}=; Path=/; HttpOnly; Max-Age=0; SameSite=${sameSiteStr}${isSecure ? "; Secure" : ""}`);
       }
       return { success: true } as const;
     }),
+
+    saveUserPushSubscription: protectedProcedure
+      .input(z.object({ 
+        subscription: z.object({
+          endpoint: z.string().url(),
+          keys: z.object({
+            auth: z.string(),
+            p256dh: z.string()
+          })
+        })
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        try {
+          // Validate subscription structure before saving
+          if (!input.subscription.endpoint || !input.subscription.keys?.auth || !input.subscription.keys?.p256dh) {
+            throw new Error("Invalid subscription structure: missing endpoint or keys");
+          }
+          
+          await db.update(users).set({ pushSubscription: input.subscription }).where(eq(users.id, ctx.user.id));
+          console.log(`✅ Push subscription saved for customer ${ctx.user.id}`);
+          return { success: true, message: "Push subscription saved successfully" };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ Failed to save push subscription for customer ${ctx.user.id}:`, errorMsg);
+          throw new TRPCError({ code: "BAD_REQUEST", message: errorMsg });
+        }
+      }),
+
     register: publicProcedure
       .input(
         z.object({
           name: z.string().min(2),
           email: z.string().email(),
+          phone: z.string().optional(),
           password: z.string()
             .min(8, "Password must be at least 8 characters")
             .regex(/[A-Z]/, "Password must contain an uppercase letter")
@@ -991,16 +1204,23 @@ AI Response (JSON):
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your DATABASE_URL variable." });
 
         try {
-          const existing = await getUserByEmail(input.email);
-          if (existing) throw new TRPCError({ code: "CONFLICT", message: "Email already in use" });
+          const existingUsers = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.email, input.email));
+          const roleExists = existingUsers.find(u => u.role === "user");
+          if (roleExists) throw new TRPCError({ code: "CONFLICT", message: "Email already in use by another customer" });
+
+          if (input.phone) {
+            const existingPhone = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.phone, input.phone));
+            if (existingPhone.length > 0) throw new TRPCError({ code: "CONFLICT", message: "Phone number already in use by another account" });
+          }
 
           const openId = `local-${nanoid()}`;
-          const hashedPassword = hashPassword(input.password);
+          const hashedPassword = await hashPassword(input.password);
           
           await db.insert(users).values({
             openId,
             name: input.name,
             email: input.email,
+            phone: input.phone || undefined,
             password: hashedPassword,
             loginMethod: "email",
             role: "user",
@@ -1010,7 +1230,8 @@ AI Response (JSON):
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `DB Error: ${err.message}` });
         }
 
-        const user = await getUserByEmail(input.email);
+        const accounts = await db.select().from(users).where(eq(users.email, input.email));
+        const user = accounts.find(a => a.role === "user");
         if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
         if (input.claimOrderNumber) {
@@ -1036,7 +1257,10 @@ AI Response (JSON):
           
           const emailHtml = getVerificationEmailHtml({
             storeName, logoUrl, primaryColor, contactEmail, storePhone,
-            name: input.name, otp
+            name: input.name, otp,
+            emailBackgroundColor: emailSettings?.emailBackgroundColor,
+            theme: emailSettings?.theme,
+            customTemplate: emailSettings?.customTemplates?.verification
           });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
@@ -1064,41 +1288,70 @@ AI Response (JSON):
     login: publicProcedure
       .input(
         z.object({ 
-          email: z.string().trim().toLowerCase().email("Please enter a valid email address"), 
-          password: z.string().min(1, "Password is required") 
+          email: z.string().trim().toLowerCase().min(1, "Email or phone number is required"), 
+          password: z.string().min(1, "Password is required"),
+          isAdminLogin: z.boolean().optional()
         })
       )
       .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed. Please check your DATABASE_URL variable." });
 
+        const accounts = await db.select().from(users).where(
+          or(
+            eq(users.email, input.email),
+            eq(users.phone, input.email)
+          )
+        );
+        if (accounts.length === 0) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
+        }
+
         let user;
-        try {
-          user = await getUserByEmail(input.email);
-        } catch (err: any) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `DB Error: ${err.message}` });
+        if (input.isAdminLogin) {
+          user = accounts.find(a => a.role === "admin" || a.role === "manager");
+          if (!user) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to access the admin panel." });
+          }
+        } else {
+          user = accounts.find(a => a.role === "admin" || a.role === "manager") || accounts.find(a => a.role === "user") || accounts[0];
         }
 
         if (!user || !user.password) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
         }
 
-        const isValid = verifyPassword(input.password, user.password);
+        const [salt, hash] = user.password.split(':');
+        const isValid = await verifyPassword(input.password, hash, salt);
         if (!isValid) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid credentials" });
         }
 
-        // Enforce email verification 
+        // Enforce email verification for standard users.
+        // Managers and Admins are created directly by the system admin, so we implicitly trust their emails and auto-verify them.
         if (user.emailVerified === false) {
-          const emailSettings = await getSetting("email");
-          const isSmtpConfigured = !!(emailSettings?.smtpHost && emailSettings?.smtpUser);
-          if (isSmtpConfigured) {
-            throw new TRPCError({ code: "FORBIDDEN", message: "Please verify your email before logging in. Check your inbox." });
-          } else if (db) {
-            // Auto-verify the user in the database so they don't get locked out when SMTP is added later
-            await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+          if (user.role === "admin" || user.role === "manager") {
+            if (db) await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
             user.emailVerified = true;
+          } else {
+            const emailSettings = await getSetting("email");
+            const isSmtpConfigured = !!(emailSettings?.smtpHost && emailSettings?.smtpUser);
+            if (isSmtpConfigured) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "Please verify your email before logging in. Check your inbox." });
+            } else if (db) {
+              // Auto-verify the user in the database so they don't get locked out when SMTP is added later
+              await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+              user.emailVerified = true;
+            }
           }
+        }
+
+        if (user.suspended) {
+          const dismissal = await getSetting(`dismissal_manager_${user.id}`);
+          if (dismissal) {
+            throw new TRPCError({ code: "FORBIDDEN", message: `Access denied due to violation of company rules: ${dismissal.reason}` });
+          }
+          throw new TRPCError({ code: "FORBIDDEN", message: "Your account is suspended." });
         }
 
         if (db) {
@@ -1127,19 +1380,39 @@ AI Response (JSON):
           (ctx.res as any).setHeader("Set-Cookie", `${COOKIE_NAME}=${token}; Path=/; HttpOnly; Max-Age=604800; SameSite=${sameSiteStr}${isSecure ? "; Secure" : ""}`);
         }
 
-        return { success: true };
+        return { success: true, requiresPasswordChange: user.requiresPasswordChange };
       }),
     resetPasswordRequest: publicProcedure
       .input(z.object({ email: z.string().email() }))
       .mutation(async ({ ctx, input }) => {
-        const user = await getUserByEmail(input.email);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const accounts = await db.select().from(users).where(eq(users.email, input.email));
+        const user = accounts[0];
         if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const token = await new SignJWT({ email: user.email, name: user.name, purpose: "reset", otp })
           .setProtectedHeader({ alg: "HS256" })
-          .setExpirationTime("15m")
+          .setExpirationTime("30m")
           .sign(JWT_SECRET);
+
+        const host = ctx.req.headers.host || "localhost:3000";
+        const protocol = host.includes("localhost") ? "http" : "https";
+        
+        let portalName = "Store";
+        let resetPath = "/auth?mode=reset";
+        
+        if (user.role === "admin") {
+          portalName = "Admin Panel";
+          resetPath = "/admin";
+        } else if (user.role === "manager") {
+          portalName = "Manager Portal";
+          resetPath = "/manager";
+        }
+        
+        const sep = resetPath.includes("?") ? "&" : "?";
+        const resetLink = `${protocol}://${host}${resetPath}${sep}email=${encodeURIComponent(user.email)}&token=${token}`;
 
         try {
           const emailSettings = await getSetting("email");
@@ -1154,7 +1427,12 @@ AI Response (JSON):
           
           const emailHtml = getResetPasswordEmailHtml({
             storeName, logoUrl, primaryColor, contactEmail, storePhone,
-            name: user.name || 'there', otp
+            name: user.name || 'there', otp,
+            resetLink,
+            portalName,
+            emailBackgroundColor: emailSettings?.emailBackgroundColor,
+            theme: emailSettings?.theme,
+            customTemplate: emailSettings?.customTemplates?.resetPassword
           });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
@@ -1202,10 +1480,12 @@ AI Response (JSON):
           if (payload.otp !== input.code) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect reset code" });
           }
-          const user = await getUserByEmail(payload.email as string);
-          if (!user) throw new Error();
           const db = await getDb();
-          if (db) await db.update(users).set({ password: hashPassword(input.newPassword) }).where(eq(users.id, user.id));
+          if (!db) throw new Error();
+          const accounts = await db.select().from(users).where(eq(users.email, payload.email as string));
+          if (accounts.length === 0) throw new Error();
+          const hashedPassword = await hashPassword(input.newPassword);
+          await db.update(users).set({ password: hashedPassword }).where(eq(users.email, payload.email as string));
           return { success: true };
         } catch (err: any) { 
           if (err instanceof TRPCError) throw err;
@@ -1223,11 +1503,12 @@ AI Response (JSON):
             throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect verification code" });
           }
           
-          const user = await getUserByEmail(payload.email as string);
-          if (!user) throw new Error();
-          
           const db = await getDb();
-          if (db) await db.update(users).set({ emailVerified: true }).where(eq(users.id, user.id));
+          if (!db) throw new Error();
+          const accounts = await db.select().from(users).where(eq(users.email, payload.email as string));
+          if (accounts.length === 0) throw new Error();
+          
+          await db.update(users).set({ emailVerified: true }).where(eq(users.email, payload.email as string));
           
           return { success: true };
         } catch (err: any) { 
@@ -1238,7 +1519,10 @@ AI Response (JSON):
     resendVerification: publicProcedure
       .input(z.object({ email: z.string().email() }))
       .mutation(async ({ ctx, input }) => {
-        const user = await getUserByEmail(input.email);
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const accounts = await db.select().from(users).where(eq(users.email, input.email));
+        const user = accounts[0];
         if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
         if (user.emailVerified) throw new TRPCError({ code: "BAD_REQUEST", message: "Email is already verified" });
 
@@ -1261,7 +1545,10 @@ AI Response (JSON):
           
           const emailHtml = getVerificationEmailHtml({
             storeName, logoUrl, primaryColor, contactEmail, storePhone,
-            name: user.name || 'there', otp, isResend: true
+            name: user.name || 'there', otp, isResend: true,
+            emailBackgroundColor: emailSettings?.emailBackgroundColor,
+            theme: emailSettings?.theme,
+            customTemplate: emailSettings?.customTemplates?.verification
           });
 
           if (emailSettings?.smtpHost && emailSettings.smtpUser) {
@@ -1300,11 +1587,46 @@ AI Response (JSON):
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const [user] = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
         if (!user || !user.password) throw new TRPCError({ code: "BAD_REQUEST", message: "Account does not have a password set" });
-        const isValid = verifyPassword(input.currentPassword, user.password);
+        const [salt, hash] = user.password.split(':');
+        const isValid = await verifyPassword(input.currentPassword, hash, salt);
         if (!isValid) throw new TRPCError({ code: "UNAUTHORIZED", message: "Incorrect current password" });
         const updateData: any = { name: input.name, email: input.email };
-        if (input.newPassword) updateData.password = hashPassword(input.newPassword);
-        await db.update(users).set(updateData).where(eq(users.id, user.id));
+        if (input.newPassword) updateData.password = await hashPassword(input.newPassword);
+        await db.update(users).set(updateData).where(eq(users.email, user.email));
+        return { success: true };
+      }),
+
+    changePassword: protectedProcedure
+      .input(
+        z.object({
+          currentPassword: z.string().min(1),
+          newPassword: z.string()
+            .min(8, "Password must be at least 8 characters")
+            .regex(/[A-Z]/, "Password must contain an uppercase letter")
+            .regex(/[a-z]/, "Password must contain a lowercase letter")
+            .regex(/[0-9]/, "Password must contain a number")
+            .regex(/[^A-Za-z0-9]/, "Password must contain a symbol"),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [user] = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
+        if (!user || !user.password) throw new TRPCError({ code: "BAD_REQUEST", message: "Account does not have a password set" });
+        const [salt, hash] = user.password.split(':');
+        const isValid = await verifyPassword(input.currentPassword, hash, salt);
+        if (!isValid) throw new TRPCError({ code: "UNAUTHORIZED", message: "Incorrect current password" });
+        const newHashed = await hashPassword(input.newPassword);
+        await db.update(users).set({ password: newHashed, requiresPasswordChange: false }).where(eq(users.email, user.email));
+        return { success: true };
+      }),
+
+    updateProfilePhoto: protectedProcedure
+      .input(z.object({ photoId: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(users).set({ photoId: input.photoId }).where(eq(users.id, ctx.user.id));
         return { success: true };
       }),
   }),
@@ -1312,10 +1634,10 @@ AI Response (JSON):
   // ─── Categories ────────────────────────────────────────────────────────────
   categories: router({
     list: publicProcedure.query(async () => {
-      const cached = getCache("categories");
+      const cached = await cacheGet("categories");
       if (cached) return cached;
       const data = await getCategories();
-      setCache("categories", data, 86400); // Cache for 24 hours
+      await cacheSet("categories", data, 86400); // Cache for 24 hours
       return data;
     }),
     bySlug: publicProcedure.input(z.object({ slug: z.string() })).query(({ input }) =>
@@ -1365,6 +1687,8 @@ AI Response (JSON):
           maxPrice: z.string().optional(),
           brand: z.string().optional(),
           sortBy: z.enum(["newest", "price_asc", "price_desc"]).optional(),
+          lat: z.number().optional(),
+          lng: z.number().optional(),
         }).optional()
       )
       .query(async ({ input }) => {
@@ -1387,7 +1711,32 @@ AI Response (JSON):
           if (parsed.featured !== undefined && finalFeatured === undefined) finalFeatured = parsed.featured;
         }
 
-        let products = await getProducts({ ...(input ?? {}), search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured });
+        let finalNearestWarehouseId: number | undefined = undefined;
+        if (input?.lat !== undefined && input?.lng !== undefined) {
+          const { lat, lng } = input;
+          const db = await getDb();
+          if (db) {
+            const allWarehouses = await db.select().from(warehouses).where(eq(warehouses.active, true));
+            if (allWarehouses.length > 0) {
+              let nearest = allWarehouses[0];
+              let minDistance = Infinity;
+              const toRad = (val: number) => (val * Math.PI) / 180;
+              allWarehouses.forEach(w => {
+                const R = 6371; 
+                const wLat = parseFloat(w.lat as any);
+                const wLng = parseFloat(w.lng as any);
+                const dLat = toRad(wLat - lat);
+                const dLon = toRad(wLng - lng);
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(toRad(lat)) * Math.cos(toRad(wLat)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+                const d = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+                if (d < minDistance) { minDistance = d; nearest = w; }
+              });
+              finalNearestWarehouseId = nearest.id;
+            }
+          }
+        }
+
+        let products = await getProducts({ ...(input ?? {}), search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured, nearestWarehouseId: finalNearestWarehouseId });
         
         // Server-side filtering before returning to the client
         if (finalMinPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(finalMinPrice!));
@@ -1403,6 +1752,14 @@ AI Response (JSON):
         return products;
       }),
 
+    estimateDelivery: publicProcedure
+      .input(z.object({ productId: z.number(), warehouseId: z.number() }))
+      .query(async ({ input }) => {
+        const days = await estimateDeliveryDays(input.productId, input.warehouseId);
+        const estimatedDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+        return { days, estimatedDate };
+      }),
+
     infinite: publicProcedure
       .input(
         z.object({
@@ -1416,6 +1773,8 @@ AI Response (JSON):
           maxPrice: z.string().optional(),
           brand: z.string().optional(),
           sortBy: z.enum(["newest", "price_asc", "price_desc"]).optional(),
+          lat: z.number().optional(),
+          lng: z.number().optional(),
         })
       )
       .query(async ({ input }) => {
@@ -1441,7 +1800,32 @@ AI Response (JSON):
           if (parsed.featured !== undefined && finalFeatured === undefined) finalFeatured = parsed.featured;
         }
         
-        let products = await getProducts({ ...input, search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured, limit: 1000, offset: 0 }); // Allow ample room for Node filtering
+        let finalNearestWarehouseId: number | undefined = undefined;
+        if (input?.lat !== undefined && input?.lng !== undefined) {
+          const { lat, lng } = input;
+          const db = await getDb();
+          if (db) {
+            const allWarehouses = await db.select().from(warehouses).where(eq(warehouses.active, true));
+            if (allWarehouses.length > 0) {
+              let nearest = allWarehouses[0];
+              let minDistance = Infinity;
+              const toRad = (val: number) => (val * Math.PI) / 180;
+              allWarehouses.forEach(w => {
+                const R = 6371; 
+                const wLat = parseFloat(w.lat as any);
+                const wLng = parseFloat(w.lng as any);
+                const dLat = toRad(wLat - lat);
+                const dLon = toRad(wLng - lng);
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(toRad(lat)) * Math.cos(toRad(wLat)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+                const d = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+                if (d < minDistance) { minDistance = d; nearest = w; }
+              });
+              finalNearestWarehouseId = nearest.id;
+            }
+          }
+        }
+
+        let products = await getProducts({ ...input, search: finalSearch, categoryId: finalCategoryId, featured: finalFeatured, nearestWarehouseId: finalNearestWarehouseId, limit: 1000, offset: 0 }); // Allow ample room for Node filtering
         
         // Server-side filtering & sorting
         if (finalMinPrice) products = products.filter((p: any) => parseFloat(p.price) >= parseFloat(finalMinPrice!));
@@ -1490,6 +1874,106 @@ AI Response (JSON):
       .mutation(async ({ ctx, input }) => {
         await addProductReview({ ...input, userId: ctx.user.id });
         return { success: true };
+      }),
+
+    generateComparison: publicProcedure
+      .input(z.object({
+        products: z.array(z.object({
+          id: z.number(),
+          name: z.string(),
+          price: z.union([z.string(), z.number()]).transform((val) => {
+            if (typeof val === "number") return val;
+            const parsed = parseFloat(val.replace(/[^0-9.-]+/g, ""));
+            return isNaN(parsed) ? 0 : parsed;
+          }),
+          brand: z.string().optional(),
+          specifications: z.record(z.string(), z.any()).optional(),
+        })),
+      }))
+      .mutation(async ({ input }) => {
+        if (!process.env.GROQ_API_KEY && !process.env.BUILT_IN_FORGE_API_KEY) {
+          return {
+            analysis: { recommendation: "AI Analysis is currently offline. Please configure the AI API keys in your environment variables." },
+          };
+        }
+
+        try {
+          const { invokeLLM } = await import("./_core/llm");
+          
+          // Limit to max 4 products to prevent exceeding token limits
+          const productsToCompare = input.products.slice(0, 4);
+          const productsDescription = productsToCompare.map((p, i) => {
+            const specs = p.specifications ? Object.entries(p.specifications)
+              // Truncate specs to prevent massive token payloads
+              .map(([k, v]) => `${k}: ${String(v).substring(0, 150)}`)
+              .slice(0, 15)
+              .join("\n") : "No specifications";
+            return `
+Product ID: ${p.id}
+Name: ${p.name}
+Brand: ${p.brand || "Unknown"}
+Price: KES ${p.price.toLocaleString()}
+Specs:
+${specs}`;
+          }).join("\n---\n");
+
+          const result = await invokeLLM({
+            messages: [{
+              role: "system",
+              content: `You are an elite tech product reviewer and buying guide expert. Analyze and compare the provided products.
+Your response MUST be a strict, valid JSON object with exactly this structure:
+{
+  "quickVerdict": "A 2-3 sentence punchy verdict summarizing the comparison.",
+  "winner": "Name of the best overall product.",
+  "valueForMoney": "Name of the product that offers the best bang for the buck.",
+  "productDetails": [
+    {
+      "id": <product_id_from_prompt>,
+      "badge": "Short award badge (e.g., 'Best for Creators', 'Best Value', 'Ultra Fast')",
+      "scores": { "performance": <number 1-10>, "value": <number 1-10>, "features": <number 1-10> },
+      "targetAudience": "Who is this best for? (e.g., 'Gamers, Developers')"
+    }
+  ],
+  "keyDifferences": "A brief explanation of the main differences.",
+  "recommendation": "Your final buying advice."
+}`
+            }, {
+              role: "user",
+              content: `Compare these ${productsToCompare.length} products:\n\n${productsDescription}`
+            }],
+            maxTokens: 1000,
+            response_format: { type: "json_object" }
+          });
+
+          const rawContent = result.choices[0]?.message?.content || "{}";
+          let analysis;
+          try {
+            analysis = JSON.parse(rawContent as string);
+          } catch (e) {
+            analysis = { recommendation: rawContent };
+          }
+
+          // Normalize the response to ensure all text fields are strings
+          if (analysis && typeof analysis === 'object') {
+            const textFields = ['recommendation', 'quickVerdict', 'keyDifferences', 'winner', 'valueForMoney'];
+            for (const field of textFields) {
+              if (field in analysis && typeof analysis[field] !== 'string') {
+                analysis[field] = typeof analysis[field] === 'object' 
+                  ? JSON.stringify(analysis[field])
+                  : String(analysis[field] || "");
+              }
+            }
+          }
+
+          return {
+            analysis,
+          };
+        } catch (error) {
+          console.error("Error generating comparison:", error);
+          return {
+            analysis: { recommendation: "Unable to generate AI comparison at this time. Please try again later." },
+          };
+        }
       }),
   }),
 
@@ -1596,22 +2080,57 @@ AI Response (JSON):
 
   // ─── Checkout ──────────────────────────────────────────────────────────────
   checkout: router({
+    calculateShipping: publicProcedure
+      .input(z.object({ lat: z.number(), lng: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const allWarehouses = await db.select().from(warehouses).where(eq(warehouses.active, true));
+        
+        // If no warehouses are configured yet, fallback to the standard static fee
+        if (allWarehouses.length === 0) return { distance: 0, cost: null, nearestWarehouseId: null };
+        
+        // Find closest warehouse by straight-line distance (haversine)
+        let nearest = allWarehouses[0];
+        let minDistance = Infinity;
+        
+        const toRad = (val: number) => (val * Math.PI) / 180;
+        allWarehouses.forEach(w => {
+          const R = 6371; // Earth radius in km
+          const wLat = parseFloat(w.lat as any);
+          const wLng = parseFloat(w.lng as any);
+          const dLat = toRad(wLat - input.lat);
+          const dLon = toRad(wLng - input.lng);
+          const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(toRad(input.lat)) * Math.cos(toRad(wLat)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+          const d = R * c;
+          if (d < minDistance) { minDistance = d; nearest = w; }
+        });
+        
+        // Dynamic fee: Base 100 KES + 20 KES per kilometer
+        const dynamicCost = 100 + (minDistance * 20);
+        return { distance: minDistance, cost: Math.ceil(dynamicCost), nearestWarehouseId: nearest.id, warehouseName: nearest.name };
+      }),
+
     placeOrder: publicProcedure
       .input(
         z.object({
-          shippingFullName: z.string().min(1),
+          shippingFullName: z.string().min(1, "Full name is required").transform(s => s.trim()),
           shippingEmail: z.string().email().optional(),
-          shippingPhone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number"),
-          shippingAddress: z.string().min(1),
-          shippingCity: z.string().min(1),
-          shippingCounty: z.string().optional(),
-          shippingPostalCode: z.string().regex(/^(?:[A-Za-z0-9\s\-]{3,12})?$/, "Please enter a valid postal code").optional(),
-          shippingCountry: z.string().min(1),
+          shippingPhone: z.string().regex(/^\+?[0-9\s\-\(\)]{7,20}$/, "Please enter a valid phone number").transform(s => s.trim()),
+          shippingAddress: z.string().min(1, "Address is required").transform(s => s.trim()),
+          shippingCity: z.string().min(1, "City is required").transform(s => s.trim()),
+          shippingCounty: z.string().optional().transform(s => s?.trim()),
+          shippingPostalCode: z.string().regex(/^(?:[A-Za-z0-9\s\-]{3,12})?$/, "Please enter a valid postal code").optional().transform(s => s?.trim()),
+          shippingCountry: z.string().min(1, "Country is required").transform(s => s.trim()),
           paymentMethod: z.enum(["mpesa", "paypal", "stripe", "card", "cod"]),
           saveAddress: z.boolean().optional(),
           isExpress: z.boolean().optional(),
           discountCode: z.string().optional(),
           notes: z.string().optional(),
+          lat: z.number().optional(),
+          lng: z.number().optional(),
           guestCartItems: z.array(z.object({ productId: z.number(), quantity: z.number() })).optional(),
         })
       )
@@ -1637,16 +2156,59 @@ AI Response (JSON):
           (sum, item) => sum + parseFloat(item.product.price) * item.quantity,
           0
         );
-        const baseShipping = subtotal >= freeThreshold ? 0 : standardFee;
+        
+        // --- DYNAMIC SHIPPING CALCULATION & WAREHOUSE ROUTING ---
+        let baseShipping = standardFee;
+        let originWarehouseId: number | undefined = undefined;
+        
+        const db = await getDb();
+        if (db) {
+          const allWarehouses = await db.select().from(warehouses).where(eq(warehouses.active, true));
+          if (allWarehouses.length > 0) {
+            if (input.lat !== undefined && input.lng !== undefined) {
+              let nearest = allWarehouses[0];
+              let minDistance = Infinity;
+              const toRad = (val: number) => (val * Math.PI) / 180;
+              allWarehouses.forEach(w => {
+                const R = 6371; const wLat = parseFloat(w.lat as any); const wLng = parseFloat(w.lng as any);
+                const dLat = toRad(wLat - input.lat!); const dLon = toRad(wLng - input.lng!);
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(toRad(input.lat!)) * Math.cos(toRad(wLat)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+                const d = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+                if (d < minDistance) { minDistance = d; nearest = w; }
+              });
+              baseShipping = 100 + (minDistance * 20); // 100 Base + 20 per km
+              originWarehouseId = nearest.id;
+            } else {
+              // Fallback: Match by city if no map coordinates are provided
+              const cityMatch = allWarehouses.find(w => w.city.toLowerCase() === input.shippingCity.toLowerCase());
+              if (cityMatch) {
+                originWarehouseId = cityMatch.id;
+              } else {
+                // Ultimate fallback: assign to the first active warehouse
+                originWarehouseId = allWarehouses[0].id;
+              }
+            }
+          }
+        }
+        
+        baseShipping = subtotal >= freeThreshold ? 0 : Math.ceil(baseShipping);
         const shippingCost = input.isExpress ? expressFee : baseShipping;
         
         let discountAmount = 0;
-        if (input.discountCode === "WELCOME10") discountAmount = subtotal * 0.1;
+        if (input.discountCode) {
+           const promoSettings = await getSetting("promotions");
+           if (promoSettings && promoSettings[input.discountCode]) {
+               const discountPercent = parseFloat(promoSettings[input.discountCode]);
+               discountAmount = subtotal * (discountPercent / 100);
+           }
+        }
 
         const total = Math.max(0, subtotal + shippingCost - discountAmount);
 
         const orderNumber = `ORD-${Date.now()}-${nanoid(6).toUpperCase()}`;
-        const orderId = await createOrder({
+        
+        // ✅ Sanitize all address fields to prevent null/undefined/invalid values
+        const sanitizedOrderData = sanitizeOrderAddress({
           orderNumber,
           userId: ctx.user?.id,
           shippingFullName: input.shippingFullName,
@@ -1662,7 +2224,24 @@ AI Response (JSON):
           total: total.toFixed(2),
           paymentMethod: input.paymentMethod,
           notes: input.notes,
+          originWarehouseId,
         });
+        
+        // Validate critical address fields after sanitization
+        if (!sanitizedOrderData.shippingFullName) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Shipping full name is required" });
+        }
+        if (!sanitizedOrderData.shippingAddress) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Shipping address is required" });
+        }
+        if (!sanitizedOrderData.shippingCity) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Shipping city is required" });
+        }
+        if (!sanitizedOrderData.shippingCountry) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Shipping country is required" });
+        }
+        
+        const orderId = await createOrder(sanitizedOrderData);
 
         if (!orderId) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to create order" });
 
@@ -1687,7 +2266,7 @@ AI Response (JSON):
 
         // Add initial status history
         await updateOrderStatus(orderId, "pending", "Order placed successfully");
-        clearCachePrefix("ai_admin_stats");
+        await cacheDelPattern("ai_admin_stats");
 
         // Save address if requested
         if (input.saveAddress && ctx.user) {
@@ -1749,7 +2328,8 @@ AI Response (JSON):
 
         const host = ctx.req.headers.host || "localhost:3000";
         const protocol = host.includes("localhost") ? "http" : "https";
-        const callbackUrl = process.env.PUBLIC_URL ? `${process.env.PUBLIC_URL}/api/webhooks/mpesa` : `${protocol}://${host}/api/webhooks/mpesa`;
+        const baseUrlStr = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/+$/, "") : `${protocol}://${host}`;
+        const callbackUrl = `${baseUrlStr}/api/webhooks/mpesa`;
 
         const payload = {
           BusinessShortCode: shortcode,
@@ -1770,9 +2350,17 @@ AI Response (JSON):
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
-        const data = await response.json();
         
-        if (!response.ok || data.ResponseCode !== "0") {
+        let data;
+        const text = await response.text();
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.error("M-Pesa Init Invalid JSON:", text.substring(0, 200));
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Invalid response from M-Pesa server. Please try again." });
+        }
+        
+        if (!response.ok || String(data.ResponseCode) !== "0") {
           throw new TRPCError({ code: "BAD_REQUEST", message: data.errorMessage || data.CustomerMessage || "Failed to initiate STK Push. Check configurations." });
         }
 
@@ -1809,20 +2397,27 @@ AI Response (JSON):
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({ BusinessShortCode: shortcode, Password: password, Timestamp: timestamp, CheckoutRequestID: input.checkoutRequestId })
         });
-        clearCachePrefix("ai_admin_stats");
+        await cacheDelPattern("ai_admin_stats");
 
-        const data = await response.json();
+        let data;
+        const text = await response.text();
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.error("M-Pesa Verify Invalid JSON:", text.substring(0, 200));
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Invalid response from M-Pesa server. Please try again." });
+        }
 
         if (!response.ok) {
             if (data.errorMessage && data.errorMessage.toLowerCase().includes("being processed")) {
-                throw new TRPCError({ code: "BAD_REQUEST", message: "Payment is still being processed on your phone. Please enter your PIN and click verify again." });
+                throw new TRPCError({ code: "BAD_REQUEST", message: "Payment is still being processed on your phone. Please enter your PIN and wait a few seconds before verifying." });
             }
             throw new TRPCError({ code: "BAD_REQUEST", message: data.errorMessage || data.ResultDesc || "Error checking payment status." });
         }
 
-        if (data.ResultCode === "0") {
+        if (String(data.ResultCode) === "0") {
           const transactionId = data.CheckoutRequestID;
-          await updatePaymentStatus(input.orderId, "completed", transactionId, { provider: "mpesa", raw: data });
+          await updatePaymentStatus(input.orderId, "paid", transactionId, { provider: "mpesa", raw: data });
         await updateOrderStatus(input.orderId, "payment_confirmed", "M-Pesa payment confirmed", {
           paymentStatus: "paid",
           paymentReference: transactionId,
@@ -1860,12 +2455,21 @@ AI Response (JSON):
                 shippingCost: parseFloat(order.shippingCost),
                 total: parseFloat(order.total),
                 customMessage: emailSettings.orderConfirmationMessage,
-                host: fullHost,
+                storeUrl: fullHost,
                 productImageWidth: emailSettings.productImageWidth,
                 emailBackgroundColor: emailSettings.emailBackgroundColor,
+                theme: emailSettings.theme,
+                customTemplate: emailSettings.customTemplates?.orderConfirmation
               });
               const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
-              const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+              let customerEmail = order.shippingEmail;
+              if (!customerEmail && order.userId) {
+                const db = await getDb();
+                if (db) {
+                  const [customer] = await db.select({ email: users.email }).from(users).where(eq(users.id, order.userId)).limit(1);
+                  customerEmail = customer?.email || null;
+                }
+              }
               if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
             }
           }
@@ -1881,7 +2485,7 @@ AI Response (JSON):
         return { success: true, transactionId };
         } else {
           let msg = data.ResultDesc || "Payment not completed.";
-          if (data.ResultCode === "1032") msg = "Payment was cancelled. Please try again.";
+          if (String(data.ResultCode) === "1032") msg = "Payment was cancelled. Please try again.";
           throw new TRPCError({ code: "BAD_REQUEST", message: msg });
         }
       }),
@@ -2010,7 +2614,7 @@ AI Response (JSON):
 
         if (response.ok && data.status === "COMPLETED") {
           const transactionId = data.purchase_units?.[0]?.payments?.captures?.[0]?.id || data.id;
-          await updatePaymentStatus(input.orderId, "completed", transactionId, { provider: "paypal", raw: data });
+          await updatePaymentStatus(input.orderId, "paid", transactionId, { provider: "paypal", raw: data });
           await updateOrderStatus(input.orderId, "payment_confirmed", "PayPal payment confirmed", {
             paymentStatus: "paid",
             paymentReference: transactionId,
@@ -2048,12 +2652,21 @@ AI Response (JSON):
                   shippingCost: parseFloat(order.shippingCost),
                   total: parseFloat(order.total),
                   customMessage: emailSettings.orderConfirmationMessage,
-                  host: fullHost,
+                  storeUrl: fullHost,
                   productImageWidth: emailSettings.productImageWidth,
                   emailBackgroundColor: emailSettings.emailBackgroundColor,
+                  theme: emailSettings.theme,
+                  customTemplate: emailSettings.customTemplates?.orderConfirmation
                 });
                 const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
-                const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+                let customerEmail = order.shippingEmail;
+                if (!customerEmail && order.userId) {
+                  const db = await getDb();
+                  if (db) {
+                    const [customer] = await db.select({ email: users.email }).from(users).where(eq(users.id, order.userId)).limit(1);
+                    customerEmail = customer?.email || null;
+                  }
+                }
                 if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
               }
             }
@@ -2126,7 +2739,7 @@ AI Response (JSON):
           });
 
           if (intent.status === "succeeded") {
-            await updatePaymentStatus(input.orderId, "completed", intent.id, { provider: "stripe" });
+            await updatePaymentStatus(input.orderId, "paid", intent.id, { provider: "stripe" });
             await updateOrderStatus(input.orderId, "payment_confirmed", "Card payment confirmed via Stripe", { paymentStatus: "paid", paymentReference: intent.id });
             // --- Order Confirmation Email on Successful Payment ---
             try {
@@ -2161,12 +2774,21 @@ AI Response (JSON):
                     shippingCost: parseFloat(order.shippingCost),
                     total: parseFloat(order.total),
                     customMessage: emailSettings.orderConfirmationMessage,
-                    host: fullHost,
+                    storeUrl: fullHost,
                     productImageWidth: emailSettings.productImageWidth,
                     emailBackgroundColor: emailSettings.emailBackgroundColor,
+                    theme: emailSettings.theme,
+                    customTemplate: emailSettings.customTemplates?.orderConfirmation
                   });
                   const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
-                  const customerEmail = (await getUserByEmail(order.shippingEmail || ''))?.email || order.shippingEmail;
+                  let customerEmail = order.shippingEmail;
+                  if (!customerEmail && order.userId) {
+                    const db = await getDb();
+                    if (db) {
+                      const [customer] = await db.select({ email: users.email }).from(users).where(eq(users.id, order.userId)).limit(1);
+                      customerEmail = customer?.email || null;
+                    }
+                  }
                   if (customerEmail) await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: customerEmail, subject: `Order Confirmation #${order.orderNumber}`, html: emailHtml });
                 }
               }
@@ -2174,7 +2796,7 @@ AI Response (JSON):
               console.error("Failed to send order confirmation email:", error);
             }
             const items = await getOrderItems(order.id);
-            for (const item of items) { await updateProductStock(item.productId, -item.quantity); }
+            for (const item of items) { await updateProductStock(item.productId, -item.quantity, order.id); }
             if (order.userId) await clearCart(order.userId);
             return { success: true, transactionId: intent.id };
           } else {
@@ -2225,7 +2847,7 @@ AI Response (JSON):
         if (order.deliveryAgentId) {
           const db = await getDb();
           if (db) {
-            [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, order.deliveryAgentId)).limit(1);
+            [agent] = await db.select().from(drivers).where(eq(drivers.id, order.deliveryAgentId)).limit(1);
           }
         }
         return { order, items, history, payment, agent };
@@ -2237,7 +2859,7 @@ AI Response (JSON):
         const order = await getOrderByNumber(input.orderNumber);
         if (!order) throw new TRPCError({ code: "NOT_FOUND" });
         // If the order is claimed by an account, ensure only that user (or an admin) can see it
-        if (order.userId && order.userId !== ctx.user?.id && ctx.user?.role !== "admin" && !ctx.user) {
+        if (order.userId && (!ctx.user || (order.userId !== ctx.user.id && ctx.user.role !== "admin"))) {
           throw new TRPCError({ code: "FORBIDDEN" });
         }
         const items = await getOrderItems(order.id);
@@ -2253,7 +2875,7 @@ AI Response (JSON):
         if (!order) throw new TRPCError({ code: "NOT_FOUND" });
         
         // If the order is claimed by an account, ensure only that user (or an admin) can cancel it
-        if (order.userId && order.userId !== ctx.user?.id && ctx.user?.role !== "admin" && !ctx.user) {
+        if (order.userId && (!ctx.user || (order.userId !== ctx.user.id && ctx.user.role !== "admin"))) {
           throw new TRPCError({ code: "FORBIDDEN" });
         }
         if (!["pending", "payment_confirmed", "processing"].includes(order.status)) {
@@ -2262,7 +2884,7 @@ AI Response (JSON):
 
         // Prevent cancellation if the order is older than 24 hours (admins are exempt)
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        if (ctx.user?.role !== "admin" && new Date(order.createdAt) < twentyFourHoursAgo) {
+        if (ctx.user?.role !== "admin" && ctx.user?.role !== "manager" && new Date(order.createdAt) < twentyFourHoursAgo) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Orders cannot be cancelled after 24 hours." });
         }
         
@@ -2274,7 +2896,7 @@ AI Response (JSON):
         
         if (order.paymentStatus === "paid" || order.status !== "pending") {
           const items = await getOrderItems(order.id);
-          for (const item of items) { await updateProductStock(item.productId, item.quantity); }
+          for (const item of items) { await updateProductStock(item.productId, item.quantity, order.id); }
         }
 
         // --- SEND EMAIL NOTIFICATION TO ADMIN ---
@@ -2307,6 +2929,9 @@ AI Response (JSON):
               paymentStatus: order.paymentStatus,
               reason: input.reason,
               storeCurrency: currency,
+              emailBackgroundColor: emailSettings?.emailBackgroundColor,
+              theme: emailSettings?.theme,
+              customTemplate: emailSettings?.customTemplates?.adminOrderCancelled
             });
 
             await transporter.sendMail({
@@ -2326,7 +2951,14 @@ AI Response (JSON):
           const emailSettings = await getSetting("email");
           const generalSettings = await getSetting("general");
           const appearanceSettings = await getSetting("appearance");
-          const customerEmail = order.shippingEmail || (order.userId ? (await getUserByEmail(order.userId.toString()))?.email : null);
+          let customerEmail = order.shippingEmail;
+          if (!customerEmail && order.userId) {
+            const db = await getDb();
+            if (db) {
+              const [customer] = await db.select({ email: users.email }).from(users).where(eq(users.id, order.userId)).limit(1);
+              customerEmail = customer?.email || null;
+            }
+          }
 
           if (emailSettings?.smtpHost && customerEmail) {
             const transporter = nodemailer.createTransport({
@@ -2346,6 +2978,9 @@ AI Response (JSON):
               orderNumber: order.orderNumber,
               total: order.total,
               storeCurrency: generalSettings?.currency || "USD",
+              emailBackgroundColor: emailSettings?.emailBackgroundColor,
+              theme: emailSettings?.theme,
+              customTemplate: emailSettings?.customTemplates?.orderCancelled
             });
 
             await transporter.sendMail({
@@ -2360,35 +2995,78 @@ AI Response (JSON):
 
         return { success: true };
       }),
+
+    updateShippingAddress: protectedProcedure
+      .input(
+        z.object({
+          orderId: z.number(),
+          shippingAddress: z.string().min(1),
+          shippingCity: z.string().min(1),
+          shippingCounty: z.string().optional(),
+          shippingPostalCode: z.string().optional(),
+          shippingCountry: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const order = await getOrderById(input.orderId);
+        if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+        
+        if (order.userId !== ctx.user.id && ctx.user.role !== "admin" && ctx.user.role !== "manager") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to modify this order." });
+        }
+        
+        if (["shipped", "out_for_delivery", "delivered", "cancelled", "refunded"].includes(order.status)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot change address after the order has been processed for shipping." });
+        }
+        
+        await db.update(orders).set({ shippingAddress: input.shippingAddress, shippingCity: input.shippingCity, shippingCounty: input.shippingCounty || null, shippingPostalCode: input.shippingPostalCode || null, shippingCountry: input.shippingCountry }).where(eq(orders.id, input.orderId));
+        await updateOrderStatus(input.orderId, order.status, "Customer updated shipping address");
+        
+        return { success: true };
+      }),
   }),
 
   // ─── Admin ─────────────────────────────────────────────────────────────────
   admin: router({
-    stats: adminProcedure
-      .input(z.object({ timeRange: z.string().optional() }).optional())
-      .query(async ({ input }) => {
-        const baseStats = await getAdminStats(input?.timeRange);
+    stats: managerProcedure
+      .input(z.object({ timeRange: z.string().optional(), warehouseId: z.number().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const warehouseId = ctx.user.role === "manager" ? ctx.user.warehouseId : input?.warehouseId;
+        const cacheKey = `admin_stats_${input?.timeRange || "30d"}_${warehouseId || "global"}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) return cached;
+
+        const baseStats = await getAdminStats(input?.timeRange, warehouseId);
+        if (!baseStats) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load stats" });
         
-        // Calculate AI-attributed revenue overlay mapped onto the graph data
-        const aiRevenueData = (baseStats.revenueData || []).map((day: any) => {
-          const aiShare = 0.15 + (Math.random() * 0.10); // Dynamically attributes 15-25% to AI
-          const aiRevenue = Math.round(parseFloat(day.revenue) * aiShare);
-          const organicRevenue = Math.round(parseFloat(day.revenue) - aiRevenue);
-          return { date: day.date, aiRevenue, organicRevenue, total: parseFloat(day.revenue) };
-        });
-        const totalAIRevenue = aiRevenueData.reduce((sum: number, d: any) => sum + d.aiRevenue, 0);
+        // Calculate AI-attributed revenue overlay
+        const aiRevenueData = (baseStats.revenueData || []).map((day: any) => ({
+          date: day.date, aiRevenue: day.aiRevenue || 0, organicRevenue: day.organicRevenue || 0, total: day.revenue || 0
+        }));
+        const totalAIRevenue = aiRevenueData.reduce((sum, d) => sum + d.aiRevenue, 0);
         
-        return { ...baseStats, aiRevenueData, totalAIRevenue };
+        const result = { ...baseStats, aiRevenueData, totalAIRevenue };
+        
+        // Cache for exactly 5 seconds to match the frontend polling interval (Request Coalescing)
+        await cacheSet(cacheKey, result, 5);
+        
+        return result;
       }),
 
-    notifications: adminProcedure.query(async () => {
+    notifications: managerProcedure.query(async ({ ctx }) => {
       const db = await getDb();
       if (!db) return [];
 
       const notifications = [];
 
+      const inventorySettings = await getSetting("inventory");
+      const lowStockThreshold = inventorySettings?.lowStockThreshold !== undefined ? parseInt(inventorySettings.lowStockThreshold, 10) : 5;
+
       // 1. Low Stock Alerts
-      const lowStock = await db.select().from(products).where(lt(products.stock, 5)).limit(5);
+      const lowStock = await db.select().from(products).where(lte(products.stock, lowStockThreshold)).limit(5);
       for (const p of lowStock) {
         notifications.push({
           id: `stock-${p.id}`,
@@ -2437,11 +3115,12 @@ AI Response (JSON):
       }
 
       // 4. Automated Emails (e.g. Abandoned Carts)
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const recentEmails = await db.select({ count: sql<number>`COUNT(*)` })
         .from(orders)
         .where(and(
           eq(orders.abandonedEmailSent, true),
-          sql`${orders.updatedAt} >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`
+          sql`${orders.updatedAt} >= ${twentyFourHoursAgo.toISOString()}`
         ));
       const emailCount = recentEmails[0]?.count || 0;
       if (emailCount > 0) {
@@ -2458,10 +3137,94 @@ AI Response (JSON):
         });
       }
 
+      // 5. Pending Deletion Requests (Admins only)
+      if (ctx.user.role === "admin") {
+        const pendingDeletions = await db.select({ count: sql<number>`COUNT(*)` }).from(deletionRequests).where(eq(deletionRequests.status, "pending"));
+        const deletionCount = pendingDeletions[0]?.count || 0;
+        if (deletionCount > 0) {
+          notifications.push({
+            id: `deletions-pending`,
+            type: "system",
+            title: "Pending Deletion Requests",
+            message: `There are ${deletionCount} pending deletion requests from managers awaiting your approval.`,
+            actionLink: "/admin/notifications",
+            actionText: "Review Requests",
+            icon: "AlertCircle",
+            color: "text-red-500",
+            bgColor: "bg-red-500/10",
+          });
+        }
+      }
+
       return notifications;
     }),
 
-    triggerAIMarketing: adminProcedure.mutation(async ({ ctx }) => {
+    broadcastTrendingProducts: managerProcedure.mutation(async ({ ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+      const emailSettings = await getSetting("email");
+      if (!emailSettings?.smtpHost || !emailSettings?.smtpUser) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "SMTP is not configured" });
+      }
+
+      const trending = await getDemandPrediction(7);
+      if (!trending || trending.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No trending products found to broadcast." });
+      }
+
+      const topProducts = trending.slice(0, 3);
+      const generalSettings = await getSetting("general");
+      const storeName = generalSettings?.storeName || "Store";
+      
+      const usersList = await db.select().from(users).limit(100);
+      const appearance = await getSetting("appearance");
+
+      const transporter = nodemailer.createTransport({
+        host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+        secure: Number(emailSettings.smtpPort) === 465,
+        auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+      });
+
+      const productListHtml = topProducts.map((p: any) => 
+        `<li style="margin-bottom: 8px;"><strong>${p.productName}</strong> - 🔥 Selling fast! (${p.salesCount} sold recently)</li>`
+      ).join("");
+
+      const promoSettings = (await getSetting("promotions")) || {};
+
+      let sentCount = 0;
+      const emailPromises = [];
+      
+      for (const u of usersList) {
+        if (!u.email) continue;
+        
+        const bgColor = emailSettings?.emailBackgroundColor || "#f9fafb";
+        const btnColor = emailSettings?.emailButtonColor || "#3b82f6";
+        
+        const uniqueCode = `HOT15-${nanoid(5).toUpperCase()}`;
+        promoSettings[uniqueCode] = "15"; // Set 15% discount for this unique code
+
+        const emailHtml = getBroadcastEmailHtml({
+          storeName, logoUrl: appearance?.logoUrl,
+          primaryColor: btnColor, contactEmail: generalSettings?.contactEmail || "support@example.com",
+          storePhone: generalSettings?.phone || "", userName: u.name || 'there',
+          uniqueCode, productListHtml, emailBackgroundColor: bgColor,
+          theme: emailSettings?.theme,
+          customTemplate: emailSettings?.customTemplates?.broadcast
+        });
+
+        await transporter.sendMail({
+          from: `"${storeName}" <${emailSettings.smtpUser}>`,
+          to: u.email,
+          subject: `🔥 Trending Now at ${storeName} - Don't Miss Out!`,
+          html: emailHtml
+        }).catch(console.error);
+        sentCount++;
+      }
+      return { success: true, sentCount };
+    }),
+
+    triggerAIMarketing: managerProcedure.mutation(async ({ ctx }) => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       if (!process.env.GROQ_API_KEY) throw new TRPCError({ code: "BAD_REQUEST", message: "AI API Key missing" });
@@ -2473,6 +3236,7 @@ AI Response (JSON):
       const generalSettings = await getSetting("general");
       const storeName = generalSettings?.storeName || "our store";
       const promoPrefix = (generalSettings?.storeName || "STORE").replace(/[^a-zA-Z0-9]/g, '').toUpperCase().substring(0, 6);
+      const appearance = await getSetting("appearance");
 
       // Target top 5 users (in a production environment, this would filter by users with recent wishlist activity)
       const usersList = await db.select().from(users).limit(5);
@@ -2487,15 +3251,19 @@ AI Response (JSON):
       for (const u of usersList) {
         if (!u.email) continue;
         const prompt = `Write a short, engaging, highly personalized 2-sentence marketing email for a customer named ${u.name || 'there'} offering them a special 15% discount code (${promoPrefix}15) on their next laptop purchase based on their recent interest in ${storeName}. Do not include a subject line or greetings/sign-offs, just the body text.`;
+        const bgColor = emailSettings?.emailBackgroundColor || "#f9fafb";
         const response = await groq.chat.completions.create({
           model: "llama-3.3-70b-versatile",
           messages: [{ role: "user", content: prompt }]
         });
-        const emailHtml = `<div style="font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; background: #f9fafb; border-radius: 8px;">
-          <h2 style="color: #111827;">Special Offer for ${u.name || 'You'}! 🎁</h2>
-          <p style="color: #4b5563; font-size: 16px; line-height: 1.5;">${response.choices[0].message.content}</p>
-          <a href="${process.env.PUBLIC_URL || 'http://localhost:3000'}/products" style="background: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold; margin-top: 15px;">Shop Now</a>
-        </div>`;
+        const emailHtml = getAIMarketingEmailHtml({
+          storeName, logoUrl: appearance?.logoUrl,
+          primaryColor: emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6",
+          contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+          userName: u.name || 'You', aiContent: response.choices[0].message.content || "",
+          emailBackgroundColor: bgColor, theme: emailSettings?.theme,
+          customTemplate: emailSettings?.customTemplates?.aiMarketing
+        });
 
         await transporter.sendMail({
           from: `"AI Assistant" <${emailSettings.smtpUser}>`,
@@ -2508,7 +3276,12 @@ AI Response (JSON):
       return { success: true, sentCount };
     }),
 
-    globalSearch: adminProcedure
+    triggerAutoRestock: managerProcedure.mutation(async () => {
+      await processAutoRestock();
+      return { success: true };
+    }),
+
+    globalSearch: managerProcedure
       .input(z.object({ query: z.string(), cursor: z.number().nullish(), limit: z.number().optional() }))
       .query(async ({ input }) => {
         if (!input.query) {
@@ -2517,16 +3290,24 @@ AI Response (JSON):
         
         const limit = input.limit ?? 10;
         const offset = input.cursor ?? 0;
-        const results = await adminGlobalSearch(input.query, limit, offset);
+        const results = await adminGlobalSearch(input.query, limit, offset) || { products: [], orders: [], customers: [], categories: [] };
         
-        const hasMore = results.products.length === limit || results.orders.length === limit || results.customers.length === limit || results.categories.length === limit;
+        const hasMore = 
+          (results.products?.length || 0) === limit || 
+          (results.orders?.length || 0) === limit || 
+          (results.customers?.length || 0) === limit || 
+          (results.categories?.length || 0) === limit;
+          
         return { ...results, nextCursor: hasMore ? offset + limit : null };
       }),
 
-    orders: adminProcedure
-      .input(z.object({ limit: z.number().optional(), offset: z.number().optional(), search: z.string().optional(), status: z.string().optional() }).optional())
-      .query(async ({ input }) => {
-        let orders = await getAllOrders(input ?? {});
+    orders: managerProcedure
+      .input(z.object({ limit: z.number().optional(), offset: z.number().optional(), search: z.string().optional(), status: z.string().optional(), warehouseId: z.number().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        let orders = await getAllOrders({
+          ...input,
+          warehouseId: ctx.user.role === "manager" ? ctx.user.warehouseId : input?.warehouseId
+        });
         if (input?.search) {
           const s = input.search.toLowerCase();
           orders = orders.filter((o: any) => o.orderNumber.toLowerCase().includes(s) || (o.customerName || "").toLowerCase().includes(s));
@@ -2535,11 +3316,17 @@ AI Response (JSON):
         return orders;
       }),
 
-    orderDetail: adminProcedure
+    orderDetail: managerProcedure
       .input(z.object({ orderId: z.number() }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
         const order = await getOrderById(input.orderId);
         if (!order) throw new TRPCError({ code: "NOT_FOUND" });
+
+        // Tenant Isolation: Prevent manager from viewing orders from other warehouses
+        if (ctx.user.role === "manager" && ctx.user.warehouseId && order.originWarehouseId !== ctx.user.warehouseId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view orders outside your assigned warehouse." });
+        }
+
         const items = await getOrderItems(input.orderId);
         const history = await getOrderStatusHistory(input.orderId);
         const payment = await getPaymentByOrder(input.orderId);
@@ -2552,7 +3339,7 @@ AI Response (JSON):
         return { order, items, history, payment, customer };
       }),
 
-    updateOrderStatus: adminProcedure
+    updateOrderStatus: managerProcedure
       .input(
         z.object({
           orderId: z.number(),
@@ -2567,6 +3354,8 @@ AI Response (JSON):
           trackingNumber: input.trackingNumber,
           estimatedDelivery: input.estimatedDelivery,
         });
+
+        await logAuditAction(ctx.user.id, "UPDATE_ORDER_STATUS", input.orderId, `Status changed to ${input.status}`);
 
         // --- Shipping Notification Email ---
         if (input.status === "shipped") {
@@ -2603,7 +3392,10 @@ AI Response (JSON):
                     trackingNumber: input.trackingNumber,
                     trackLink,
                     customMessage: emailSettings?.shippingNotificationMessage,
-                    shippingAddress: `${order.shippingAddress}\n${order.shippingCity}, ${order.shippingPostalCode || ''}\n${order.shippingCountry}`
+                    shippingAddress: `${order.shippingAddress}\n${order.shippingCity}, ${order.shippingPostalCode || ''}\n${order.shippingCountry}`,
+                    emailBackgroundColor: emailSettings?.emailBackgroundColor,
+                    theme: emailSettings?.theme,
+                    customTemplate: emailSettings?.customTemplates?.shipping
                   });
 
                   if (emailSettings?.smtpHost && emailSettings.smtpUser) {
@@ -2632,9 +3424,148 @@ AI Response (JSON):
         return { success: true };
       }),
 
-    payments: adminProcedure.query(() => getAllPayments()),
+    auditLogs: adminProcedure
+      .input(z.object({
+        limit: z.number().optional().default(20),
+        offset: z.number().optional().default(0),
+        search: z.string().optional(),
+        action: z.string().optional()
+      }).optional())
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        let conditions = [];
+        if (input?.search) {
+          const s = `%${input.search.toLowerCase()}%`;
+          conditions.push(or(like(sql`lower(${auditLogs.details})`, s), like(sql`lower(cast(${auditLogs.resourceId} as text))`, s)));
+        }
+        if (input?.action && input.action !== "all") {
+          conditions.push(eq(auditLogs.action, input.action));
+        }
+        
+        const logsResult = await db.select().from(auditLogs).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(auditLogs.createdAt)).limit(input?.limit ?? 20).offset(input?.offset ?? 0);
+          
+        const countResult = await db.select({ count: sql<number>`count(*)` }).from(auditLogs).where(conditions.length > 0 ? and(...conditions) : undefined);
+          
+        return { logs: logsResult, total: countResult[0]?.count || 0 };
+      }),
 
-    customers: adminProcedure
+    checkUpdates: managerProcedure
+      .input(z.object({
+        lastCheck: z.coerce.number().describe("Timestamp of last check in ms"),
+        previousOrderCount: z.coerce.number().optional(),
+        previousUserCount: z.coerce.number().optional(),
+        previousManagerCount: z.coerce.number().optional(),
+        previousProductCount: z.coerce.number().optional(),
+        previousPageViewCount: z.coerce.number().optional(),
+      }).optional())
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return { hasUpdates: false, updates: {} };
+
+        const lastCheckTime = input?.lastCheck ? new Date(input.lastCheck) : new Date(Date.now() - 60000);
+
+        // Fetch counts in parallel, split into batches to avoid DB connection pool exhaustion
+        const [[{ orderCount }], [{ userCount }], [{ managerCount }], [{ productCount }], [{ pageViewCount }]] = await Promise.all([
+          db.select({ orderCount: sql<number>`COUNT(*)` }).from(orders),
+          db.select({ userCount: sql<number>`COUNT(*)` }).from(users).where(eq(users.role, "user")),
+          db.select({ managerCount: sql<number>`COUNT(*)` }).from(users).where(eq(users.role, "manager")),
+          db.select({ productCount: sql<number>`COUNT(*)` }).from(products).where(and(eq(products.active, true), gt(products.stock, 0))),
+          db.select({ pageViewCount: sql<number>`COUNT(*)` }).from(pageViews),
+        ]);
+
+        const [recentOrders, recentUsers, recentManagers] = await Promise.all([
+          db.select({
+            id: orders.id,
+            orderNumber: orders.orderNumber,
+            total: orders.total,
+            createdAt: orders.createdAt,
+            customerName: users.name,
+            status: orders.status,
+          }).from(orders).leftJoin(users, eq(orders.userId, users.id)).where(gt(orders.createdAt, lastCheckTime)).orderBy(desc(orders.createdAt)).limit(3),
+          db.select({
+            id: users.id,
+            name: users.name,
+            email: users.email,
+            role: users.role,
+            createdAt: users.createdAt,
+          }).from(users).where(gt(users.createdAt, lastCheckTime)).orderBy(desc(users.createdAt)).limit(3),
+          db.select({
+            id: users.id,
+            name: users.name,
+            email: users.email,
+            role: users.role,
+            createdAt: users.createdAt,
+          }).from(users).where(and(eq(users.role, "manager"), gt(users.createdAt, lastCheckTime))).orderBy(desc(users.createdAt)).limit(3),
+        ]);
+
+        const updates: any = {};
+        let hasUpdates = false;
+
+        // Check for new orders
+        if ((input?.previousOrderCount ?? 0) < (orderCount ?? 0)) {
+          updates.newOrders = {
+            count: (orderCount ?? 0) - (input?.previousOrderCount ?? 0),
+            orders: recentOrders || [],
+          };
+          hasUpdates = true;
+        }
+
+        // Check for new users (customers)
+        if ((input?.previousUserCount ?? 0) < (userCount ?? 0)) {
+          updates.newUsers = {
+            count: (userCount ?? 0) - (input?.previousUserCount ?? 0),
+            users: (recentUsers || []).filter((u: any) => u.role === "user"),
+          };
+          hasUpdates = true;
+        }
+
+        // Check for new managers
+        if ((input?.previousManagerCount ?? 0) < (managerCount ?? 0)) {
+          updates.newManagers = {
+            count: (managerCount ?? 0) - (input?.previousManagerCount ?? 0),
+            managers: recentManagers || [],
+          };
+          hasUpdates = true;
+        }
+
+        // Check for new/updated products
+        if ((input?.previousProductCount ?? 0) !== (productCount ?? 0)) {
+          updates.productCountChanged = {
+            newCount: productCount ?? 0,
+            previousCount: input?.previousProductCount ?? 0,
+            difference: (productCount ?? 0) - (input?.previousProductCount ?? 0),
+          };
+          hasUpdates = true;
+        }
+
+        // Check for new visitors/page views
+        if ((input?.previousPageViewCount ?? 0) < (pageViewCount ?? 0)) {
+          updates.newVisitors = {
+            count: (pageViewCount ?? 0) - (input?.previousPageViewCount ?? 0),
+            totalPageViews: pageViewCount ?? 0,
+          };
+          hasUpdates = true;
+        }
+
+        return {
+          hasUpdates,
+          updates,
+          currentCounts: {
+            orders: orderCount ?? 0,
+            users: userCount ?? 0,
+            managers: managerCount ?? 0,
+            products: productCount ?? 0,
+            pageViews: pageViewCount ?? 0,
+          },
+          timestamp: Date.now(),
+        };
+      }),
+
+    payments: managerProcedure.query(() => getAllPayments()),
+
+    customers: managerProcedure
       .input(z.object({ search: z.string().optional() }).optional())
       .query(async ({ input }) => {
         let allUsers = await getAllUsers();
@@ -2645,25 +3576,173 @@ AI Response (JSON):
         return allUsers;
       }),
 
-    verifyPayment: adminProcedure
-      .input(z.object({ orderId: z.number() }))
-      .mutation(async ({ input }) => {
-        const transactionId = `MANUAL-${Date.now()}`;
-        await updatePaymentStatus(input.orderId, "completed", transactionId, { provider: "manual" });
-        await updateOrderStatus(input.orderId, "payment_confirmed", "Payment manually verified by admin", {
-          paymentStatus: "paid",
-          paymentReference: transactionId,
-        });
-        clearCachePrefix("ai_admin_stats");
-        const order = await getOrderById(input.orderId);
-        if (order) {
-          const items = await getOrderItems(order.id);
-          for (const item of items) { await updateProductStock(item.productId, -item.quantity); }
+    users: managerProcedure
+      .input(z.object({ search: z.string().optional(), role: z.string().optional() }).optional())
+      .query(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        let conditions = [];
+        if (input?.search) {
+          const s = `%${input.search.toLowerCase()}%`;
+          conditions.push(or(like(sql`lower(${users.name})`, s), like(sql`lower(${users.email})`, s)));
+        }
+        if (input?.role) {
+          conditions.push(eq(users.role, input.role as any));
+        }
+        
+        // Tenant Isolation: Managers only see users/staff from their own warehouse
+        if (ctx.user.role === "manager" && ctx.user.warehouseId) {
+          conditions.push(eq(users.warehouseId, ctx.user.warehouseId));
+        }
+        
+        return db.select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          phone: users.phone,
+          role: users.role,
+          createdAt: users.createdAt,
+          lastSignedIn: users.lastSignedIn,
+          photoId: users.photoId,
+          warehouseId: users.warehouseId,
+          warehouseName: warehouses.name
+        })
+        .from(users)
+        .leftJoin(warehouses, eq(users.warehouseId, warehouses.id))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(users.createdAt));
+      }),
+
+    upsertUser: adminProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1),
+        email: z.string().email(),
+        phone: z.string().optional(),
+        role: z.enum(["user", "manager", "admin"]),
+        password: z.string().optional(),
+        photoId: z.string().optional(),
+        warehouseId: z.number().nullable().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        // Auto-upgrade existing users if email exists
+        const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
+        let targetId = input.id;
+        if (existingUser.length > 0) {
+          if (input.id && existingUser[0].id !== input.id) throw new TRPCError({ code: "CONFLICT", message: "Email is already taken by another account." });
+          if (!input.id) targetId = existingUser[0].id;
+        }
+
+        if (input.phone) {
+          const existingPhone = await db.select({ id: users.id }).from(users).where(eq(users.phone, input.phone)).limit(1);
+          if (existingPhone.length > 0 && existingPhone[0].id !== targetId) {
+             throw new TRPCError({ code: "CONFLICT", message: "Phone number is already taken by another account." });
+          }
+        }
+
+        const updateData: any = {
+          name: input.name,
+          email: input.email,
+          phone: input.phone || null,
+          role: input.role,
+          photoId: input.photoId || null,
+          warehouseId: input.warehouseId || null,
+        };
+
+        let generatedPassword = null;
+        let isNewManager = false;
+
+        if (input.password) {
+          updateData.password = await hashPassword(input.password);
+          updateData.requiresPasswordChange = false;
+        } else if (!input.id && (input.role === "manager" || input.role === "admin")) {
+          generatedPassword = Math.random().toString(36).substring(2, 10).toUpperCase();
+          updateData.password = await hashPassword(generatedPassword);
+          updateData.requiresPasswordChange = true;
+          isNewManager = true;
+        } else if (!input.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Password is required for new users" });
+        }
+
+        if (targetId) {
+          await db.update(users).set(updateData).where(eq(users.id, targetId));
+        } else {
+          updateData.openId = `local-${nanoid()}`;
+          updateData.loginMethod = "email";
+          updateData.emailVerified = true; // Auto-verify staff accounts created by admin
+          await db.insert(users).values(updateData);
+        }
+
+        // Dispatch Email if new manager
+        if (isNewManager && generatedPassword) {
+          try {
+            const emailSettings = await getSetting("email");
+            const generalSettings = await getSetting("general");
+            const appearanceSettings = await getSetting("appearance");
+            if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+              const transporter = nodemailer.createTransport({
+                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+                secure: Number(emailSettings.smtpPort) === 465,
+                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+              });
+              const host = ctx.req.headers.host || "localhost:3000";
+              const protocol = host.includes("localhost") ? "http" : "https";
+              const portalUrl = `${protocol}://${host}/${input.role === "manager" ? "manager" : "admin"}`;
+              const portalName = input.role === "manager" ? "Manager Portal" : "Admin Panel";
+              const emailHtml = getManagerWelcomeEmailHtml({
+                storeName: generalSettings?.storeName || "Store Dashboard", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#3b82f6", contactEmail: generalSettings?.contactEmail || "support@example.com",
+                name: input.name, email: input.email, temporaryPassword: generatedPassword, portalUrl, portalName, emailBackgroundColor: emailSettings?.emailBackgroundColor, theme: emailSettings?.theme
+              });
+              await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Admin'}" <${emailSettings.smtpUser}>`, to: input.email, subject: `Welcome to the ${portalName}`, html: emailHtml });
+            }
+          } catch (err) {
+            console.error("Failed to send manager welcome email:", err);
+          }
         }
         return { success: true };
       }),
 
-    createProduct: adminProcedure
+    toggleUserSuspension: adminProcedure
+      .input(z.object({ userId: z.number(), suspended: z.boolean() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(users).set({ suspended: input.suspended }).where(eq(users.id, input.userId));
+        return { success: true };
+      }),
+
+    deleteUser: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.delete(users).where(eq(users.id, input.id));
+        return { success: true };
+      }),
+
+    verifyPayment: managerProcedure
+      .input(z.object({ orderId: z.number() }))
+      .mutation(async ({ input }) => {
+        const transactionId = `MANUAL-${Date.now()}`;
+        await updatePaymentStatus(input.orderId, "paid", transactionId, { provider: "manual" });
+        await updateOrderStatus(input.orderId, "payment_confirmed", "Payment manually verified by admin", {
+          paymentStatus: "paid",
+          paymentReference: transactionId,
+        });
+        await cacheDelPattern("ai_admin_stats");
+        const order = await getOrderById(input.orderId);
+        if (order) {
+          const items = await getOrderItems(order.id);
+          for (const item of items) { await updateProductStock(item.productId, -item.quantity, order.id); }
+        }
+        return { success: true };
+      }),
+
+    createProduct: managerProcedure
       .input(
         z.object({
           categoryId: z.number(),
@@ -2680,14 +3759,16 @@ AI Response (JSON):
           specifications: z.record(z.string(), z.string()).optional(),
           tags: z.array(z.string()).optional(),
           featured: z.boolean().optional(),
+          hasSerial: z.boolean().optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await upsertProduct(input);
+        await logAuditAction(ctx.user.id, "CREATE_PRODUCT", input.slug, input.name);
         return { success: true };
       }),
 
-    updateProduct: adminProcedure
+    updateProduct: managerProcedure
       .input(
         z.object({
           productId: z.number(),
@@ -2707,20 +3788,22 @@ AI Response (JSON):
           featured: z.boolean().optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const { productId, ...rest } = input;
         await upsertProduct({ id: productId, ...rest });
+        await logAuditAction(ctx.user.id, "UPDATE_PRODUCT", productId, input.name);
         return { success: true };
       }),
 
     deleteProduct: adminProcedure
       .input(z.object({ productId: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         await deleteProduct(input.productId);
+        await logAuditAction(ctx.user.id, "DELETE_PRODUCT", input.productId, "Product Soft Deleted");
         return { success: true };
       }),
 
-    products: adminProcedure
+    products: managerProcedure
       .input(z.object({ limit: z.number().optional(), offset: z.number().optional(), search: z.string().optional() }).optional())
       .query(async ({ input }) => {
         let products = await getProducts({ limit: input?.limit ?? 100, offset: input?.offset ?? 0 });
@@ -2731,7 +3814,7 @@ AI Response (JSON):
         return products;
       }),
 
-    upsertProduct: adminProcedure
+    upsertProduct: managerProcedure
       .input(
         z.object({
           id: z.number().optional(),
@@ -2750,14 +3833,331 @@ AI Response (JSON):
           tags: z.array(z.string()).optional(),
           featured: z.boolean().optional(),
           active: z.boolean().optional(),
+          hasSerial: z.boolean().optional(),
+          warehouseId: z.number().optional(),
         })
       )
-      .mutation(async ({ input }) => {
-        await upsertProduct(input);
+      .mutation(async ({ ctx, input }) => {
+        await upsertProduct({ ...input, warehouseId: ctx.user.role === "manager" ? ctx.user.warehouseId : input.warehouseId });
+        await logAuditAction(ctx.user.id, input.id ? "UPDATE_PRODUCT" : "CREATE_PRODUCT", input.id || input.slug, input.name);
         return { success: true };
       }),
 
-    upsertCategory: adminProcedure
+    transferProduct: managerProcedure
+      .input(z.object({ productId: z.number(), warehouseId: z.number().nullable() }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(products).set({ warehouseId: input.warehouseId }).where(eq(products.id, input.productId));
+        await logAuditAction(ctx.user.id, "TRANSFER_PRODUCT", input.productId, `Transferred to warehouse ${input.warehouseId || 'Global'}`);
+        return { success: true };
+      }),
+
+    assignAllUnassignedProducts: adminProcedure
+      .input(z.object({ warehouseId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const unassigned = await db.select().from(products).where(sql`${products.warehouseId} IS NULL`);
+        
+        if (unassigned.length > 0) {
+          await db.update(products).set({ warehouseId: input.warehouseId }).where(sql`${products.warehouseId} IS NULL`);
+          
+          for (const p of unassigned) {
+             const existing = await db.select().from(productInventory).where(and(eq(productInventory.productId, p.id), eq(productInventory.warehouseId, input.warehouseId)));
+             if (existing.length === 0) {
+                await db.insert(productInventory).values({
+                   productId: p.id,
+                   warehouseId: input.warehouseId,
+                   stock: p.stock
+                });
+             } else {
+                await db.update(productInventory).set({ stock: p.stock }).where(eq(productInventory.id, existing[0].id));
+             }
+          }
+        }
+        await logAuditAction(ctx.user.id, "ASSIGN_ALL_PRODUCTS", input.warehouseId, `Assigned all unassigned products to warehouse ${input.warehouseId}`);
+        return { success: true };
+      }),
+
+    createDirectTransfer: adminProcedure
+      .input(z.object({
+        productId: z.number(),
+        fromWarehouseId: z.number(),
+        toWarehouseId: z.number(),
+        quantity: z.number().min(1),
+        notes: z.string().optional()
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        // Fetch source inventory to ensure enough stock
+        const [sourceInv] = await db.select().from(productInventory).where(and(eq(productInventory.productId, input.productId), eq(productInventory.warehouseId, input.fromWarehouseId))).limit(1);
+        
+        if (!sourceInv || sourceInv.stock < input.quantity) {
+           throw new TRPCError({ code: "BAD_REQUEST", message: `Insufficient stock in source warehouse. Available: ${sourceInv?.stock || 0}` });
+        }
+
+        const [transfer] = await db.insert(inventoryTransfers).values({
+          productId: input.productId,
+          fromWarehouseId: input.fromWarehouseId,
+          toWarehouseId: input.toWarehouseId,
+          quantity: input.quantity,
+          status: "pending_sender_fulfillment",
+          approvedBy: ctx.user.id,
+          notes: input.notes
+        }).returning();
+        
+        const managersA = await db.select({ id: users.id }).from(users).where(and(eq(users.role, "manager"), eq(users.warehouseId, input.fromWarehouseId)));
+        for (const manager of managersA) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: manager.id, content: `📦 TRANSFER INITIATED: You need to dispatch a transfer (ID: ${transfer.id}) from your warehouse.` });
+        }
+        
+        return { success: true };
+      }),
+
+    getWarehouseInventory: managerProcedure
+      .input(z.object({ warehouseId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        return db.select({
+          id: productInventory.id,
+          productId: productInventory.productId,
+          warehouseId: productInventory.warehouseId,
+          stock: productInventory.stock,
+          productName: products.name,
+          productBrand: products.brand,
+          productPrice: products.price,
+          productImages: products.images
+        })
+        .from(productInventory)
+        .innerJoin(products, eq(productInventory.productId, products.id))
+        .where(eq(productInventory.warehouseId, input.warehouseId));
+      }),
+
+    // ─── Inventory Transfers (Multi-Warehouse Workflow) ───
+    getInventoryTransfers: managerProcedure
+      .input(z.object({ warehouseId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        let conditions = [];
+        if (ctx.user.role === "manager" && ctx.user.warehouseId) {
+          conditions.push(or(
+            eq(inventoryTransfers.fromWarehouseId, ctx.user.warehouseId),
+            eq(inventoryTransfers.toWarehouseId, ctx.user.warehouseId)
+          ));
+        } else if (ctx.user.role === "admin" && input?.warehouseId) {
+          conditions.push(or(
+            eq(inventoryTransfers.fromWarehouseId, input.warehouseId),
+            eq(inventoryTransfers.toWarehouseId, input.warehouseId)
+          ));
+        }
+
+        const transfers = await db.select({
+          id: inventoryTransfers.id,
+          productId: inventoryTransfers.productId,
+          productName: products.name,
+          fromWarehouseId: inventoryTransfers.fromWarehouseId,
+          toWarehouseId: inventoryTransfers.toWarehouseId,
+          quantity: inventoryTransfers.quantity,
+          status: inventoryTransfers.status,
+          createdAt: inventoryTransfers.createdAt,
+          driverName: drivers.name
+        })
+        .from(inventoryTransfers)
+        .leftJoin(products, eq(inventoryTransfers.productId, products.id))
+        .leftJoin(drivers, eq(inventoryTransfers.driverId, drivers.id))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(inventoryTransfers.createdAt));
+
+        return transfers;
+      }),
+
+    requestInventoryTransfer: managerProcedure
+      .input(z.object({ productId: z.number(), toWarehouseId: z.number(), quantity: z.number().min(1), notes: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.insert(inventoryTransfers).values({ productId: input.productId, toWarehouseId: input.toWarehouseId, quantity: input.quantity, status: "pending_admin_approval", requestedBy: ctx.user.id, notes: input.notes });
+        
+        // Get the destination warehouse name
+        const [toWarehouse] = await db.select({ name: warehouses.name }).from(warehouses).where(eq(warehouses.id, input.toWarehouseId)).limit(1);
+        const warehouseName = toWarehouse?.name || `Warehouse ${input.toWarehouseId}`;
+        
+        const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin"));
+        for (const admin of admins) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: admin.id, content: `🚨 TRANSFER REQUEST: ${warehouseName} requested ${input.quantity} units of Product ${input.productId}. Please approve and route.` });
+        }
+        return { success: true };
+      }),
+
+    approveInventoryTransfer: adminProcedure
+      .input(z.object({ transferId: z.number(), fromWarehouseId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(inventoryTransfers).set({ fromWarehouseId: input.fromWarehouseId, status: "pending_sender_fulfillment", approvedBy: ctx.user.id, updatedAt: new Date() }).where(eq(inventoryTransfers.id, input.transferId));
+        const managersA = await db.select({ id: users.id }).from(users).where(and(eq(users.role, "manager"), eq(users.warehouseId, input.fromWarehouseId)));
+        for (const manager of managersA) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: manager.id, content: `📦 TRANSFER APPROVED: You need to dispatch a transfer (ID: ${input.transferId}) from your warehouse.` });
+        }
+        return { success: true };
+      }),
+
+    fulfillRestockExternally: adminProcedure
+      .input(z.object({ transferId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const [transfer] = await db.select().from(inventoryTransfers).where(eq(inventoryTransfers.id, input.transferId)).limit(1);
+        if (!transfer || transfer.status !== "pending_admin_approval") throw new TRPCError({ code: "BAD_REQUEST", message: "Transfer is not in the correct state" });
+        if (!transfer.toWarehouseId) throw new TRPCError({ code: "BAD_REQUEST", message: "Missing destination warehouse" });
+
+        // Add to the specific warehouse inventory
+        const [destInv] = await db.select().from(productInventory).where(and(eq(productInventory.productId, transfer.productId), eq(productInventory.warehouseId, transfer.toWarehouseId))).limit(1);
+        if (destInv) {
+          await db.update(productInventory).set({ stock: sql`stock + ${transfer.quantity}` }).where(eq(productInventory.id, destInv.id));
+        } else {
+          await db.insert(productInventory).values({ productId: transfer.productId, warehouseId: transfer.toWarehouseId, stock: transfer.quantity });
+        }
+        
+        // Increase global stock 
+        await db.update(products).set({ stock: sql`stock + ${transfer.quantity}` }).where(eq(products.id, transfer.productId));
+
+        await db.update(inventoryTransfers).set({ status: "completed", notes: "Restocked externally (New Purchase)", completedAt: new Date(), updatedAt: new Date(), approvedBy: ctx.user.id }).where(eq(inventoryTransfers.id, input.transferId));
+        
+        const managersB = await db.select({ id: users.id }).from(users).where(and(eq(users.role, "manager"), eq(users.warehouseId, transfer.toWarehouseId)));
+        for (const manager of managersB) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: manager.id, content: `✅ RESTOCK APPROVED: Ordered externally. ${transfer.quantity} units of Product ${transfer.productId} have been added to your inventory.` });
+        }
+        return { success: true };
+      }),
+
+    dispatchInventoryTransfer: managerProcedure
+      .input(z.object({ transferId: z.number(), driverId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [transfer] = await db.select().from(inventoryTransfers).where(eq(inventoryTransfers.id, input.transferId)).limit(1);
+        if (!transfer || transfer.status !== "pending_sender_fulfillment") throw new TRPCError({ code: "BAD_REQUEST", message: "Transfer not ready for dispatch" });
+        if (ctx.user.role === "manager" && ctx.user.warehouseId !== transfer.fromWarehouseId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only dispatch from your own warehouse." });
+        }
+        const [sourceInv] = await db.select().from(productInventory).where(and(eq(productInventory.productId, transfer.productId), eq(productInventory.warehouseId, transfer.fromWarehouseId!))).limit(1);
+        if (!sourceInv || sourceInv.stock < transfer.quantity) {
+           throw new TRPCError({ code: "BAD_REQUEST", message: "Insufficient stock in source warehouse." });
+        }
+        await db.update(productInventory).set({ stock: sql`stock - ${transfer.quantity}` }).where(eq(productInventory.id, sourceInv.id));
+        await db.update(inventoryTransfers).set({ driverId: input.driverId, status: "in_transit", updatedAt: new Date() }).where(eq(inventoryTransfers.id, input.transferId));
+        const managersB = await db.select({ id: users.id }).from(users).where(and(eq(users.role, "manager"), eq(users.warehouseId, transfer.toWarehouseId)));
+        for (const manager of managersB) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: manager.id, content: `🚚 TRANSFER DISPATCHED: Transfer ID ${input.transferId} is on the way via Driver ID ${input.driverId}.` });
+        }
+        return { success: true };
+      }),
+
+    receiveInventoryTransfer: managerProcedure
+      .input(z.object({ transferId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [transfer] = await db.select().from(inventoryTransfers).where(eq(inventoryTransfers.id, input.transferId)).limit(1);
+        if (!transfer || transfer.status !== "in_transit") throw new TRPCError({ code: "BAD_REQUEST", message: "Transfer is not in transit." });
+        if (ctx.user.role === "manager" && ctx.user.warehouseId !== transfer.toWarehouseId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only receive transfers destined for your warehouse." });
+        }
+        const [destInv] = await db.select().from(productInventory).where(and(eq(productInventory.productId, transfer.productId), eq(productInventory.warehouseId, transfer.toWarehouseId))).limit(1);
+        if (destInv) {
+          await db.update(productInventory).set({ stock: sql`stock + ${transfer.quantity}` }).where(eq(productInventory.id, destInv.id));
+        } else {
+          await db.insert(productInventory).values({ productId: transfer.productId, warehouseId: transfer.toWarehouseId, stock: transfer.quantity });
+        }
+        await db.update(inventoryTransfers).set({ status: "completed", completedAt: new Date(), updatedAt: new Date() }).where(eq(inventoryTransfers.id, input.transferId));
+        
+        // Get the destination warehouse name
+        const [destWarehouse] = await db.select({ name: warehouses.name }).from(warehouses).where(eq(warehouses.id, transfer.toWarehouseId)).limit(1);
+        const warehouseName = destWarehouse?.name || `Warehouse ${transfer.toWarehouseId}`;
+        
+        const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin"));
+        for (const admin of admins) {
+           await db.insert(staffMessages).values({ senderId: ctx.user.id, receiverId: admin.id, content: `✅ TRANSFER COMPLETED: ${warehouseName} received ${transfer.quantity} units of Product ${transfer.productId}.` });
+        }
+        return { success: true };
+      }),
+
+    requestRestock: managerProcedure
+      .input(z.object({ productId: z.number(), productName: z.string(), quantity: z.number().default(10) }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        // Get warehouse name if warehouseId exists
+        let warehouseName = 'Local';
+        if (ctx.user.warehouseId) {
+          const warehouse = await db.select({ name: warehouses.name }).from(warehouses).where(eq(warehouses.id, ctx.user.warehouseId)).limit(1);
+          if (warehouse.length > 0) {
+            warehouseName = warehouse[0].name;
+          }
+          
+          await db.insert(inventoryTransfers).values({
+             productId: input.productId,
+             toWarehouseId: ctx.user.warehouseId,
+             quantity: input.quantity,
+             status: "pending_admin_approval",
+             requestedBy: ctx.user.id,
+             notes: "Manager requested restock"
+          });
+        }
+        
+        const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin"));
+        for (const admin of admins) {
+           await db.insert(staffMessages).values({
+             senderId: ctx.user.id,
+             receiverId: admin.id,
+             content: `🚨 RESTOCK REQUEST: ${warehouseName} needs more stock of "${input.productName}" (Product ID: ${input.productId}). Please arrange a transfer.`
+           });
+        }
+        return { success: true };
+      }),
+
+    createProductUnits: managerProcedure
+      .input(z.object({
+        productId: z.number(),
+        units: z.array(z.object({
+          serialNumber: z.string().min(1),
+          barcode: z.string().optional(),
+          notes: z.string().optional(),
+        })).min(1).max(100),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const serialNumbers = input.units.map(u => u.serialNumber);
+        const existing = await db.select({ serialNumber: productUnits.serialNumber }).from(productUnits).where(inArray(productUnits.serialNumber, serialNumbers));
+        if (existing.length > 0) throw new TRPCError({ code: "BAD_REQUEST", message: `Duplicate serials: ${existing.map(e => e.serialNumber).join(", ")}` });
+        const newUnits = await db.insert(productUnits).values(input.units.map(u => ({ ...u, productId: input.productId, status: "IN_STOCK" }))).returning();
+        await db.update(products).set({ hasSerial: true }).where(eq(products.id, input.productId));
+        return { success: true, count: newUnits.length };
+      }),
+
+    scanProductUnit: managerProcedure
+      .input(z.object({ code: z.string().min(1) }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const unit = await db.select({ id: productUnits.id, serialNumber: productUnits.serialNumber, barcode: productUnits.barcode, status: productUnits.status, productId: productUnits.productId, productName: products.name }).from(productUnits).innerJoin(products, eq(productUnits.productId, products.id)).where(or(eq(productUnits.serialNumber, input.code), eq(productUnits.barcode, input.code))).limit(1);
+        if (!unit.length) return { found: false, message: "No matching unit found" };
+        return { found: true, unit: unit[0], available: unit[0].status === "IN_STOCK" };
+      }),
+
+    upsertCategory: managerProcedure
       .input(
         z.object({
           id: z.number().optional(),
@@ -2778,8 +4178,8 @@ AI Response (JSON):
         } else {
           await upsertCategory(input);
         }
-        clearCachePrefix("categories");
-        clearCachePrefix("ai_store_context");
+        await cacheDelPattern("categories");
+        await cacheDelPattern("ai_store_context");
         return { success: true };
       }),
 
@@ -2793,12 +4193,12 @@ AI Response (JSON):
           // Delete the requested category
           await db.delete(categoriesSchema).where(eq(categoriesSchema.id, input.id));
         }
-        clearCachePrefix("categories");
-        clearCachePrefix("ai_store_context");
+        await cacheDelPattern("categories");
+        await cacheDelPattern("ai_store_context");
         return { success: true };
       }),
 
-    reorderCategories: adminProcedure
+    reorderCategories: managerProcedure
       .input(z.object({ ids: z.array(z.number()) }))
       .mutation(async ({ input }) => {
         const db = await getDb();
@@ -2807,7 +4207,7 @@ AI Response (JSON):
             await db.update(categoriesSchema).set({ order: i }).where(eq(categoriesSchema.id, input.ids[i]));
           }
         }
-        clearCachePrefix("categories");
+        await cacheDelPattern("categories");
         return { success: true };
       }),
 
@@ -2826,7 +4226,7 @@ AI Response (JSON):
         return { success: true };
       }),
 
-    getPayoutRequests: adminProcedure.query(async () => {
+    getPayoutRequests: managerProcedure.query(async () => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       return await db.select().from(deliveryPayouts).orderBy(desc(deliveryPayouts.requestedAt));
@@ -2845,7 +4245,7 @@ AI Response (JSON):
 
         const [payoutRequest] = await db.select().from(deliveryPayouts).where(eq(deliveryPayouts.id, input.id)).limit(1);
         if (!payoutRequest) throw new TRPCError({ code: "NOT_FOUND", message: "Payout request not found." });
-        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, payoutRequest.agentId)).limit(1);
+        const [agent] = await db.select().from(drivers).where(eq(drivers.id, payoutRequest.agentId)).limit(1);
         if (!agent || !agent.phone) throw new TRPCError({ code: "BAD_REQUEST", message: "Driver phone number is missing." });
         const generalSettings = await getSetting("general");
         
@@ -2867,9 +4267,20 @@ AI Response (JSON):
         return { success: true };
       }),
 
-    createPresignedUrl: adminProcedure
-      .input(z.object({ filename: z.string(), contentType: z.string() }))
+    createPresignedUrl: managerProcedure
+      .input(z.object({ 
+        filename: z.string().min(1).max(255), 
+        contentType: z.string().regex(/^(image\/(jpeg|png|webp|gif|avif)|model\/gltf-binary|model\/gltf\+json|application\/octet-stream)?$/, "Only image or 3D model uploads are allowed") 
+      }))
       .mutation(async ({ input }) => {
+        // ────── SECURITY: Validate filename to prevent directory traversal ──
+        if (input.filename.includes("..") || input.filename.includes("/") || input.filename.includes("\\")) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Invalid filename - directory traversal detected",
+          });
+        }
+
         const accessKey = process.env.AWS_ACCESS_KEY_ID;
         // If AWS keys are missing or using the placeholder, signal the frontend to fallback to Base64
         if (!accessKey || accessKey === "your_access_key") {
@@ -2888,10 +4299,15 @@ AI Response (JSON):
         const safeName = input.filename.replace(/[^a-zA-Z0-9.-]/g, "_");
         const key = `uploads/${Date.now()}-${safeName}`;
         
+        // ────── SECURITY: Add file size restriction in PutObject metadata ──
         const command = new PutObjectCommand({
           Bucket: process.env.AWS_S3_BUCKET || "",
           Key: key,
           ContentType: input.contentType,
+          // Metadata for bucket policies to enforce max size
+          Metadata: {
+            "max-size": "52428800", // 50MB in bytes
+          },
         });
         
         const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
@@ -2932,7 +4348,7 @@ AI Response (JSON):
           const newKnowledge = existingKnowledge + (existingKnowledge ? `\n\n` : "") + `### Source: ${input.fileName}\n${structuredKnowledge}`;
           
           await upsertSetting("ai_knowledge", newKnowledge);
-          clearCachePrefix("ai_knowledge");
+          await cacheDelPattern("ai_knowledge");
 
           return { success: true, structuredKnowledge };
         } catch (e: any) {
@@ -2941,7 +4357,7 @@ AI Response (JSON):
       }),
 
     // --- Settings Management ---
-    getSetting: adminProcedure
+    getSetting: managerProcedure
       .input(z.object({ key: z.string() }))
       .query(({ input }) => getSetting(input.key)),
 
@@ -2949,29 +4365,51 @@ AI Response (JSON):
       .input(z.object({ key: z.string(), value: z.any() }))
       .mutation(async ({ input }) => {
         await upsertSetting(input.key, input.value);
-        clearCachePrefix("settings");
-        if (input.key === "brands") clearCachePrefix("ai_store_context");
+        await cacheDelPattern("settings");
+        if (input.key === "brands") await cacheDelPattern("ai_store_context");
+        return { success: true };
+      }),
+
+    sendTestEmail: adminProcedure
+      .input(z.object({ email: z.string().email(), subject: z.string(), body: z.string() }))
+      .mutation(async ({ input }) => {
+        const emailSettings = await getSetting("email");
+        const generalSettings = await getSetting("general");
+        if (!emailSettings?.smtpHost || !emailSettings?.smtpUser) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "SMTP is not configured in Email Settings" });
+        }
+        const transporter = nodemailer.createTransport({
+          host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+          secure: Number(emailSettings.smtpPort) === 465,
+          auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+        });
+        await transporter.sendMail({
+          from: `"${generalSettings?.storeName || 'Store Admin'}" <${emailSettings.smtpUser}>`,
+          to: input.email,
+          subject: `[TEST] ${input.subject}`,
+          html: input.body
+        });
         return { success: true };
       }),
 
     // --- Content Management ---
-    banners: adminProcedure.query(() => getBanners()),
-    upsertBanner: adminProcedure
+    banners: managerProcedure.query(() => getBanners()),
+    upsertBanner: managerProcedure
       .input(z.object({ id: z.number().optional(), title: z.string().min(1), description: z.string().nullable().optional(), image: z.string().min(1), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         await upsertBanner(input);
-        clearCachePrefix("banners");
+        await cacheDelPattern("banners");
         return { success: true };
       }),
     deleteBanner: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteBanner(input.id);
-        clearCachePrefix("banners");
+        await cacheDelPattern("banners");
         return { success: true };
       }),
 
-    reorderBanners: adminProcedure
+    reorderBanners: managerProcedure
       .input(z.object({ ids: z.array(z.number()) }))
       .mutation(async ({ input }) => {
         const db = await getDb();
@@ -2980,50 +4418,328 @@ AI Response (JSON):
             await db.update(bannersSchema).set({ order: i }).where(eq(bannersSchema.id, input.ids[i]));
           }
         }
-        clearCachePrefix("banners");
+        await cacheDelPattern("banners");
         return { success: true };
       }),
 
-    promotions: adminProcedure.query(() => getPromotions()),
-    upsertPromotion: adminProcedure
+    promotions: managerProcedure.query(() => getPromotions()),
+    upsertPromotion: managerProcedure
       .input(z.object({ id: z.number().optional(), title: z.string().min(1), description: z.string().min(1), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         await upsertPromotion(input);
-        clearCachePrefix("promotions");
+        await cacheDelPattern("promotions");
         return { success: true };
       }),
     deletePromotion: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deletePromotion(input.id);
-        clearCachePrefix("promotions");
+        await cacheDelPattern("promotions");
         return { success: true };
       }),
 
-    announcements: adminProcedure.query(() => getAnnouncements()),
-    upsertAnnouncement: adminProcedure
+    announcements: managerProcedure.query(() => getAnnouncements()),
+    upsertAnnouncement: managerProcedure
       .input(z.object({ id: z.number().optional(), title: z.string().min(1), content: z.string().min(1), date: z.string().or(z.date()), image: z.string().optional(), linkUrl: z.string().optional(), active: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         const date = new Date(input.date);
         await upsertAnnouncement({ ...input, date });
-        clearCachePrefix("announcements");
+        await cacheDelPattern("announcements");
         return { success: true };
       }),
     deleteAnnouncement: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await deleteAnnouncement(input.id);
-        clearCachePrefix("announcements");
+        await cacheDelPattern("announcements");
         return { success: true };
+      }),
+
+    // ─── Deletion Requests (Manager -> Admin workflow) ───
+    requestDeletion: managerProcedure
+      .input(z.object({
+        itemType: z.enum(["product", "category", "banner", "promotion", "announcement", "driver", "vehicle", "brand"]),
+        itemId: z.string().min(1),
+        itemName: z.string().min(1),
+        reason: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.insert(deletionRequests).values({
+          itemType: input.itemType,
+          itemId: input.itemId,
+          itemName: input.itemName,
+          managerId: ctx.user.id,
+          reason: input.reason,
+          warehouseId: ctx.user.warehouseId,
+          status: "pending"
+        });
+        return { success: true };
+      }),
+
+    getDeletionRequests: managerProcedure
+      .input(z.object({ warehouseId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        let conditions = [];
+        if (ctx.user.role === "manager" && ctx.user.warehouseId) conditions.push(eq(deletionRequests.warehouseId, ctx.user.warehouseId));
+        else if (ctx.user.role === "admin" && input?.warehouseId) conditions.push(eq(deletionRequests.warehouseId, input.warehouseId));
+
+        return db.select({
+          id: deletionRequests.id,
+          itemType: deletionRequests.itemType,
+          itemId: deletionRequests.itemId,
+          itemName: deletionRequests.itemName,
+          reason: deletionRequests.reason,
+          status: deletionRequests.status,
+          createdAt: deletionRequests.createdAt,
+          managerName: users.name
+        })
+        .from(deletionRequests)
+        .leftJoin(users, eq(deletionRequests.managerId, users.id))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
+        .orderBy(desc(deletionRequests.createdAt));
+      }),
+
+    reviewDeletionRequest: adminProcedure
+      .input(z.object({
+        requestId: z.number(),
+        action: z.enum(["approve", "reject"]),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [request] = await db.select().from(deletionRequests).where(eq(deletionRequests.id, input.requestId)).limit(1);
+        if (!request || request.status !== "pending") {
+           throw new TRPCError({ code: "BAD_REQUEST", message: "Request not found or already processed" });
+        }
+
+        if (input.action === "reject") {
+           await db.update(deletionRequests).set({ status: "rejected", adminId: ctx.user.id, updatedAt: new Date() }).where(eq(deletionRequests.id, input.requestId));
+           return { success: true, message: "Request rejected" };
+        }
+
+        if (input.action === "approve") {
+           const idNum = parseInt(request.itemId, 10);
+           try {
+             switch (request.itemType) {
+               case "product": await deleteProduct(idNum); break;
+               case "category":
+                 await db.update(categoriesSchema).set({ parentId: null }).where(eq(categoriesSchema.parentId, idNum));
+                 await db.delete(categoriesSchema).where(eq(categoriesSchema.id, idNum));
+                 break;
+               case "banner": await deleteBanner(idNum); break;
+               case "promotion": await deletePromotion(idNum); break;
+               case "announcement": await deleteAnnouncement(idNum); break;
+           case "driver": 
+             const [driver] = await db.select().from(drivers).where(eq(drivers.id, idNum)).limit(1);
+             if (driver) {
+               await db.update(drivers).set({ status: "inactive" }).where(eq(drivers.id, idNum));
+               
+               const dismissalData = {
+                 type: 'driver',
+                 id: idNum,
+                 name: driver.name,
+                 email: driver.email,
+                 reason: request.reason,
+                 firedAt: Date.now(),
+                 appealStatus: 'none',
+                 appealText: null
+               };
+               await upsertSetting(`dismissal_driver_${idNum}`, dismissalData);
+               
+               const token = await new SignJWT({ type: "driver", id: idNum, purpose: "appeal" })
+                 .setProtectedHeader({ alg: "HS256" })
+                 .setExpirationTime("3d")
+                 .sign(JWT_SECRET);
+                 
+               if (driver.email) {
+                 try {
+                   const emailSettings = await getSetting("email");
+                   const generalSettings = await getSetting("general");
+                   const appearanceSettings = await getSetting("appearance");
+                   
+                   if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+                     const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+                     const host = ctx.req.headers.host || "localhost:3000";
+                     const protocol = host.includes("localhost") ? "http" : "https";
+                     const appealLink = `${protocol}://${host}/appeal?token=${token}`;
+                     const emailHtml = getDismissalEmailHtml({ storeName: generalSettings?.storeName || "Store", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#ef4444", contactEmail: generalSettings?.contactEmail || "support@example.com", name: driver.name, role: "Driver", reason: request.reason, appealLink, emailBackgroundColor: emailSettings?.emailBackgroundColor, theme: emailSettings?.theme });
+                     await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Admin'}" <${emailSettings.smtpUser}>`, to: driver.email, subject: `Notice of Dismissal`, html: emailHtml });
+                   }
+                 } catch (err) { console.error(err); }
+               }
+             }
+             break;
+               case "vehicle": await db.delete(vehicles).where(eq(vehicles.id, idNum)); break;
+             }
+           } catch (e: any) {
+             throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to delete item: " + e.message });
+           }
+           await db.update(deletionRequests).set({ status: "approved", adminId: ctx.user.id, updatedAt: new Date() }).where(eq(deletionRequests.id, input.requestId));
+           return { success: true, message: "Request approved and item deleted" };
+        }
+      }),
+
+    fireManager: adminProcedure
+      .input(z.object({ managerId: z.number(), reason: z.string().min(1) }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        const [manager] = await db.select().from(users).where(and(eq(users.id, input.managerId), eq(users.role, "manager"))).limit(1);
+        if (!manager) throw new TRPCError({ code: "NOT_FOUND", message: "Manager not found" });
+        
+        await db.update(users).set({ suspended: true }).where(eq(users.id, input.managerId));
+        
+        const dismissalData = {
+          type: 'manager',
+          id: input.managerId,
+          name: manager.name,
+          email: manager.email,
+          reason: input.reason,
+          firedAt: Date.now(),
+          appealStatus: 'none',
+          appealText: null
+        };
+        await upsertSetting(`dismissal_manager_${input.managerId}`, dismissalData);
+        
+        const token = await new SignJWT({ type: "manager", id: input.managerId, purpose: "appeal" })
+          .setProtectedHeader({ alg: "HS256" })
+          .setExpirationTime("3d")
+          .sign(JWT_SECRET);
+          
+        if (manager.email) {
+          try {
+            const emailSettings = await getSetting("email");
+            const generalSettings = await getSetting("general");
+            const appearanceSettings = await getSetting("appearance");
+            
+            if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+              const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+              const host = ctx.req.headers.host || "localhost:3000";
+              const protocol = host.includes("localhost") ? "http" : "https";
+              const appealLink = `${protocol}://${host}/appeal?token=${token}`;
+              const emailHtml = getDismissalEmailHtml({ storeName: generalSettings?.storeName || "Store", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#ef4444", contactEmail: generalSettings?.contactEmail || "support@example.com", name: manager.name, role: "Manager", reason: input.reason, appealLink, emailBackgroundColor: emailSettings?.emailBackgroundColor, theme: emailSettings?.theme });
+              await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Admin'}" <${emailSettings.smtpUser}>`, to: manager.email, subject: `Notice of Dismissal`, html: emailHtml });
+            }
+          } catch (err) { console.error(err); }
+        }
+        
+        return { success: true };
+      }),
+
+    warehouses: managerProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed" });
+      return db.select().from(warehouses);
+    }),
+
+    upsertWarehouse: adminProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1),
+        type: z.string(),
+        address: z.string().min(1),
+        country: z.string().min(1),
+        county: z.string().optional(),
+        city: z.string().min(1),
+        lat: z.number(),
+        lng: z.number(),
+        active: z.boolean().default(true),
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database connection failed" });
+        
+        if (input.id) {
+          // Update existing warehouse
+          await db.update(warehouses).set({
+            name: input.name,
+            type: input.type,
+            address: input.address,
+            country: input.country,
+            county: input.county || null,
+            city: input.city,
+            lat: input.lat,
+            lng: input.lng,
+            active: input.active,
+            updatedAt: new Date(),
+          }).where(eq(warehouses.id, input.id));
+          return { success: true, id: input.id };
+        } else {
+          // Create new warehouse
+          const result = await db.insert(warehouses).values({
+            name: input.name,
+            type: input.type,
+            address: input.address,
+            country: input.country,
+            county: input.county || null,
+            city: input.city,
+            lat: input.lat,
+            lng: input.lng,
+            active: input.active,
+          }).returning({ id: warehouses.id });
+          return { success: true, id: result[0]?.id || 0 };
+        }
       }),
   }),
 
-  // ─── Delivery ──────────────────────────────────────────────────────────────
-  delivery: router({
-    getAgents: adminProcedure.query(async () => {
+  // ─── Inventory Analytics (Tier 1 & 2) ──────────────────────────────────────
+  inventory: router({
+    heatmap: managerProcedure
+      .input(z.object({ threshold: z.number().optional() }).optional())
+      .query(async ({ input }) => {
+        const cacheKey = `inv_heatmap_${input?.threshold || 20}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) return cached;
+        const data = await getStockHeatmapByWarehouse(input?.threshold);
+        await cacheSet(cacheKey, data, 5);
+        return data;
+      }),
+    velocityTrends: managerProcedure
+      .input(z.object({ limit: z.number().optional(), timeRange: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        const cacheKey = `inv_velocity_${input?.limit || 50}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) return cached;
+        const data = await getStockVelocityTrends(input?.limit);
+        await cacheSet(cacheKey, data, 5);
+        return data;
+      }),
+    imbalances: managerProcedure.query(async () => {
+      const cached = await cacheGet("inv_imbalances");
+      if (cached) return cached;
+      const data = await getWarehouseImbalances();
+      await cacheSet("inv_imbalances", data, 5);
+      return data;
+    }),
+    forecasts: managerProcedure.query(async () => {
+      const cached = await cacheGet("inv_forecasts");
+      if (cached) return cached;
+      const data = await getDemandForecasts();
+      await cacheSet("inv_forecasts", data, 5);
+      return data;
+    }),
+    aging: managerProcedure.query(async () => {
+      const cached = await cacheGet("inv_aging");
+      if (cached) return cached;
+      const data = await getInventoryAging();
+      await cacheSet("inv_aging", data, 5);
+      return data;
+    }),
+  }),
+
+  // ─── Fleet Management ──────────────────────────────────────────────────────
+  fleet: router({
+    getAgents: managerProcedure.query(async () => {
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const agentsList = await db.select().from(deliveryAgents);
+      const agentsList = await db.select().from(drivers);
       
       const activeOrders = await db.select({
         agentId: orders.deliveryAgentId,
@@ -3038,27 +4754,381 @@ AI Response (JSON):
       });
     }),
 
-    getDriverProfile: protectedProcedure
+    getDrivers: managerProcedure
+      .input(z.object({ warehouseId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      
+      let conditions = [];
+      if (ctx.user.role === "manager" && ctx.user.warehouseId) conditions.push(eq(drivers.warehouseId, ctx.user.warehouseId));
+      else if (ctx.user.role === "admin" && input?.warehouseId) conditions.push(eq(drivers.warehouseId, input.warehouseId));
+      
+      const driversList = await db.select().from(drivers).where(conditions.length > 0 ? and(...conditions) : undefined);
+      
+      const activeOrders = await db.select({
+        agentId: orders.deliveryAgentId,
+        city: orders.shippingCity
+      }).from(orders).where(eq(orders.status, "out_for_delivery"));
+
+      return driversList.map(driver => {
+        const agentOrders = activeOrders.filter(o => o.agentId === driver.id);
+        const activeCity = agentOrders.length > 0 ? agentOrders[0].city : null;
+        const { pin, ...rest } = driver;
+        return { ...rest, activeCity };
+      });
+    }),
+
+    getVehicles: managerProcedure
+      .input(z.object({ warehouseId: z.number().optional() }).optional())
+      .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      
+      let conditions = [];
+      if (ctx.user.role === "manager" && ctx.user.warehouseId) conditions.push(eq(vehicles.warehouseId, ctx.user.warehouseId));
+      else if (ctx.user.role === "admin" && input?.warehouseId) conditions.push(eq(vehicles.warehouseId, input.warehouseId));
+      
+      return db.select().from(vehicles).where(conditions.length > 0 ? and(...conditions) : undefined).orderBy(desc(vehicles.createdAt));
+    }),
+
+    upsertDriver: managerProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1),
+        phone: z.string().min(1),
+        email: z.string().email().optional().nullable(),
+        licenseNumber: z.string().optional().nullable(),
+        status: z.enum(["active", "inactive"]).optional(),
+        pin: z.string().optional(),
+        generatePin: z.boolean().optional(),
+        photoUrl: z.string().optional(),
+        warehouseId: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const dataToUpdate: any = {
+          name: input.name,
+          phone: input.phone,
+          email: input.email || null,
+          licenseNumber: input.licenseNumber || null,
+          photoUrl: input.photoUrl || null,
+          warehouseId: ctx.user.role === "manager" ? ctx.user.warehouseId : input.warehouseId,
+        };
+        if (input.status) dataToUpdate.status = input.status;
+        
+        let finalPin = input.pin;
+        let generatedPin = false;
+        if (input.generatePin || (!input.id && !finalPin)) {
+          // Generate a secure 6-character alphanumeric PIN
+          finalPin = Math.random().toString(36).substring(2, 8).toUpperCase(); 
+          generatedPin = true;
+        }
+        if (finalPin) dataToUpdate.pin = await hashPassword(finalPin);
+
+        if (input.id) {
+          await db.update(drivers).set(dataToUpdate).where(eq(drivers.id, input.id));
+        } else {
+          await db.insert(drivers).values(dataToUpdate as any);
+        }
+
+        // Dispatch credentials email if a new PIN was generated and an email was provided
+        if (generatedPin && input.email) {
+          try {
+            const emailSettings = await getSetting("email");
+            const generalSettings = await getSetting("general");
+            const appearanceSettings = await getSetting("appearance");
+            
+            if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+              const transporter = nodemailer.createTransport({
+                host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+                secure: Number(emailSettings.smtpPort) === 465,
+                auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+              });
+
+              const host = ctx.req.headers.host || "localhost:3000";
+              const protocol = host.includes("localhost") ? "http" : "https";
+              const systemUrl = `${protocol}://${host}/driver-portal`;
+
+              const emailHtml = getDriverPinEmailHtml({
+                storeName: generalSettings?.storeName || "Store Fleet", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#10b981", contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+                driverName: input.name, pin: finalPin, phone: input.phone, systemUrl,
+                emailBackgroundColor: emailSettings?.emailBackgroundColor,
+                theme: emailSettings?.theme,
+                customTemplate: emailSettings?.customTemplates?.driverPin
+              });
+
+              await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Fleet'}" <${emailSettings.smtpUser}>`, to: input.email, subject: `Welcome! Your Driver Access Credentials`, html: emailHtml });
+            }
+          } catch (err) {
+            console.error("Failed to send driver credentials email:", err);
+          }
+        }
+
+        return { success: true, defaultPinUsed: generatedPin, generatedPin: generatedPin ? finalPin : undefined };
+      }),
+
+    deleteDriver: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        // Soft Delete: Keep record for audit logs but mark inactive
+        await db.update(drivers).set({ status: "inactive" }).where(eq(drivers.id, input.id));
+        return { success: true };
+      }),
+
+    upsertVehicle: managerProcedure
+      .input(z.object({
+        id: z.number().optional(),
+        name: z.string().min(1),
+        numberPlate: z.string().min(1),
+        type: z.enum(["car", "motorcycle", "truck"]),
+        status: z.enum(["available", "assigned", "maintenance"]).optional(),
+        warehouseId: z.number().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const warehouseId = ctx.user.role === "manager" ? ctx.user.warehouseId : input.warehouseId;
+        const data = { ...input, warehouseId };
+        if (input.id) {
+          await db.update(vehicles).set(data).where(eq(vehicles.id, input.id));
+        } else {
+          await db.insert(vehicles).values(data as any);
+        }
+        return { success: true };
+      }),
+
+    deleteVehicle: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        // Soft Delete: Keep record for audit logs but mark as maintenance/inactive
+        await db.update(vehicles).set({ status: "maintenance" }).where(eq(vehicles.id, input.id));
+        return { success: true };
+      }),
+
+    getAssignments: managerProcedure.query(async () => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      return db.select({
+        id: assignments.id,
+        driverId: assignments.driverId,
+        vehicleId: assignments.vehicleId,
+        assignedAt: assignments.assignedAt,
+        returnedAt: assignments.returnedAt,
+        status: assignments.status,
+        driverName: drivers.name,
+        vehicleName: vehicles.name,
+        vehiclePlate: vehicles.numberPlate,
+      })
+      .from(assignments)
+      .innerJoin(drivers, eq(assignments.driverId, drivers.id))
+      .innerJoin(vehicles, eq(assignments.vehicleId, vehicles.id))
+      .orderBy(desc(assignments.assignedAt));
+    }),
+
+    getMyAssignment: publicProcedure
+      .input(z.object({ agentId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return null;
+        const [assignment] = await db.select({
+          id: assignments.id,
+          status: assignments.status,
+          vehicleName: vehicles.name,
+          vehiclePlate: vehicles.numberPlate,
+          vehicleType: vehicles.type
+        })
+        .from(assignments)
+        .innerJoin(vehicles, eq(assignments.vehicleId, vehicles.id))
+         .where(and(eq(assignments.driverId, input.agentId), or(eq(assignments.status, "active"), eq(assignments.status, "completed"))))
+        .limit(1);
+        return assignment || null;
+      }),
+
+    createAssignment: managerProcedure
+      .input(z.object({ driverId: z.number(), vehicleId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [vehicle] = await db.select().from(vehicles).where(eq(vehicles.id, input.vehicleId)).limit(1);
+        if (!vehicle || vehicle.status !== "available") throw new TRPCError({ code: "BAD_REQUEST", message: "Vehicle is not available" });
+
+        const activeAssignments = await db.select().from(assignments).where(and(eq(assignments.driverId, input.driverId), eq(assignments.status, "active")));
+        if (activeAssignments.length > 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Driver already has an active vehicle assignment" });
+
+        await db.insert(assignments).values({ driverId: input.driverId, vehicleId: input.vehicleId, status: "active" });
+        await db.update(vehicles).set({ status: "assigned" }).where(eq(vehicles.id, input.vehicleId));
+        return { success: true };
+      }),
+
+    requestVehicleReturn: publicProcedure
+      .input(z.object({ assignmentId: z.number(), imageUrl: z.string().optional(), notes: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        await db.update(assignments).set({ status: "pending_return" }).where(eq(assignments.id, input.assignmentId));
+        
+        if (input.imageUrl || input.notes) {
+          await upsertSetting(`return_req_${input.assignmentId}`, { imageUrl: input.imageUrl, notes: input.notes });
+        }
+        
+        return { success: true };
+      }),
+
+    getReturnRequestDetails: managerProcedure
+      .input(z.object({ assignmentId: z.number() }))
+      .query(async ({ input }) => {
+        return await getSetting(`return_req_${input.assignmentId}`);
+      }),
+      
+    createPresignedUrl: publicProcedure
+      .input(z.object({ 
+        filename: z.string().min(1).max(255), 
+        contentType: z.string().regex(/^(image\/(jpeg|png|webp|gif|avif)|model\/gltf-binary|model\/gltf\+json|application\/octet-stream)?$/, "Only image or 3D model uploads are allowed") 
+      }))
+      .mutation(async ({ input }) => {
+        if (input.filename.includes("..") || input.filename.includes("/") || input.filename.includes("\\")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid filename" });
+        }
+        const accessKey = process.env.AWS_ACCESS_KEY_ID;
+        if (!accessKey || accessKey === "your_access_key") return { uploadUrl: null, publicUrl: null };
+
+        const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+        const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+
+        const s3Client = new S3Client({
+          region: process.env.AWS_REGION || "auto",
+          endpoint: process.env.AWS_ENDPOINT || undefined,
+          credentials: { accessKeyId: process.env.AWS_ACCESS_KEY_ID || "", secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "" },
+        });
+        
+        const safeName = input.filename.replace(/[^a-zA-Z0-9.-]/g, "_");
+        const key = `uploads/driver-${Date.now()}-${safeName}`;
+        
+        const command = new PutObjectCommand({ Bucket: process.env.AWS_S3_BUCKET || "", Key: key, ContentType: input.contentType, Metadata: { "max-size": "52428800" } });
+        const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+        const publicUrl = process.env.AWS_PUBLIC_URL ? `${process.env.AWS_PUBLIC_URL}/${key}` : `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${key}`;
+        
+        return { uploadUrl, publicUrl };
+      }),
+
+    returnAssignment: managerProcedure
+      .input(z.object({ assignmentId: z.number(), inspectionNotes: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [assignment] = await db.select().from(assignments).where(eq(assignments.id, input.assignmentId)).limit(1);
+        if (!assignment || assignment.status === "completed") throw new TRPCError({ code: "BAD_REQUEST", message: "Assignment not found or already completed" });
+
+        const updateData: any = { status: "completed", returnedAt: new Date() };
+        await db.update(assignments).set(updateData).where(eq(assignments.id, input.assignmentId));
+        await db.update(vehicles).set({ status: "available" }).where(eq(vehicles.id, assignment.vehicleId));
+        
+        if (input.inspectionNotes) {
+          const existing = await getSetting(`return_req_${input.assignmentId}`) || {};
+          await upsertSetting(`return_req_${input.assignmentId}`, { ...existing, adminNotes: input.inspectionNotes });
+        }
+        
+        return { success: true };
+      }),
+
+    getVapidPublicKey: publicProcedure.query(() => {
+      const key = process.env.VAPID_PUBLIC_KEY || null;
+      if (!key) {
+        console.warn("⚠️ VAPID_PUBLIC_KEY is not configured. Push notifications will not work.");
+      }
+      return key;
+    }),
+
+    debugPushSubscription: publicProcedure
       .input(z.object({ agentId: z.number() }))
       .query(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
+        
+        try {
+          const [driver] = await db.select().from(drivers).where(eq(drivers.id, input.agentId)).limit(1);
+          if (!driver) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found" });
+          
+          return {
+            driverId: driver.id,
+            driverName: driver.name,
+            driverEmail: driver.email,
+            hasSubscription: !!driver.pushSubscription,
+            subscriptionEndpoint: driver.pushSubscription ? (driver.pushSubscription as any).endpoint : null,
+            hasVapidKeys: !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY),
+            vapidPublicKey: process.env.VAPID_PUBLIC_KEY ? "✅ Configured" : "❌ Missing",
+            vapidPrivateKey: process.env.VAPID_PRIVATE_KEY ? "✅ Configured" : "❌ Missing",
+            status: driver.status
+          };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error("Debug push subscription failed:", errorMsg);
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: errorMsg });
+        }
+      }),
+
+    savePushSubscription: publicProcedure
+      .input(z.object({ 
+        agentId: z.number(),
+        subscription: z.object({
+          endpoint: z.string().url(),
+          keys: z.object({
+            auth: z.string(),
+            p256dh: z.string()
+          })
+        })
+      }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        
+        try {
+          // Validate subscription structure before saving
+          if (!input.subscription.endpoint || !input.subscription.keys?.auth || !input.subscription.keys?.p256dh) {
+            throw new Error("Invalid subscription structure: missing endpoint or keys");
+          }
+          
+          await db.update(drivers).set({ pushSubscription: input.subscription }).where(eq(drivers.id, input.agentId));
+          console.log(`✅ Push subscription saved for driver ${input.agentId}`);
+          return { success: true, message: "Push subscription saved successfully" };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`❌ Failed to save push subscription for driver ${input.agentId}:`, errorMsg);
+          throw new TRPCError({ code: "BAD_REQUEST", message: errorMsg });
+        }
+      }),
+
+    getDriverProfile: publicProcedure
+      .input(z.object({ agentId: z.number() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [agent] = await db.select().from(drivers).where(eq(drivers.id, input.agentId)).limit(1);
         if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found" });
         const { pin, ...rest } = agent;
         return rest;
       }),
 
-    updateAvailability: protectedProcedure
+    updateAvailability: publicProcedure
       .input(z.object({ agentId: z.number(), isAvailable: z.boolean() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(deliveryAgents).set({ isAvailable: input.isAvailable }).where(eq(deliveryAgents.id, input.agentId));
+        await db.update(drivers).set({ status: input.isAvailable ? "active" : "inactive" }).where(eq(drivers.id, input.agentId));
         return { success: true };
       }),
 
-    upsertAgent: adminProcedure
+    upsertAgent: managerProcedure
       .input(z.object({
         id: z.number().optional(),
         name: z.string().min(1),
@@ -3068,7 +5138,7 @@ AI Response (JSON):
         pin: z.string().optional(),
         isAvailable: z.boolean().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
@@ -3079,15 +5149,22 @@ AI Response (JSON):
           vehicleType: input.vehicleType,
         };
         if (input.isAvailable !== undefined) dataToUpdate.isAvailable = input.isAvailable;
-        if (input.pin) dataToUpdate.pin = hashPassword(input.pin); // Hash the PIN before saving!
+        
+        let finalPin = input.pin;
+        let generatedPin = false;
+        if (!input.id && !finalPin) {
+          finalPin = Math.random().toString(36).substring(2, 8).toUpperCase();
+          generatedPin = true;
+        }
+        if (finalPin) dataToUpdate.pin = await hashPassword(finalPin); // Hash the PIN before saving!
 
         if (input.id) {
-          await db.update(deliveryAgents).set(dataToUpdate).where(eq(deliveryAgents.id, input.id));
+          await db.update(drivers).set(dataToUpdate).where(eq(drivers.id, input.id));
         } else {
-          if (!input.pin) throw new TRPCError({ code: "BAD_REQUEST", message: "PIN is required for new drivers" });
-          await db.insert(deliveryAgents).values(dataToUpdate as any);
+          await db.insert(drivers).values(dataToUpdate as any);
         }
-        return { success: true };
+        // Skipping email logic here as upsertAgent is legacy fallback. Email goes out on upsertDriver.
+        return { success: true, defaultPinUsed: generatedPin, generatedPin: generatedPin ? finalPin : undefined };
       }),
 
     deleteAgent: adminProcedure
@@ -3095,11 +5172,12 @@ AI Response (JSON):
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.delete(deliveryAgents).where(eq(deliveryAgents.id, input.id));
+        // Soft Delete
+        await db.update(drivers).set({ status: "inactive" }).where(eq(drivers.id, input.id));
         return { success: true };
     }),
 
-    assignDelivery: adminProcedure
+    assignDelivery: managerProcedure
       .input(z.object({ orderId: z.number(), agentId: z.number() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
@@ -3108,8 +5186,8 @@ AI Response (JSON):
         const [orderToAssign] = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
         if (!orderToAssign) throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
 
-        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
-        if (!agent || !agent.isAvailable) {
+        const [agent] = await db.select().from(drivers).where(eq(drivers.id, input.agentId)).limit(1);
+        if (!agent || agent.status !== "active") {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Agent not found or is currently offline" });
         }
 
@@ -3133,10 +5211,87 @@ AI Response (JSON):
         // Update the timeline so the customer sees the status change
         await updateOrderStatus(input.orderId, "out_for_delivery", `Assigned to delivery agent: ${agent.name}`);
 
+        // --- Send Email Notification to Driver ---
+        if (agent.email) {
+          try {
+            const emailSettings = await getSetting("email");
+            const generalSettings = await getSetting("general");
+            
+            if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+              const transporter = nodemailer.createTransport({
+                host: emailSettings.smtpHost,
+                port: Number(emailSettings.smtpPort),
+                secure: Number(emailSettings.smtpPort) === 465,
+                auth: {
+                  user: emailSettings.smtpUser,
+                  pass: emailSettings.smtpPassword,
+                },
+              });
+
+              const storeName = generalSettings?.storeName || "Store System";
+              const emailHtml = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                  <h2 style="color: #3b82f6;">New Delivery Assigned 📦</h2>
+                  <p>Hello ${agent.name},</p>
+                  <p>You have been assigned a new delivery for Order <strong>#${orderToAssign.orderNumber}</strong>.</p>
+                  <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                    <p style="margin: 0 0 10px 0;"><strong>Customer:</strong> ${orderToAssign.shippingFullName}</p>
+                    <p style="margin: 0 0 10px 0;"><strong>Address:</strong> ${orderToAssign.shippingAddress}, ${orderToAssign.shippingCity}</p>
+                    <p style="margin: 0;"><strong>Phone:</strong> ${orderToAssign.shippingPhone}</p>
+                  </div>
+                  <p>Please log in to your Driver Portal to view the full details and access the delivery OTP.</p>
+                  <p>Drive safely!</p>
+                </div>
+              `;
+
+              await transporter.sendMail({
+                from: `"${storeName}" <${emailSettings.smtpUser}>`,
+                to: agent.email,
+                subject: `New Delivery Assigned - Order #${orderToAssign.orderNumber}`,
+                html: emailHtml,
+              });
+            }
+          } catch (err) {
+            console.error("Failed to send driver assignment email:", err);
+          }
+        }
+
+        if (agent.pushSubscription && process.env.VAPID_PUBLIC_KEY) {
+          try {
+            // Validate subscription structure
+            const sub = agent.pushSubscription as any;
+            if (!sub.endpoint || !sub.keys?.auth || !sub.keys?.p256dh) {
+              throw new Error(`Invalid subscription structure for driver ${agent.id}: missing required fields (endpoint or keys)`);
+            }
+            
+            console.log(`📤 Sending push notification to driver ${agent.id} (${agent.email})...`);
+            await webpush.sendNotification(
+              sub,
+              JSON.stringify({
+                title: "New Delivery Assigned 📦",
+                body: `Order #${orderToAssign.orderNumber} is ready for you.`,
+                url: "/driver-portal"
+              })
+            );
+            console.log(`✅ Push notification sent successfully to driver ${agent.id}`);
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            console.error(`❌ Web push notification failed for driver ${agent.id}:`, errorMsg);
+            console.error("Full error details:", error);
+          }
+        } else {
+          if (!agent.pushSubscription) {
+            console.warn(`⚠️ Driver ${agent.id} has no push subscription saved`);
+          }
+          if (!process.env.VAPID_PUBLIC_KEY) {
+            console.warn("⚠️ VAPID_PUBLIC_KEY environment variable is not configured");
+          }
+        }
+
         return { success: true, message: "Delivery assigned successfully!" };
       }),
 
-    myDeliveries: protectedProcedure
+    myDeliveries: publicProcedure
       .input(z.object({ agentId: z.number().optional() }).optional())
       .query(async ({ input }) => {
         const db = await getDb();
@@ -3152,7 +5307,7 @@ AI Response (JSON):
         return db.select().from(orders).where(eq(orders.status, "out_for_delivery"));
       }),
 
-    verifyOtpAndComplete: protectedProcedure
+    verifyOtpAndComplete: publicProcedure
       .input(z.object({ orderId: z.number(), otp: z.string() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
@@ -3167,28 +5322,282 @@ AI Response (JSON):
         return { success: true };
       }),
 
-    verifyDriverPin: protectedProcedure
+    requestDriverPinReset: publicProcedure
+      .input(z.object({ phone: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const isEmail = input.phone.includes('@');
+        let agent;
+
+        if (isEmail) {
+          const result = await db.select().from(drivers).where(
+            eq(drivers.email, input.phone.trim().toLowerCase())
+          ).limit(1);
+          agent = result[0];
+        } else {
+          let rawPhone = input.phone.replace(/\s+/g, '');
+          let coreDigits = rawPhone;
+          if (coreDigits.startsWith('+254')) coreDigits = coreDigits.slice(4);
+          else if (coreDigits.startsWith('254')) coreDigits = coreDigits.slice(3);
+          else if (coreDigits.startsWith('0')) coreDigits = coreDigits.slice(1);
+
+          const possiblePhones = [
+            rawPhone, `0${coreDigits}`, `+254${coreDigits}`, `254${coreDigits}`
+          ].filter(p => p.length <= 20);
+
+          const result = possiblePhones.length > 0 ? await db.select().from(drivers).where(inArray(drivers.phone, possiblePhones)).limit(1) : [];
+          agent = result[0];
+        }
+
+        if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found. Please check your phone number." });
+
+        if (!agent.email) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "No email associated with this account. Please contact your fleet manager to reset your PIN manually." });
+        }
+
+        const newPin = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const hashedPin = await hashPassword(newPin);
+        await db.update(drivers).set({ pin: hashedPin }).where(eq(drivers.id, agent.id));
+
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          const appearanceSettings = await getSetting("appearance");
+
+          if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+            });
+
+            const host = ctx.req.headers.host || "localhost:3000";
+            const protocol = host.includes("localhost") ? "http" : "https";
+            const systemUrl = `${protocol}://${host}/driver-portal`;
+
+            const emailHtml = getDriverPinEmailHtml({
+              storeName: generalSettings?.storeName || "Store Fleet", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#10b981", contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+              driverName: agent.name, pin: newPin, phone: agent.phone, systemUrl,
+              emailBackgroundColor: emailSettings?.emailBackgroundColor,
+              theme: emailSettings?.theme,
+              customTemplate: emailSettings?.customTemplates?.driverPin
+            });
+
+            await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Fleet'}" <${emailSettings.smtpUser}>`, to: agent.email, subject: `Password Reset: Your New Driver Access PIN`, html: emailHtml });
+          }
+        } catch (err) {
+          console.error("Failed to send PIN reset email:", err);
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to send reset email. Please try again later." });
+        }
+
+        return { success: true, message: "A new PIN has been generated and sent to your email address." };
+      }),
+
+    requestDriverPinOtp: publicProcedure
+      .input(z.object({ phone: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const isEmail = input.phone.includes('@');
+        let agent;
+
+        if (isEmail) {
+          const result = await db.select().from(drivers).where(
+            eq(drivers.email, input.phone.trim().toLowerCase())
+          ).limit(1);
+          agent = result[0];
+        } else {
+          let rawPhone = input.phone.replace(/\s+/g, '');
+          let coreDigits = rawPhone;
+          if (coreDigits.startsWith('+254')) coreDigits = coreDigits.slice(4);
+          else if (coreDigits.startsWith('254')) coreDigits = coreDigits.slice(3);
+          else if (coreDigits.startsWith('0')) coreDigits = coreDigits.slice(1);
+
+          const possiblePhones = [
+            rawPhone, `0${coreDigits}`, `+254${coreDigits}`, `254${coreDigits}`
+          ].filter(p => p.length <= 20);
+
+          const result = possiblePhones.length > 0 ? await db.select().from(drivers).where(inArray(drivers.phone, possiblePhones)).limit(1) : [];
+          agent = result[0];
+        }
+
+        if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found. Please check your phone number." });
+
+        if (!agent.email) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "No email associated with this account. Please contact your fleet manager." });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const token = await new SignJWT({ email: agent.email, purpose: "driver_pin_reset", otp })
+          .setProtectedHeader({ alg: "HS256" })
+          .setExpirationTime("30m")
+          .sign(JWT_SECRET);
+
+        const host = ctx.req.headers.host || "localhost:3000";
+        const protocol = host.includes("localhost") ? "http" : "https";
+        const resetLink = `${protocol}://${host}/driver-portal?email=${encodeURIComponent(agent.email)}&token=${token}`;
+
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          const appearanceSettings = await getSetting("appearance");
+
+          if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+            });
+
+            const storeName = generalSettings?.storeName || "Store Fleet";
+            const emailHtml = getResetPasswordEmailHtml({
+              storeName, logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#10b981", contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+              name: agent.name, otp,
+              resetLink,
+              portalName: "Driver Portal",
+              emailBackgroundColor: emailSettings?.emailBackgroundColor,
+              theme: emailSettings?.theme,
+              customTemplate: emailSettings?.customTemplates?.resetPassword
+            });
+
+            await transporter.sendMail({ from: `"${storeName}" <${emailSettings.smtpUser}>`, to: agent.email, subject: `Driver PIN Reset Code`, html: emailHtml });
+          }
+        } catch (err) {
+          console.error("Failed to send PIN reset OTP email:", err);
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to send reset email. Please try again later." });
+        }
+
+        return { success: true, token, email: agent.email };
+      }),
+
+    verifyDriverPinOtpAndReset: publicProcedure
+      .input(z.object({ token: z.string(), code: z.string() }))
+      .mutation(async ({ input, ctx }) => {
+        let payload;
+        try {
+          const verified = await jwtVerify(input.token, JWT_SECRET);
+          payload = verified.payload;
+        } catch (e) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid or expired reset token" });
+        }
+
+        if (payload.purpose !== "driver_pin_reset" || !payload.email) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid token" });
+        }
+        if (payload.otp !== input.code) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect reset code" });
+        }
+
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        const [agent] = await db.select().from(drivers).where(eq(drivers.email, payload.email as string)).limit(1);
+        if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Driver not found" });
+
+        const newPin = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const hashedPin = await hashPassword(newPin);
+        await db.update(drivers).set({ pin: hashedPin }).where(eq(drivers.id, agent.id));
+
+        try {
+          const emailSettings = await getSetting("email");
+          const generalSettings = await getSetting("general");
+          const appearanceSettings = await getSetting("appearance");
+
+          if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+            const transporter = nodemailer.createTransport({
+              host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort),
+              secure: Number(emailSettings.smtpPort) === 465,
+              auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+            });
+
+            const host = ctx.req.headers.host || "localhost:3000";
+            const protocol = host.includes("localhost") ? "http" : "https";
+            const systemUrl = `${protocol}://${host}/driver-portal`;
+
+            const emailHtml = getDriverPinEmailHtml({
+              storeName: generalSettings?.storeName || "Store Fleet", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#10b981", contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+              driverName: agent.name, pin: newPin, phone: agent.phone, systemUrl,
+              emailBackgroundColor: emailSettings?.emailBackgroundColor,
+              theme: emailSettings?.theme,
+              customTemplate: emailSettings?.customTemplates?.driverPin
+            });
+
+            await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Fleet'}" <${emailSettings.smtpUser}>`, to: agent.email, subject: `Your New Driver Access PIN`, html: emailHtml });
+          }
+        } catch (err) {
+          console.error("Failed to send new PIN email:", err);
+        }
+
+        return { success: true, message: "A new PIN has been generated and sent to your email address." };
+      }),
+
+    verifyDriverPin: publicProcedure
       .input(z.object({ phone: z.string(), pin: z.string() }))
       .mutation(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const [agent] = await db.select().from(deliveryAgents).where(eq(deliveryAgents.phone, input.phone)).limit(1);
+
+        const exactPin = input.pin.trim();
+        const upperPin = exactPin.toUpperCase();
+
+        const isEmail = input.phone.includes('@');
+        let agent;
+
+        if (isEmail) {
+          const result = await db.select().from(drivers).where(
+            eq(drivers.email, input.phone.trim().toLowerCase())
+          ).limit(1);
+          agent = result[0];
+        } else {
+          // Robust Phone Parsing (Removes spaces, and builds an array of all possible formats)
+          let rawPhone = input.phone.replace(/\s+/g, '');
+          let coreDigits = rawPhone;
+          if (coreDigits.startsWith('+254')) coreDigits = coreDigits.slice(4);
+          else if (coreDigits.startsWith('254')) coreDigits = coreDigits.slice(3);
+          else if (coreDigits.startsWith('0')) coreDigits = coreDigits.slice(1);
+
+          const possiblePhones = [
+            rawPhone, `0${coreDigits}`, `+254${coreDigits}`, `254${coreDigits}`
+          ].filter(p => p.length <= 20);
+
+          const result = possiblePhones.length > 0 ? await db.select().from(drivers).where(inArray(drivers.phone, possiblePhones)).limit(1) : [];
+          agent = result[0];
+        }
+        
         if (!agent) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid Phone Number or PIN" });
 
         const isHashed = agent.pin.includes(":");
-        const isValid = isHashed ? verifyPassword(input.pin, agent.pin) : agent.pin === input.pin;
+        let isValid = false;
+        if (isHashed) {
+          const [salt, hash] = agent.pin.split(':');
+          isValid = await verifyPassword(exactPin, hash, salt);
+          if (!isValid && exactPin !== upperPin) isValid = await verifyPassword(upperPin, hash, salt);
+        } else {
+          isValid = agent.pin === exactPin || agent.pin.toUpperCase() === upperPin;
+        }
 
         if (!isValid) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid Phone Number or PIN" });
 
+        if (agent.status === "inactive") {
+          const dismissal = await getSetting(`dismissal_driver_${agent.id}`);
+          if (dismissal) {
+            throw new TRPCError({ code: "FORBIDDEN", message: `Access denied due to violation of company rules: ${dismissal.reason}` });
+          }
+        }
+
         // Auto-upgrade unhashed PINs for better security dynamically
         if (!isHashed) {
-          await db.update(deliveryAgents).set({ pin: hashPassword(input.pin) }).where(eq(deliveryAgents.id, agent.id));
+          const hashedPin = await hashPassword(upperPin);
+          await db.update(drivers).set({ pin: hashedPin }).where(eq(drivers.id, agent.id));
         }
 
         return { success: true, agentId: agent.id, agentName: agent.name };
       }),
 
-    getEarnings: protectedProcedure
+    getEarnings: publicProcedure
       .input(z.object({ agentId: z.number(), timeRange: z.string().default('week') }))
       .query(async ({ input }) => {
         const db = await getDb();
@@ -3240,7 +5649,7 @@ AI Response (JSON):
         };
       }),
 
-    requestPayout: protectedProcedure
+    requestPayout: publicProcedure
       .input(z.object({ agentId: z.number(), amount: z.number() }))
       .mutation(async ({ input }) => {
         if (input.amount <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Amount must be positive." });
@@ -3264,7 +5673,7 @@ AI Response (JSON):
               },
             });
 
-            const [agent] = await db.select({ name: deliveryAgents.name }).from(deliveryAgents).where(eq(deliveryAgents.id, input.agentId)).limit(1);
+            const [agent] = await db.select({ name: drivers.name }).from(drivers).where(eq(drivers.id, input.agentId)).limit(1);
             
             const currency = generalSettings.currency || "USD";
             const formattedAmount = new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(input.amount);
@@ -3293,81 +5702,267 @@ AI Response (JSON):
         return { success: true };
       }),
 
-    getPayoutHistory: protectedProcedure
+    getPayoutHistory: publicProcedure
       .input(z.object({ agentId: z.number() }))
       .query(async ({ input }) => {
         const db = await getDb();
         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         return await db.select().from(deliveryPayouts).where(eq(deliveryPayouts.agentId, input.agentId)).orderBy(desc(deliveryPayouts.requestedAt));
       }),
-  }),
 
-  // ─── M-Pesa Callbacks ──────────────────────────────────────────────────────
-  mpesa: router({
-    b2cResult: publicProcedure.input(z.any()).mutation(async ({ input }) => {
-      const { Result } = input;
-      if (!Result || !Result.OriginatorConversationID) return { ResultCode: 1, ResultDesc: "Invalid payload" };
-      const db = await getDb();
-      if (db) {
-        if (Result.ResultCode === 0) {
-          await db.update(deliveryPayouts).set({ status: 'completed', processedAt: new Date(), transactionId: Result.TransactionID }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
-        } else {
-          await db.update(deliveryPayouts).set({ status: 'failed', processedAt: new Date(), notes: Result.ResultDesc }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, Result.OriginatorConversationID));
+    // ─── Delivery Messages (Driver-Customer Chat) ───
+    getDeliveryMessages: publicProcedure
+      .input(z.object({ orderId: z.number(), agentId: z.number().optional() }))
+      .query(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        // Fetch the order to verify access permissions
+        const order = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
+        if (!order || order.length === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
         }
-      }
-      return { ResultCode: 0, ResultDesc: "Accepted" };
-    }),
-    b2cQueueTimeout: publicProcedure.input(z.any()).mutation(async ({ input }) => {
-      const db = await getDb();
-      if (db && input.OriginatorConversationID) {
-        await db.update(deliveryPayouts).set({ status: 'failed', notes: 'M-Pesa API request timed out.' }).where(eq(deliveryPayouts.mpesaOriginatorConversationId, input.OriginatorConversationID));
-      }
-      return { ResultCode: 0, ResultDesc: "Accepted" };
-    }),
+
+        const foundOrder = order[0];
+
+        // Check authorization: Either customer (logged in) or assigned driver
+        const isCustomer = ctx.user && foundOrder.userId === ctx.user.id;
+        const isDriver = input.agentId && foundOrder.deliveryAgentId === input.agentId;
+
+        if (!isCustomer && !isDriver) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You are not authorized to view messages for this order." });
+        }
+
+        return await db.select().from(deliveryMessages).where(eq(deliveryMessages.orderId, input.orderId)).orderBy(deliveryMessages.createdAt);
+      }),
+
+    sendDeliveryMessage: publicProcedure
+      .input(z.object({ orderId: z.number(), content: z.string().min(1).max(1000), senderType: z.enum(["customer", "driver"]), agentId: z.number().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        // Fetch the order to verify access permissions
+        const order = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
+        if (!order || order.length === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
+        }
+
+        const foundOrder = order[0];
+
+        // CRITICAL: Validate sender identity matches the order
+        if (input.senderType === "customer") {
+          // Customer must be logged in and own the order
+          if (!ctx.user || foundOrder.userId !== ctx.user.id) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Only the order owner can send messages as customer." });
+          }
+        } else if (input.senderType === "driver") {
+          // Driver identity MUST match the assigned driver and be specified
+          if (!input.agentId || foundOrder.deliveryAgentId !== input.agentId) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "Only the assigned driver can send messages for this order." });
+          }
+        }
+
+        // Insert message
+        await db.insert(deliveryMessages).values({
+          orderId: input.orderId, senderType: input.senderType, content: input.content
+        });
+
+        // --- Push Notification Logic ---
+        if (input.senderType === 'driver' && process.env.VAPID_PUBLIC_KEY) {
+          try {
+            if (foundOrder.userId && foundOrder.deliveryAgentId) {
+              const [customer] = await db.select({ pushSubscription: users.pushSubscription }).from(users).where(eq(users.id, foundOrder.userId)).limit(1);
+              const [driver] = await db.select({ name: drivers.name }).from(drivers).where(eq(drivers.id, foundOrder.deliveryAgentId)).limit(1);
+
+              if (customer?.pushSubscription && driver?.name) {
+                // Validate subscription structure
+                const sub = customer.pushSubscription as any;
+                if (!sub.endpoint || !sub.keys?.auth || !sub.keys?.p256dh) {
+                  throw new Error(`Invalid customer subscription structure: missing required fields`);
+                }
+                
+                console.log(`📤 Sending driver message notification to customer for order #${input.orderId}...`);
+                await webpush.sendNotification(
+                  sub,
+                  JSON.stringify({
+                    title: `Message from your driver (${driver.name})`,
+                    body: input.content,
+                    url: `/dashboard/orders/${input.orderId}`
+                  })
+                );
+                console.log(`✅ Driver message notification sent successfully`);
+              } else {
+                if (!customer?.pushSubscription) {
+                  console.warn(`⚠️ Customer ${foundOrder.userId} has no push subscription saved`);
+                }
+              }
+            }
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            console.error(`❌ Failed to send customer push notification:`, errorMsg);
+            console.error("Full error details:", error);
+          }
+        }
+        return { success: true };
+      }),
+
+    // ─── Real-Time Driver Location Tracking ───
+    updateDriverLocation: publicProcedure
+      .input(z.object({ 
+        agentId: z.number(), 
+        orderId: z.number(),
+        lat: z.number(),
+        lng: z.number()
+      }))
+      .mutation(async ({ input }) => {
+        // Store driver location in cache (expires in 10 minutes)
+        // Updated every 5 seconds from driver, so 10 min TTL ensures data persists through polling
+        const cacheKey = `driver_location_${input.orderId}_${input.agentId}`;
+        await cacheSet(cacheKey, { 
+          lat: input.lat, 
+          lng: input.lng,
+          timestamp: Date.now()
+        }, 600); // 10 minutes TTL
+        
+        console.log(`✓ Driver location updated: Order #${input.orderId}, Agent #${input.agentId}, Lat: ${input.lat}, Lng: ${input.lng}`);
+        return { success: true };
+      }),
+
+    getDriverLocation: publicProcedure
+      .input(z.object({ orderId: z.number(), agentId: z.number().optional() }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+
+        // Fetch order to verify authorization
+        const order = await db.select().from(orders).where(eq(orders.id, input.orderId)).limit(1);
+        if (!order || order.length === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Order not found" });
+        }
+
+        const foundOrder = order[0];
+
+        // Get driver location from cache
+        if (foundOrder.deliveryAgentId) {
+          const cacheKey = `driver_location_${input.orderId}_${foundOrder.deliveryAgentId}`;
+          const location = await cacheGet<{ lat: number; lng: number; timestamp?: number }>(cacheKey);
+          
+          if (location) {
+            console.log(`✓ Driver location found for Order #${input.orderId}: ${location.lat}, ${location.lng}`);
+            return { 
+              driverLocation: { lat: location.lat, lng: location.lng },
+              agentId: foundOrder.deliveryAgentId,
+              agentName: (await db.select({ name: drivers.name }).from(drivers).where(eq(drivers.id, foundOrder.deliveryAgentId)).limit(1))?.[0]?.name,
+              cached: true
+            };
+          } else {
+            console.log(`⚠️ No driver location cached yet for Order #${input.orderId}`);
+          }
+        }
+
+        return { driverLocation: null, agentId: foundOrder.deliveryAgentId, cached: false };
+      }),
+
+    getUnreadDeliveryMessagesCount: publicProcedure
+      .input(z.object({ orderId: z.number().optional(), agentId: z.number().optional(), userType: z.enum(["customer", "driver"]) }))
+      .query(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return 0;
+
+        if (input.userType === "driver" && input.agentId) {
+          const activeOrders = await db.select({ id: orders.id }).from(orders).where(
+            and(eq(orders.deliveryAgentId, input.agentId), eq(orders.status, "out_for_delivery"))
+          );
+          const orderIds = activeOrders.map(o => o.id);
+          if (orderIds.length === 0) return 0;
+
+          const result = await db.select({ count: count() }).from(deliveryMessages).where(
+            and(
+              inArray(deliveryMessages.orderId, orderIds),
+              eq(deliveryMessages.senderType, "customer"),
+              eq(deliveryMessages.isRead, false)
+            )
+          );
+          return result[0]?.count || 0;
+        }
+
+        if (input.userType === "customer" && input.orderId) {
+          const result = await db.select({ count: count() }).from(deliveryMessages).where(
+            and(
+              eq(deliveryMessages.orderId, input.orderId),
+              eq(deliveryMessages.senderType, "driver"),
+              eq(deliveryMessages.isRead, false)
+            )
+          );
+          return result[0]?.count || 0;
+        }
+
+        return 0;
+      }),
+
+    markDeliveryMessagesAsRead: publicProcedure
+      .input(z.object({ orderId: z.number(), userType: z.enum(["customer", "driver"]) }))
+      .mutation(async ({ input }) => {
+        const db = await getDb();
+        if (!db) return { success: false };
+
+        const senderTypeToMark = input.userType === "driver" ? "customer" : "driver";
+        
+        await db.update(deliveryMessages)
+          .set({ isRead: true })
+          .where(
+            and(
+              eq(deliveryMessages.orderId, input.orderId),
+              eq(deliveryMessages.senderType, senderTypeToMark),
+              eq(deliveryMessages.isRead, false)
+            )
+          );
+        return { success: true };
+      }),
   }),
 
   // ─── Analytics ──────────────────────────────────────────────────────────────
   analytics: router({
-    aiConversationStats: adminProcedure
+    aiConversationStats: managerProcedure
       .input(z.object({ daysBack: z.number().default(7) }))
       .query(async ({ input }) => {
         const timeRange = `${input.daysBack}d`;
         const baseStats = await getAdminStats(timeRange);
+        if (!baseStats) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to load stats" });
         
         // Calculate AI-attributed revenue overlay
-        const aiRevenueData = (baseStats.revenueData || []).map((day: any) => {
-          const aiShare = 0.15 + (Math.random() * 0.10); // Dynamically attributes 15-25% to AI
-          const aiRevenue = Math.round(parseFloat(day.revenue) * aiShare);
-          const organicRevenue = Math.round(parseFloat(day.revenue) - aiRevenue);
-          return { date: day.date, aiRevenue, organicRevenue, total: parseFloat(day.revenue) };
-        });
-        const totalAIRevenue = aiRevenueData.reduce((sum: number, d: any) => sum + d.aiRevenue, 0);
+        const aiRevenueData = (baseStats.revenueData || []).map((day: any) => ({
+          date: day.date, aiRevenue: day.aiRevenue || 0, organicRevenue: day.organicRevenue || 0, total: day.revenue || 0
+        }));
+        const totalAIRevenue = aiRevenueData.reduce((sum, d) => sum + d.aiRevenue, 0);
         
         return { ...baseStats, aiRevenueData, totalAIRevenue };
       }),
 
-    demandPrediction: adminProcedure
+    demandPrediction: managerProcedure
       .input(z.object({ daysBack: z.number().default(7) }))
       .query(async ({ input }) => {
         const predictions = await getDemandPrediction(input.daysBack);
-        return predictions;
+        return predictions || [];
       }),
 
-    pricingSuggestions: adminProcedure.query(async () => {
+    pricingSuggestions: managerProcedure.query(async () => {
       const suggestions = await getPricingSuggestions();
-      return suggestions;
+      return suggestions || [];
     }),
 
-    customerSegments: adminProcedure.query(async () => {
+    customerSegments: managerProcedure.query(async () => {
       const segments = await getUserSegments();
+      if (!segments) return { budgetBuyers: 0, premiumBuyers: 0, frequentShoppers: 0 };
       return {
-        budgetBuyers: segments.budget.length,
-        premiumBuyers: segments.premium.length,
-        frequentShoppers: segments.frequent.length,
+        budgetBuyers: segments.budget?.length || 0,
+        premiumBuyers: segments.premium?.length || 0,
+        frequentShoppers: segments.frequent?.length || 0,
       };
     }),
 
-    productViews: adminProcedure
+    productViews: managerProcedure
       .input(z.object({ productId: z.number() }))
       .query(async ({ input }) => {
         const db = await getDb();
@@ -3377,6 +5972,90 @@ AI Response (JSON):
           .where(eq(productViews.productId, input.productId));
         return views[0]?.count || 0;
       }),
+  }),
+
+  // ─── Appeals & Dismissals ──────────────────────────────────────────────────
+  appeals: router({
+    submit: publicProcedure
+      .input(z.object({ token: z.string(), appealText: z.string().min(1) }))
+      .mutation(async ({ input }) => {
+        let payload;
+        try {
+          const verified = await jwtVerify(input.token, JWT_SECRET);
+          payload = verified.payload;
+        } catch (e) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Appeal link has expired or is invalid. The 3-day appeal window may have closed." });
+        }
+        
+        if (payload.purpose !== "appeal" || !payload.type || !payload.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid token" });
+        }
+        
+        const settingKey = `dismissal_${payload.type}_${payload.id}`;
+        const dismissal = await getSetting(settingKey);
+        
+        if (!dismissal) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Dismissal record not found. It may have been permanently deleted or already resolved." });
+        }
+        
+        if (dismissal.appealStatus !== 'none') {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "An appeal has already been submitted or reviewed for this dismissal." });
+        }
+        
+        dismissal.appealStatus = 'pending';
+        dismissal.appealText = input.appealText;
+        
+        await upsertSetting(settingKey, dismissal);
+        
+        return { success: true };
+      }),
+      
+    getPendingAppeals: adminProcedure.query(async () => {
+        const db = await getDb();
+        if (!db) return [];
+        const results = await db.select().from(settings).where(like(settings.key, 'dismissal_%'));
+        return results.map(r => r.value).filter((v: any) => v && v.appealStatus === 'pending');
+    }),
+    
+    review: adminProcedure
+      .input(z.object({ type: z.enum(["manager", "driver"]), id: z.number(), accept: z.boolean(), adminNotes: z.string().optional() }))
+      .mutation(async ({ ctx, input }) => {
+         const db = await getDb();
+         if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+         
+         const settingKey = `dismissal_${input.type}_${input.id}`;
+         const dismissal = await getSetting(settingKey);
+         
+         if (!dismissal || dismissal.appealStatus !== 'pending') {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "No pending appeal found." });
+         }
+         
+         if (input.accept) {
+            if (input.type === 'manager') await db.update(users).set({ suspended: false }).where(eq(users.id, input.id));
+            else await db.update(drivers).set({ status: 'active' }).where(eq(drivers.id, input.id));
+            await db.delete(settings).where(eq(settings.key, settingKey));
+         } else {
+            if (input.type === 'manager') await db.delete(users).where(eq(users.id, input.id));
+            else await db.delete(drivers).where(eq(drivers.id, input.id));
+            await db.delete(settings).where(eq(settings.key, settingKey));
+         }
+         
+         if (dismissal.email) {
+            try {
+                const emailSettings = await getSetting("email");
+                const generalSettings = await getSetting("general");
+                const appearanceSettings = await getSetting("appearance");
+                
+                if (emailSettings?.smtpHost && emailSettings?.smtpUser) {
+                  const transporter = nodemailer.createTransport({ host: emailSettings.smtpHost, port: Number(emailSettings.smtpPort), secure: Number(emailSettings.smtpPort) === 465, auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword } });
+                  const emailHtml = getAppealResultEmailHtml({ storeName: generalSettings?.storeName || "Store", logoUrl: appearanceSettings?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearanceSettings?.primaryColor || "#3b82f6", contactEmail: generalSettings?.contactEmail || "support@example.com", name: dismissal.name, role: input.type === 'manager' ? "Manager" : "Driver", accepted: input.accept, adminNotes: input.adminNotes, emailBackgroundColor: emailSettings?.emailBackgroundColor, theme: emailSettings?.theme });
+                  await transporter.sendMail({ from: `"${generalSettings?.storeName || 'Store Admin'}" <${emailSettings.smtpUser}>`, to: dismissal.email, subject: `Appeal Review Result`, html: emailHtml });
+                }
+            } catch (err) { console.error(err); }
+         }
+         
+         return { success: true };
+      })
   }),
 });
 
@@ -3393,13 +6072,16 @@ export async function processAbandonedCheckouts() {
 
     // Look back exactly 24 hours
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // Bound the lookback to 48 hours to prevent mass email spam for very old carts
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
     const abandonedOrders = await db.select().from(orders).where(
       and(
         eq(orders.paymentStatus, "pending"),
         eq(orders.status, "pending"),
         eq(orders.abandonedEmailSent, false),
-        lt(orders.createdAt, twentyFourHoursAgo)
+        lt(orders.createdAt, twentyFourHoursAgo),
+        gt(orders.createdAt, fortyEightHoursAgo)
       )
     );
 
@@ -3442,8 +6124,11 @@ export async function processAbandonedCheckouts() {
         orderNumber: order.orderNumber,
         total: order.total,
         orderLink,
-        host: fullHost,
+        storeUrl: fullHost,
         productImageWidth: emailSettings.productImageWidth,
+        emailBackgroundColor: emailSettings.emailBackgroundColor,
+        theme: emailSettings.theme,
+        customTemplate: emailSettings.customTemplates?.abandonedCart,
         cartData: items.map(i => {
           const product = productsFromDb.find(p => p.id === i.productId);
           return { name: i.productName, slug: product?.slug, price: i.price, quantity: i.quantity, image: (product?.images as string[])?.[0] || null };
@@ -3455,4 +6140,157 @@ export async function processAbandonedCheckouts() {
       console.log(`[Email] Abandoned checkout reminder sent to ${customer.email} for order ${order.orderNumber}`);
     }
   } catch (err) { console.error("Error processing abandoned checkouts", err); }
+}
+
+// ─── AI Predictive Purchasing (Auto-Restock) ──────────────────────────────────
+export async function processAutoRestock() {
+  try {
+    const db = await getDb();
+    if (!db) return;
+
+    const emailSettings = await getSetting("email");
+    const generalSettings = await getSetting("general");
+    
+    if (!emailSettings?.smtpHost || !emailSettings?.smtpUser || !generalSettings?.contactEmail) return;
+
+    // Fetch inventory settings for dynamic threshold
+    const inventorySettings = await getSetting("inventory");
+    const lowStockThreshold = inventorySettings?.lowStockThreshold !== undefined ? parseInt(inventorySettings.lowStockThreshold, 10) : 5;
+
+    // Find active products with low stock
+    const lowStockProducts = await db.select().from(products).where(and(eq(products.active, true), lte(products.stock, lowStockThreshold)));
+    
+    if (lowStockProducts.length === 0) return;
+
+    // Get AI Demand Predictions (Looking at last 14 days of sales)
+    const predictions = await getDemandPrediction(14);
+    
+    const itemsToOrder = [];
+    
+    for (const product of lowStockProducts) {
+      const prediction = predictions.find(p => p.productId === product.id);
+      
+      let suggestedOrderQty = 10; // Default restock baseline
+      let recentSales = 0;
+      
+      if (prediction) {
+         recentSales = prediction.salesCount;
+         // AI suggests ordering enough to cover expected 30-day velocity
+         suggestedOrderQty = Math.max(10, prediction.predictedSales * 2); 
+      }
+      
+      itemsToOrder.push({ ...product, suggestedOrderQty, recentSales });
+    }
+
+    if (itemsToOrder.length === 0) return;
+
+    const appearance = await getSetting("appearance");
+    const storeName = generalSettings?.storeName || "Store";
+    const host = process.env.PUBLIC_URL || "http://localhost:3000";
+    const fullHost = host.startsWith('http') ? host : `https://${host}`;
+
+    const transporter = nodemailer.createTransport({
+      host: emailSettings.smtpHost, 
+      port: Number(emailSettings.smtpPort),
+      secure: Number(emailSettings.smtpPort) === 465,
+      auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+    });
+
+    // Group items by warehouseId
+    const itemsByWarehouse = new Map<number | null, typeof itemsToOrder>();
+    for (const item of itemsToOrder) {
+      const wId = item.warehouseId || null;
+      if (!itemsByWarehouse.has(wId)) itemsByWarehouse.set(wId, []);
+      itemsByWarehouse.get(wId)!.push(item);
+    }
+
+    // Send a targeted email per warehouse group
+    for (const [warehouseId, items] of itemsByWarehouse.entries()) {
+      let managerConditions = [eq(users.role, "manager")];
+      if (warehouseId !== null) {
+        managerConditions.push(eq(users.warehouseId, warehouseId));
+      } else {
+        managerConditions.push(sql`${users.warehouseId} IS NULL`);
+      }
+
+      const managers = await db.select({ email: users.email }).from(users).where(and(...managerConditions));
+      const recipients = new Set<string>();
+      
+      managers.forEach(m => {
+        if (m.email) recipients.add(m.email);
+      });
+
+      if (recipients.size === 0) continue;
+
+      const poHtml = getAutoRestockEmailHtml({
+        storeName, logoUrl: appearance?.logoUrl, primaryColor: emailSettings?.emailButtonColor || appearance?.primaryColor || "#3b82f6",
+        contactEmail: generalSettings?.contactEmail || "support@example.com", storePhone: generalSettings?.phone || "",
+        itemsHtml: items.map(item => `
+          <tr style="border-bottom: 1px solid #e5e7eb;">
+            <td style="padding: 16px 12px; width: 80px;">
+              ${item.images && Array.isArray(item.images) && item.images[0] ? `<img src="${item.images[0]}" alt="${item.name.replace(/"/g, '&quot;')}" style="width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid #f3f4f6; display: block;" />` : `<div style="width: 64px; height: 64px; background-color: #f3f4f6; border-radius: 8px; text-align: center; line-height: 64px; color: #9ca3af; font-size: 10px;">No Image</div>`}
+            </td>
+            <td style="padding: 16px 12px;">
+              <div style="color: #111827; font-weight: 600; font-size: 15px; margin-bottom: 4px;">${item.name}</div>
+              <div style="color: #6b7280; font-size: 13px;">SKU: ${item.sku || 'N/A'}</div>
+            </td>
+            <td style="padding: 16px 12px; text-align: center; color: #ef4444; font-weight: 700; font-size: 15px;">${item.stock}</td>
+            <td style="padding: 16px 12px; text-align: center; color: #374151; font-weight: 500; font-size: 15px;">${item.recentSales}</td>
+            <td style="padding: 16px 12px; text-align: center;">
+              <span style="background-color: #d1fae5; color: #065f46; padding: 6px 12px; border-radius: 9999px; font-weight: 700; font-size: 14px;">${item.suggestedOrderQty}</span>
+            </td>
+          </tr>
+        `).join(''),
+        emailBackgroundColor: emailSettings?.emailBackgroundColor,
+        theme: emailSettings?.theme,
+        customTemplate: emailSettings?.customTemplates?.autoRestock,
+        dashboardLink: `${fullHost}/admin/products`
+      });
+
+      await transporter.sendMail({
+        from: `"${storeName}" <${emailSettings.smtpUser}>`,
+        to: Array.from(recipients).join(', '),
+        subject: `📦 Restock Alert: ${items.length} products need reordering${warehouseId ? ` (Warehouse ${warehouseId})` : ''}`,
+        html: poHtml
+      });
+
+      console.log(`[AI] Auto-restock recommendation sent to ${Array.from(recipients).join(', ')} for ${items.length} items (Warehouse ${warehouseId || 'Global'}).`);
+    }
+  } catch (err) { 
+    console.error("Error processing AI auto-restock", err); 
+  }
+}
+
+// ─── Dismissal Processing (Cron) ──────────────────────────────────────────────
+export async function processPendingDismissals() {
+  try {
+    const db = await getDb();
+    if (!db) return;
+    
+    const dismissalSettings = await db.select().from(settings).where(like(settings.key, 'dismissal_%'));
+    const now = Date.now();
+    const threeDaysInMs = 3 * 24 * 60 * 60 * 1000;
+    
+    for (const s of dismissalSettings) {
+      const data = s.value as any;
+      if (data && data.firedAt && (now - data.firedAt > threeDaysInMs) && data.appealStatus !== 'pending') {
+        if (data.type === 'manager') await db.delete(users).where(eq(users.id, data.id));
+        else if (data.type === 'driver') await db.delete(drivers).where(eq(drivers.id, data.id));
+        await db.delete(settings).where(eq(settings.key, s.key));
+        console.log(`[Cron] Permanently deleted ${data.type} ${data.id} after 3-day dismissal period.`);
+      }
+    }
+  } catch (err) {
+    console.error("Error processing pending dismissals:", err);
+  }
+}
+
+// ─── Automated Cron Jobs ──────────────────────────────────────────────────
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(() => {
+    console.log("[CRON] Executing daily background tasks...");
+    processAbandonedCheckouts().catch(err => console.error("[CRON] Abandoned checkouts error:", err));
+    processAutoRestock().catch(err => console.error("[CRON] Auto-restock error:", err));
+    processPendingDismissals().catch(err => console.error("[CRON] Pending dismissals error:", err));
+  }, 24 * 60 * 60 * 1000); // 24 hours
 }

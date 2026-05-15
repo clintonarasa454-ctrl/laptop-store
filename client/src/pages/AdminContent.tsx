@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import AdminLayout from "@/components/AdminLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,13 +7,53 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Megaphone, Tag, FileImage, GripVertical } from "lucide-react";
+import { Plus, Edit2, Trash2, Image as ImageIcon, Loader2, Upload, X, Megaphone, Tag, FileImage, GripVertical, AlertCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { DeletionRequestModal } from "@/components/DeletionRequestModal";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "./useAuth";
+
+interface BannerFormData {
+  id?: number;
+  title: string;
+  description?: string;
+  image: string;
+  active: boolean;
+}
+
+interface PromotionFormData {
+  id?: number;
+  title: string;
+  description: string;
+  active: boolean;
+}
+
+interface AnnouncementFormData {
+  id?: number;
+  title: string;
+  content: string;
+  date: string;
+  linkUrl?: string;
+  image?: string;
+  active: boolean;
+}
 
 export default function AdminContent() {
+  const { user } = useAuth();
   const utils = trpc.useUtils();
+
+  // Check authentication status
+  useEffect(() => {
+    const cookies = document.cookie.split(';');
+    const sessionCookie = cookies.find(c => c.trim().startsWith('app_session_id='));
+    if (!sessionCookie) {
+      console.warn("⚠️ WARNING: app_session_id cookie not found - you may not be logged in!");
+      toast.error("Not authenticated - please log in first");
+      return;
+    }
+    console.log("✅ Session cookie found:", sessionCookie.substring(0, 50) + "...");
+  }, []);
 
   // Data Fetching
   const { data: banners, isLoading: loadingBanners } = trpc.admin.banners.useQuery();
@@ -22,14 +62,19 @@ export default function AdminContent() {
 
   // Form State
   const [formType, setFormType] = useState<"banner" | "promotion" | "announcement" | null>(null);
-  const [formData, setFormData] = useState<any>({});
+  const [formData, setFormData] = useState<BannerFormData | PromotionFormData | AnnouncementFormData | {}>({});
+  const [formError, setFormError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [orderedBanners, setOrderedBanners] = useState<any[]>([]);
   const [draggedBannerIndex, setDraggedBannerIndex] = useState<number | null>(null);
+  const [previousBannerOrder, setPreviousBannerOrder] = useState<any[] | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [deletionRequest, setDeletionRequest] = useState<{ isOpen: boolean; itemType: "product" | "category" | "banner" | "promotion" | "announcement" | "driver" | "vehicle" | "brand"; itemId: string; itemName: string } | null>(null);
 
   useEffect(() => {
-    if (banners) {
-      setOrderedBanners([...banners].sort((a, b) => ((a as any).order ?? 0) - ((b as any).order ?? 0)));
+    if (banners && Array.isArray(banners)) {
+      const sorted = [...banners].sort((a, b) => ((a?.order) ?? 0) - ((b?.order) ?? 0));
+      setOrderedBanners(sorted);
     }
   }, [banners]);
 
@@ -46,6 +91,15 @@ export default function AdminContent() {
   const reorderBanners = trpc.admin.reorderBanners.useMutation({
     onSuccess: () => {
       utils.admin.banners.invalidate();
+      setPreviousBannerOrder(null);
+      toast.success("Banner order updated");
+    },
+    onError: () => {
+      toast.error("Failed to reorder banners. Reverting...");
+      if (previousBannerOrder) {
+        setOrderedBanners(previousBannerOrder);
+        setPreviousBannerOrder(null);
+      }
     },
   });
 
@@ -68,6 +122,7 @@ export default function AdminContent() {
   // Handlers
   const openForm = (type: "banner" | "promotion" | "announcement", item?: any) => {
     setFormType(type);
+    setFormError(null);
     if (item) {
       const data = { ...item };
       if (type === "announcement" && data.date) {
@@ -82,48 +137,116 @@ export default function AdminContent() {
   const closeForm = () => {
     setFormType(null);
     setFormData({});
+    setFormError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
-      toast.error("Please upload a valid image file.");
+      setFormError("Please upload a valid image file (PNG, JPG, WEBP).");
       return;
     }
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error("Image size should be less than 2MB.");
+    if (file.size > 5 * 1024 * 1024) {
+      setFormError("Image size should be less than 5MB.");
       return;
     }
 
-    let toastId: string | number | undefined;
-    try {
-      toastId = toast.loading(`Uploading ${file.name}...`);
-      const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
-      
-      if (uploadUrl && publicUrl) {
-        const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-        if (!res.ok) throw new Error("S3 Upload Failed");
-        setFormData((prev: any) => ({ ...prev, image: publicUrl }));
-        toast.success("Image uploaded successfully!", { id: toastId });
-      } else {
-        throw new Error("Failed to get presigned URL");
+    setIsUploading(true);
+    setFormError(null);
+    const toastId = toast.loading(`Uploading ${file.name}...`);
+
+    // Upload logic with proper error handling
+    (async () => {
+      try {
+        // Request presigned URL from server
+        let uploadUrl: string | null = null;
+        let publicUrl: string | null = null;
+
+        try {
+          const result = await createPresignedUrl.mutateAsync({ filename: file.name, contentType: file.type });
+          uploadUrl = result.uploadUrl;
+          publicUrl = result.publicUrl;
+        } catch (mutationErr) {
+          console.error("Presigned URL error:", mutationErr);
+          // If mutation fails, still try Base64 fallback
+          uploadUrl = null;
+          publicUrl = null;
+        }
+
+        if (uploadUrl && publicUrl) {
+          // S3 upload path
+          const res = await fetch(uploadUrl, { 
+            method: "PUT", 
+            body: file, 
+            headers: { "Content-Type": file.type } 
+          });
+          
+          if (!res.ok) {
+            throw new Error(`S3 upload failed: ${res.status} ${res.statusText}`);
+          }
+          
+          setFormData((prev: any) => ({ ...prev, image: publicUrl }));
+          toast.success("Image uploaded to S3 successfully!", { id: toastId });
+          console.log("S3 upload successful:", publicUrl);
+        } else {
+          // Base64 fallback for local development
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            
+            reader.onload = (event) => {
+              const result = event.target?.result as string;
+              resolve(result);
+            };
+            
+            reader.onerror = () => {
+              reject(new Error("Failed to read file"));
+            };
+            
+            reader.readAsDataURL(file);
+          });
+
+          setFormData((prev: any) => ({ ...prev, image: base64 }));
+          toast.success("Image uploaded successfully (local)!", { id: toastId });
+          console.log("Base64 upload successful, size:", base64.length);
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : "Unknown error occurred";
+        const errorStr = JSON.stringify(err, null, 2);
+        
+        // Check for authentication errors
+        if (errorMsg.includes("Please login") || errorStr.includes("UNAUTHORIZED")) {
+          const suggestion = "Session expired or not logged in. Please refresh and log in again.";
+          console.error("❌ AUTHENTICATION ERROR:", { errorMsg, suggestion, fullError: err });
+          setFormError(`${errorMsg}\n\n${suggestion}`);
+          toast.error(`Authentication failed: ${suggestion}`, { id: toastId });
+        } else if (errorMsg.includes("Admin")) {
+          console.error("❌ PERMISSION ERROR:", { errorMsg, fullError: err });
+          setFormError(`${errorMsg} - You need admin access to upload files`);
+          toast.error(`Permission denied: ${errorMsg}`, { id: toastId });
+        } else {
+          console.error("❌ UPLOAD ERROR:", { errorMsg, fullError: err });
+          setFormError(`Upload failed: ${errorMsg}`);
+          toast.error(`Failed to upload image: ${errorMsg}`, { id: toastId });
+        }
+      } finally {
+        setIsUploading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
       }
-    } catch (err) { toast.error("Failed to upload image.", { id: toastId }); }
-
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
+    })();
+  }, [createPresignedUrl]);
 
   const handleSaveForm = (e: React.FormEvent) => {
     e.preventDefault();
     if (formType === "banner") {
-      if (!formData.image) return toast.error("Banner image is required");
-      upsertBanner.mutate(formData);
+      if (!(formData as any).image) return toast.error("Banner image is required");
+      upsertBanner.mutate(formData as any);
     } else if (formType === "promotion") {
-      upsertPromotion.mutate(formData);
+      upsertPromotion.mutate(formData as any);
     } else if (formType === "announcement") {
-      upsertAnnouncement.mutate(formData);
+      upsertAnnouncement.mutate(formData as any);
     }
   };
 
@@ -161,6 +284,10 @@ export default function AdminContent() {
 
   const handleDragEndBanner = () => {
     setDraggedBannerIndex(null);
+    // Save previous state in case reorder fails
+    if (!previousBannerOrder) {
+      setPreviousBannerOrder(banners ? [...banners].sort((a, b) => ((a?.order) ?? 0) - ((b?.order) ?? 0)) : null);
+    }
     const ids = orderedBanners.map((b) => b.id);
     reorderBanners.mutate({ ids });
   };
@@ -235,14 +362,22 @@ export default function AdminContent() {
                         <Edit2 size={16} />
                         Edit
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleDeleteBanner(banner.id)}
-                        className="text-destructive"
-                      >
-                        <Trash2 size={16} />
-                      </Button>
+                      {(user?.role === "admin" || user?.role === "manager") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            if (user?.role === "manager") {
+                              setDeletionRequest({ isOpen: true, itemType: "banner", itemId: banner.id.toString(), itemName: banner.title });
+                            } else {
+                              handleDeleteBanner(banner.id);
+                            }
+                          }}
+                          className="text-destructive"
+                        >
+                          <Trash2 size={16} />
+                        </Button>
+                      )}
                     </div>
                   </Card>
                 ))}
@@ -290,9 +425,17 @@ export default function AdminContent() {
                         <Button variant="outline" size="sm" onClick={() => openForm("promotion", promo)}>
                           <Edit2 size={16} />
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => handleDeletePromotion(promo.id)} className="text-destructive">
-                          <Trash2 size={16} />
-                        </Button>
+                        {(user?.role === "admin" || user?.role === "manager") && (
+                          <Button variant="outline" size="sm" onClick={() => {
+                            if (user?.role === "manager") {
+                            setDeletionRequest({ isOpen: true, itemType: "promotion", itemId: promo.id.toString(), itemName: promo.title });
+                            } else {
+                              handleDeletePromotion(promo.id);
+                            }
+                          }} className="text-destructive">
+                            <Trash2 size={16} />
+                          </Button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -342,9 +485,17 @@ export default function AdminContent() {
                         <Button variant="outline" size="sm" onClick={() => openForm("announcement", announcement)}>
                           <Edit2 size={16} />
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => handleDeleteAnnouncement(announcement.id)} className="text-destructive">
-                          <Trash2 size={16} />
-                        </Button>
+                        {(user?.role === "admin" || user?.role === "manager") && (
+                          <Button variant="outline" size="sm" onClick={() => {
+                            if (user?.role === "manager") {
+                            setDeletionRequest({ isOpen: true, itemType: "announcement", itemId: announcement.id.toString(), itemName: announcement.title });
+                            } else {
+                              handleDeleteAnnouncement(announcement.id);
+                            }
+                          }} className="text-destructive">
+                            <Trash2 size={16} />
+                          </Button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -367,7 +518,7 @@ export default function AdminContent() {
               <form onSubmit={handleSaveForm} className="p-6 space-y-5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xl font-bold capitalize">
-                    {formData.id ? "Edit" : "Add"} {formType}
+                    {(formData as any).id ? "Edit" : "Add"} {formType}
                   </h3>
                   <Button type="button" variant="ghost" size="sm" onClick={closeForm}>✕</Button>
                 </div>
@@ -375,20 +526,32 @@ export default function AdminContent() {
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <Label>Title *</Label>
-                    <Input required value={formData.title || ""} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder={`E.g. ${formType === 'banner' ? 'Summer Sale' : '20% Off'}`} />
+                    <Input required value={(formData as any).title || ""} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder={`E.g. ${formType === 'banner' ? 'Summer Sale' : '20% Off'}`} />
                   </div>
 
                   {formType === "banner" && (
                     <>
                     <div className="space-y-2">
                       <Label>Subtitle / Description (Optional)</Label>
-                      <Input value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="E.g. Save up to 40% on top tech" />
+                      <Input value={(formData as any).description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="E.g. Save up to 40% on top tech" />
                     </div>
                     <div className="space-y-2">
                       <Label>Banner Image *</Label>
+                      {formError && (
+                        <div className="flex items-start gap-3 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg">
+                          <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm text-red-800 dark:text-red-200">{formError}</p>
+                          </div>
+                        </div>
+                      )}
                       <div 
-                        className="border-2 border-dashed border-border rounded-xl p-6 text-center cursor-pointer hover:bg-muted/50 transition-colors relative"
-                        onClick={() => fileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors relative ${
+                          isUploading 
+                            ? "border-[var(--brand)]/50 bg-muted/50" 
+                            : "border-border hover:bg-muted/50 hover:border-[var(--brand)]/40"
+                        }`}
+                        onClick={() => !isUploading && fileInputRef.current?.click()}
                       >
                         <input 
                           type="file" 
@@ -398,25 +561,36 @@ export default function AdminContent() {
                           onChange={handleFileUpload} 
                           title="Upload banner image"
                           aria-label="Upload banner image"
+                          disabled={isUploading}
                         />
-                        {formData.image ? (
+                        {(formData as any).image ? (
                           <div className="relative w-full aspect-[21/9] rounded-lg overflow-hidden border border-border">
-                            <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
+                            <img src={(formData as any).image} alt="Preview" className="w-full h-full object-cover" />
                             <Button 
                               type="button"
                               variant="destructive" 
                               size="icon" 
                               className="absolute top-2 right-2 h-8 w-8 rounded-full opacity-90 hover:opacity-100 shadow-sm"
-                              onClick={(e) => { e.stopPropagation(); setFormData({ ...formData, image: "" }); }}
+                              onClick={(e) => { e.stopPropagation(); setFormData({ ...formData, image: "" }); setFormError(null); }}
+                              disabled={isUploading}
                             >
                               <X size={16} />
                             </Button>
                           </div>
                         ) : (
                           <div className="py-4">
-                            <Upload size={32} className="mx-auto mb-3 text-muted-foreground/60" />
-                            <p className="text-sm font-medium">Click to upload banner image</p>
-                            <p className="text-xs text-muted-foreground mt-1">High resolution PNG, JPG, or WEBP (Max 2MB)</p>
+                            {isUploading ? (
+                              <>
+                                <Loader2 size={32} className="mx-auto mb-3 text-[var(--brand)] animate-spin" />
+                                <p className="text-sm font-medium">Uploading image...</p>
+                              </>
+                            ) : (
+                              <>
+                                <Upload size={32} className="mx-auto mb-3 text-muted-foreground/60" />
+                                <p className="text-sm font-medium">Click to upload banner image</p>
+                                <p className="text-xs text-muted-foreground mt-1">PNG, JPG, or WEBP (Max 5MB) - Uses S3 or local storage</p>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -429,20 +603,28 @@ export default function AdminContent() {
                     <div className="space-y-2">
                       <Label>Announcement Image (Optional)</Label>
                       <div 
-                        className="border-2 border-dashed border-border rounded-xl p-4 text-center cursor-pointer hover:bg-muted/50 transition-colors relative"
-                        onClick={() => fileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors relative ${
+                          isUploading 
+                            ? "border-[var(--brand)]/50 bg-muted/50" 
+                            : "border-border hover:bg-muted/50 hover:border-[var(--brand)]/40"
+                        }`}
+                        onClick={() => !isUploading && fileInputRef.current?.click()}
                       >
-                        <input type="file" className="hidden" ref={fileInputRef} accept="image/*" onChange={handleFileUpload} title="Upload announcement image" aria-label="Upload announcement image" />
-                        {formData.image ? (
+                        <input type="file" className="hidden" ref={fileInputRef} accept="image/*" onChange={handleFileUpload} title="Upload announcement image" aria-label="Upload announcement image" disabled={isUploading} />
+                        {(formData as any).image ? (
                           <div className="relative w-full h-32 rounded-lg overflow-hidden border border-border">
-                            <img src={formData.image} alt="Preview" className="w-full h-full object-cover" />
-                            <Button type="button" variant="destructive" size="icon" className="absolute top-2 right-2 h-6 w-6 rounded-full opacity-90 hover:opacity-100 shadow-sm" onClick={(e) => { e.stopPropagation(); setFormData({ ...formData, image: "" }); }}>
+                            <img src={(formData as any).image} alt="Preview" className="w-full h-full object-cover" />
+                            <Button type="button" variant="destructive" size="icon" className="absolute top-2 right-2 h-6 w-6 rounded-full opacity-90 hover:opacity-100 shadow-sm" onClick={(e) => { e.stopPropagation(); setFormData({ ...formData, image: "" }); }} disabled={isUploading}>
                               <X size={12} />
                             </Button>
                           </div>
                         ) : (
                           <div className="py-3">
-                            <Upload size={20} className="mx-auto mb-2 text-muted-foreground/60" />
+                            {isUploading ? (
+                              <Loader2 size={20} className="mx-auto mb-2 text-[var(--brand)] animate-spin" />
+                            ) : (
+                              <Upload size={20} className="mx-auto mb-2 text-muted-foreground/60" />
+                            )}
                             <p className="text-sm font-medium">Click to upload image</p>
                           </div>
                         )}
@@ -450,7 +632,7 @@ export default function AdminContent() {
                     </div>
                     <div className="space-y-2">
                       <Label>Link URL (Optional)</Label>
-                      <Input value={formData.linkUrl || ""} onChange={(e) => setFormData({ ...formData, linkUrl: e.target.value })} placeholder="e.g. /products?category=laptops or https://..." />
+                      <Input value={(formData as any).linkUrl || ""} onChange={(e) => setFormData({ ...formData, linkUrl: e.target.value })} placeholder="e.g. /products?category=laptops or https://..." />
                     </div>
                     </>
                   )}
@@ -458,7 +640,7 @@ export default function AdminContent() {
                   {formType === "promotion" && (
                     <div className="space-y-2">
                       <Label>Description *</Label>
-                      <Textarea required value={formData.description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Use code SUMMER20 at checkout" />
+                      <Textarea required value={(formData as any).description || ""} onChange={(e) => setFormData({ ...formData, description: e.target.value })} placeholder="Use code SUMMER20 at checkout" />
                     </div>
                   )}
 
@@ -466,31 +648,41 @@ export default function AdminContent() {
                     <>
                       <div className="space-y-2">
                         <Label>Content *</Label>
-                        <Textarea required value={formData.content || ""} onChange={(e) => setFormData({ ...formData, content: e.target.value })} placeholder="Details about the announcement" />
+                        <Textarea required value={(formData as any).content || ""} onChange={(e) => setFormData({ ...formData, content: e.target.value })} placeholder="Details about the announcement" />
                       </div>
                       <div className="space-y-2">
                         <Label>Date *</Label>
-                        <Input type="date" required value={formData.date || ""} onChange={(e) => setFormData({ ...formData, date: e.target.value })} />
+                        <Input type="date" required value={(formData as any).date || ""} onChange={(e) => setFormData({ ...formData, date: e.target.value })} />
                       </div>
                     </>
                   )}
 
                   <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
                     <Label className="cursor-pointer">Active / Visible on Store</Label>
-                    <Switch checked={formData.active} onCheckedChange={(c) => setFormData({ ...formData, active: c })} />
+                    <Switch checked={(formData as any).active} onCheckedChange={(c) => setFormData({ ...formData, active: c })} />
                   </div>
                 </div>
 
                 <div className="flex justify-end gap-3 pt-2">
-                  <Button type="button" variant="outline" onClick={closeForm}>Cancel</Button>
-                  <Button type="submit" disabled={isSaving} className="bg-[var(--brand)] text-white hover:opacity-90 min-w-24">
-                    {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+                  <Button type="button" variant="outline" onClick={closeForm} disabled={isSaving || isUploading}>Cancel</Button>
+                  <Button type="submit" disabled={isSaving || isUploading} className="bg-[var(--brand)] text-white hover:opacity-90 min-w-24">
+                    {isSaving || isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
                   </Button>
                 </div>
               </form>
             </Card>
           </div>
         )}
+
+    {deletionRequest && (
+      <DeletionRequestModal
+        isOpen={deletionRequest.isOpen}
+        onClose={() => setDeletionRequest(null)}
+        itemType={deletionRequest.itemType}
+        itemId={deletionRequest.itemId}
+        itemName={deletionRequest.itemName}
+      />
+    )}
       </div>
     </AdminLayout>
   );

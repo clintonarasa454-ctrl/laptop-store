@@ -3,7 +3,14 @@ config(); // Load environment variables from .env
 
 import { randomBytes, scryptSync } from "crypto";
 import { getDb, upsertCategory, getCategoryBySlug, upsertProduct } from "./db";
-import { deliveryAgents } from "../drizzle/schema";
+import { drivers, vehicles, assignments, products } from "../drizzle/schema";
+import { sql } from "drizzle-orm";
+
+function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const derivedKey = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derivedKey}`;
+}
 
 async function seed() {
   console.log("⏳ Connecting to the database...");
@@ -14,13 +21,13 @@ async function seed() {
   }
 
   console.log("🌱 Seeding Categories...");
-  const categories = [
+  const categoriesData = [
     { name: "Laptops", slug: "laptops", description: "High-performance laptops for work and play.", imageUrl: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=500" },
     { name: "Desktops", slug: "desktops", description: "Powerful desktop computers and workstations.", imageUrl: "https://images.unsplash.com/photo-1593640408182-31c70c8268f5?w=500" },
     { name: "Accessories", slug: "accessories", description: "Essential computer accessories and peripherals.", imageUrl: "https://images.unsplash.com/photo-1527864550417-7fd91fc51a46?w=500" }
   ];
 
-  for (const cat of categories) {
+  for (const cat of categoriesData) {
     await upsertCategory(cat);
   }
 
@@ -34,7 +41,7 @@ async function seed() {
   }
 
   console.log("🌱 Seeding Products...");
-  const products = [
+  const productsData: any[] = [
     {
       categoryId: laptopsCat.id,
       name: "MacBook Pro 16-inch",
@@ -68,27 +75,37 @@ async function seed() {
     }
   ];
 
-  for (const prod of products) {
-    await upsertProduct(prod);
+  for (const prod of productsData) {
+    await db.insert(products).values(prod).onConflictDoNothing();
   }
 
-  function hashPassword(password: string) {
-    const salt = randomBytes(16).toString("hex");
-    const derivedKey = scryptSync(password, salt, 64).toString("hex");
-    return `${salt}:${derivedKey}`;
-  }
-
-  console.log("🌱 Seeding Delivery Agents...");
-  const agents = [
-    { id: 1, name: "John Kamau", phone: "+254712345678", vehicleNumber: "KDA 123X", vehicleType: "bike", isAvailable: true, pin: hashPassword("1111") },
-    { id: 2, name: "Peter Ochieng", phone: "+254723456789", vehicleNumber: "KBC 456Y", vehicleType: "truck", isAvailable: true, pin: hashPassword("2222") },
-    { id: 3, name: "Sarah Wanjiku", phone: "+254734567890", vehicleNumber: "KCA 789Z", vehicleType: "bike", isAvailable: false, pin: hashPassword("3333") }
+  console.log("🌱 Seeding Fleet Management Data...");
+  const driverData = [
+    { name: "John Kamau", phone: "+254712345678", email: "john.kamau@example.com", licenseNumber: "AB12345", status: "active" as const, pin: hashPassword("1111") },
+    { name: "Peter Ochieng", phone: "+254723456789", email: "peter.ochieng@example.com", licenseNumber: "CD67890", status: "active" as const, pin: hashPassword("2222") },
+    { name: "Sarah Wanjiku", phone: "+254734567890", email: "sarah.wanjiku@example.com", licenseNumber: "EF11223", status: "inactive" as const, pin: hashPassword("3333") }
   ];
+  
+  for (const driver of driverData) {
+    await db.insert(drivers).values(driver).onConflictDoNothing();
+  }
 
-  for (const agent of agents) {
-    await db.insert(deliveryAgents)
-      .values(agent)
-      .onDuplicateKeyUpdate({ set: agent });
+  const vehicleData = [
+    { name: "Toyota Prado", numberPlate: "KDA 123A", type: "car" as const, status: "available" as const },
+    { name: "Boxer 150", numberPlate: "KMF 456B", type: "motorcycle" as const, status: "assigned" as const },
+    { name: "Isuzu D-Max", numberPlate: "KDJ 789C", type: "truck" as const, status: "maintenance" as const },
+  ];
+  
+  for (const vehicle of vehicleData) {
+    await db.insert(vehicles).values(vehicle).onConflictDoNothing();
+  }
+
+  const assignmentData = [
+    { driverId: 2, vehicleId: 2, status: "active" as const }
+  ];
+  
+  for (const assignment of assignmentData) {
+    await db.insert(assignments).values(assignment).onConflictDoNothing();
   }
 
   console.log("✅ Database seeded successfully!");

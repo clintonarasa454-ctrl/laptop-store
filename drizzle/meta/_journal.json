@@ -1,40 +1,82 @@
 {
-  "version": "7",
-  "dialect": "mysql",
+  "version": "8",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
-      "version": "5",
-      "when": 1773423439175,
-      "tag": "0000_remarkable_speed_demon",
+      "version": "7",
+      "when": 1775064000000,
+      "tag": "0000_add_settings_index",
       "breakpoints": true
     },
     {
       "idx": 1,
-      "version": "5",
-      "when": 1773423579195,
-      "tag": "0001_secret_randall",
+      "version": "7",
+      "when": 1774937000564,
+      "tag": "0001_ambitious_moondragon",
       "breakpoints": true
     },
     {
       "idx": 2,
-      "version": "5",
-      "when": 1773488633350,
-      "tag": "0002_familiar_roughhouse",
+      "version": "7",
+      "when": 1775068000000,
+      "tag": "0002_add_perf_indexes",
       "breakpoints": true
     },
     {
       "idx": 3,
-      "version": "5",
-      "when": 1773742584103,
-      "tag": "0003_brave_golden_guardian",
+      "version": "7",
+      "when": 1775100000000,
+      "tag": "0003_fix_settings_schema",
       "breakpoints": true
     },
     {
       "idx": 4,
-      "version": "5",
-      "when": 1773825930900,
-      "tag": "0004_uneven_ares",
+      "version": "7",
+      "when": 1775160505287,
+      "tag": "0004_chubby_professor_monster",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775202325870,
+      "tag": "0005_early_selene",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775208722237,
+      "tag": "0006_sour_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1775222810567,
+      "tag": "0007_productive_havok",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778100000000,
+      "tag": "0008_enable_rls_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1778509852969,
+      "tag": "0009_chubby_blonde_phantom",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778667802310,
+      "tag": "0010_faithful_texas_twister",
       "breakpoints": true
     }
   ]

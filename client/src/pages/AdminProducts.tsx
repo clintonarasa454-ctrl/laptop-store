@@ -14,16 +14,20 @@ import {
   SelectLabel,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2, ArrowUpDown } from "lucide-react";
+import { Plus, Search, Edit2, Trash2, Image as ImageIcon, Upload, X, Loader2, ArrowUpDown, Barcode, Box, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation, useSearch } from "wouter";
 import { formatPrice } from "@/lib/cart";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import BarcodeScanner from "@/components/BarcodeScanner";
+import { useAuth } from "@/pages/useAuth";
 
 export default function AdminProducts() {
+  const { user } = useAuth();
   const { data: categories } = trpc.categories.list.useQuery();
   const utils = trpc.useUtils();
+  const { data: warehouses } = trpc.admin.warehouses.useQuery();
   
   const { data: settings } = trpc.settings.public.useQuery({ keys: ["brands"] });
   const availableBrands = settings?.brands || ["Samsung", "Dell", "HP", "Lenovo", "Asus"];
@@ -37,6 +41,10 @@ export default function AdminProducts() {
   const [page, setPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const [stockFilter, setStockFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
+  const [scannerMode, setScannerMode] = useState<"product" | "serial" | null>(null);
+  const [managingUnitsProduct, setManagingUnitsProduct] = useState<any>(null);
+  const [unitSerials, setUnitSerials] = useState<string>("");
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
@@ -45,7 +53,7 @@ export default function AdminProducts() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, itemsPerPage, sortConfig]);
+  }, [debouncedSearch, itemsPerPage, sortConfig, stockFilter]);
 
   const handleSort = (key: string) => {
     setSortConfig((current) => ({
@@ -56,7 +64,7 @@ export default function AdminProducts() {
 
   const { data: products, isLoading } = trpc.admin.products.useQuery(
     { search: debouncedSearch || undefined },
-    { refetchInterval: 10000 }
+    { staleTime: 0, refetchInterval: 5000, refetchOnWindowFocus: true }
   );
   
   const defaultForm = {
@@ -75,10 +83,13 @@ export default function AdminProducts() {
     tags: "",
     featured: false,
     active: true,
+    hasSerial: false,
+    warehouseId: "",
   };
 
   const [formData, setFormData] = useState(defaultForm);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
   const handledUrlRef = useRef("");
 
   useEffect(() => {
@@ -94,13 +105,13 @@ export default function AdminProducts() {
         handledUrlRef.current = searchString;
         handleEdit(productToEdit);
         // Clean the URL so reloading doesn't re-open the modal
-        setLocation('/admin/products', { replace: true });
+        setLocation(user?.role === 'manager' ? '/manager/products' : '/admin/products', { replace: true });
       }
     } else if (isNew) {
       handledUrlRef.current = searchString;
       resetForm();
       setShowForm(true);
-      setLocation('/admin/products', { replace: true });
+      setLocation(user?.role === 'manager' ? '/manager/products' : '/admin/products', { replace: true });
     }
   }, [products, searchString, setLocation]);
 
@@ -129,7 +140,17 @@ export default function AdminProducts() {
     onError: (err) => toast.error("Failed to save product: " + err.message)
   });
 
-  const filteredProducts = products || [];
+  const requestRestock = trpc.admin.requestRestock.useMutation({
+    onSuccess: () => toast.success("Restock request sent to Admin successfully!"),
+    onError: (err) => toast.error(`Error: ${err.message}`)
+  });
+
+  const filteredProducts = (products || []).filter(p => {
+    if (stockFilter === "out_of_stock") return p.stock === 0;
+    if (stockFilter === "low_stock") return p.stock > 0 && p.stock <= 10;
+    if (stockFilter === "in_stock") return p.stock > 0;
+    return true;
+  });
   
   const sortedProducts = useMemo(() => {
     return [...filteredProducts].sort((a, b) => {
@@ -179,8 +200,53 @@ export default function AdminProducts() {
       tags: Array.isArray(product.tags) ? product.tags.join(", ") : "",
       featured: product.featured || false,
       active: product.active ?? true,
+      hasSerial: product.hasSerial || false,
+      warehouseId: product.warehouseId?.toString() || "",
     });
     setShowForm(true);
+  };
+
+  const handleBarcodeScan = (code: string) => {
+    if (scannerMode === "product") {
+      resetForm();
+      setFormData((prev) => ({
+        ...prev,
+        sku: code,
+        name: `Product ${code}`, 
+      }));
+      setShowForm(true);
+      setScannerMode(null);
+      toast.success(`Scanned: ${code}`);
+    } else if (scannerMode === "serial") {
+      setUnitSerials((prev) => {
+        const existing = prev.split('\n').map(s => s.trim()).filter(Boolean);
+        if (existing.includes(code)) {
+          toast.error("Serial number already scanned!");
+          return prev;
+        }
+        return prev ? prev + '\n' + code : code;
+      });
+      toast.success(`Added serial: ${code}`);
+    }
+  };
+
+  const createUnitsMutation = trpc.admin.createProductUnits.useMutation({
+    onSuccess: (data) => {
+      utils.admin.products.invalidate();
+      toast.success(`Successfully added ${data.count} units`);
+      setManagingUnitsProduct(null);
+      setUnitSerials("");
+    },
+    onError: (err) => toast.error("Failed to add units: " + err.message)
+  });
+
+  const handleCreateUnits = () => {
+    const serials = unitSerials.split("\n").map(s => s.trim()).filter(Boolean);
+    if (serials.length === 0) return toast.error("Enter at least one serial number");
+    createUnitsMutation.mutate({
+      productId: managingUnitsProduct.id,
+      units: serials.map(s => ({ serialNumber: s }))
+    });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -226,6 +292,42 @@ export default function AdminProducts() {
     }));
   };
 
+  const handleModelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (!file.name.toLowerCase().endsWith('.glb')) {
+      toast.error("Please upload a valid .glb 3D model file.");
+      return;
+    }
+    
+    if (file.size > 20 * 1024 * 1024) {
+      toast.error(`${file.name} is larger than 20MB.`);
+      return;
+    }
+    
+    let toastId;
+    try {
+      toastId = toast.loading(`Uploading 3D Model ${file.name}...`);
+      const contentType = file.type || "model/gltf-binary";
+      const { uploadUrl, publicUrl } = await createPresignedUrl.mutateAsync({ filename: file.name, contentType });
+      
+      if (uploadUrl && publicUrl) {
+        const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: { "Content-Type": contentType } });
+        if (!res.ok) throw new Error("S3 Upload Failed");
+        
+        setFormData((prev) => {
+          const currentSpecs = prev.specifications.trim();
+          const newSpecs = currentSpecs ? `${currentSpecs}\n3D Model URL: ${publicUrl}` : `3D Model URL: ${publicUrl}`;
+          return { ...prev, specifications: newSpecs };
+        });
+        
+        toast.success(`3D Model uploaded successfully!`, { id: toastId });
+      } else { throw new Error("Failed to get presigned URL"); }
+    } catch (error) { toast.error(`Failed to upload 3D model`, { id: toastId }); }
+    if (modelInputRef.current) modelInputRef.current.value = "";
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.categoryId) return toast.error("Please select a category");
@@ -245,7 +347,7 @@ export default function AdminProducts() {
       shortDescription: formData.shortDescription || undefined,
       price: formData.price,
       comparePrice: formData.comparePrice || undefined,
-      stock: parseInt(formData.stock) || 0,
+      stock: Math.max(0, parseInt(formData.stock) || 0),
       brand: formData.brand || undefined,
       sku: formData.sku || undefined,
       images: formData.images,
@@ -253,6 +355,8 @@ export default function AdminProducts() {
       tags: formData.tags.split(",").map((t) => t.trim()).filter(Boolean),
       featured: formData.featured,
       active: formData.active,
+      hasSerial: formData.hasSerial,
+      warehouseId: formData.warehouseId ? parseInt(formData.warehouseId) : undefined,
     });
   };
 
@@ -267,10 +371,16 @@ export default function AdminProducts() {
               Manage your store products, inventory, and pricing
             </p>
           </div>
-          <Button onClick={() => { resetForm(); setShowForm(true); }} className="gap-2">
-            <Plus size={18} />
-            Add Product
-          </Button>
+          <div className="flex gap-3">
+            <Button onClick={() => setScannerMode("product")} variant="outline" className="gap-2">
+              <Barcode size={18} />
+              Scan to Add
+            </Button>
+            <Button onClick={() => { resetForm(); setShowForm(true); }} className="gap-2">
+              <Plus size={18} />
+              Add Product
+            </Button>
+          </div>
         </div>
 
         {/* Search & Filter */}
@@ -285,6 +395,17 @@ export default function AdminProducts() {
                 className="pl-10"
               />
             </div>
+          <Select value={stockFilter} onValueChange={(val: any) => setStockFilter(val)}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Filter by Stock" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Stock Levels</SelectItem>
+              <SelectItem value="in_stock">In Stock (&gt;0)</SelectItem>
+              <SelectItem value="low_stock">Low Stock (≤10)</SelectItem>
+              <SelectItem value="out_of_stock">Out of Stock (0)</SelectItem>
+            </SelectContent>
+          </Select>
           </div>
         </Card>
 
@@ -358,6 +479,30 @@ export default function AdminProducts() {
                       </td>
                       <td className="py-3 px-4">
                         <div className="flex items-center justify-center gap-2">
+                          {user?.role === "manager" && product.stock <= 10 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Request Restock from Admin"
+                              onClick={() => {
+                                const qtyStr = window.prompt(`How many units of ${product.name} do you need to restock?`, "10");
+                                const qty = parseInt(qtyStr || "0", 10);
+                                if (qty > 0) requestRestock.mutate({ productId: product.id, productName: product.name, quantity: qty });
+                              }}
+                              disabled={requestRestock.isPending}
+                              className="text-orange-500 hover:text-orange-600 hover:bg-orange-50"
+                            >
+                              <RefreshCw size={16} className={requestRestock.isPending ? "animate-spin" : ""} />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="Add Serialized Units"
+                            onClick={() => setManagingUnitsProduct(product)}
+                          >
+                            <Barcode size={16} className={product.hasSerial ? "text-[var(--brand)]" : ""} />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -365,14 +510,22 @@ export default function AdminProducts() {
                           >
                             <Edit2 size={16} />
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(product.id)}
-                            className="text-destructive hover:text-destructive"
-                          >
-                            <Trash2 size={16} />
-                          </Button>
+                          {(user?.role === "admin" || user?.role === "manager") && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                if (user?.role === "manager") {
+                                  toast.warning("Deletion restricted. Please alert an Admin to confirm and authorize this deletion.");
+                                } else {
+                                  handleDelete(product.id);
+                                }
+                              }}
+                              className="text-destructive hover:text-destructive"
+                            >
+                              <Trash2 size={16} />
+                            </Button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -585,7 +738,13 @@ export default function AdminProducts() {
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Specifications (Format: "Key: Value" one per line)</Label>
+                    <div className="flex items-center justify-between">
+                      <Label>Specifications (Format: "Key: Value" one per line)</Label>
+                      <Button type="button" variant="outline" size="sm" onClick={() => modelInputRef.current?.click()} className="h-7 text-xs gap-1.5">
+                        <Box size={14} /> Upload 3D Model (.glb)
+                      </Button>
+                      <input type="file" ref={modelInputRef} className="hidden" accept=".glb" onChange={handleModelUpload} />
+                    </div>
                     <Textarea
                       value={formData.specifications}
                       onChange={(e) => setFormData({ ...formData, specifications: e.target.value })}
@@ -593,22 +752,42 @@ export default function AdminProducts() {
                       placeholder="Processor: Intel Core i7&#10;RAM: 16GB DDR5"
                     />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Tags (Comma separated)</Label>
-                    <Input
-                      value={formData.tags}
-                      onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
-                      placeholder="gaming, professional, creative"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Tags (Comma separated)</Label>
+                      <Input
+                        value={formData.tags}
+                        onChange={(e) => setFormData({ ...formData, tags: e.target.value })}
+                        placeholder="gaming, professional, creative"
+                      />
+                    </div>
+                    {user?.role === "admin" && (
+                      <div className="space-y-1.5">
+                        <Label>Assign to Warehouse (Optional)</Label>
+                        <Select value={formData.warehouseId || "none"} onValueChange={(val) => setFormData({ ...formData, warehouseId: val === "none" ? "" : val })}>
+                          <SelectTrigger><SelectValue placeholder="Global / All Hubs" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Global / All Hubs</SelectItem>
+                            {warehouses?.map((w: any) => (
+                              <SelectItem key={w.id} value={w.id.toString()}>{w.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-6 flex-wrap">
                     <label className="flex items-center gap-2 cursor-pointer">
                       <Switch checked={formData.featured} onCheckedChange={(c) => setFormData({ ...formData, featured: c })} />
-                      <span className="text-sm font-medium">Featured product</span>
+                      <span className="text-sm font-medium">Featured</span>
                     </label>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <Switch checked={formData.active} onCheckedChange={(c) => setFormData({ ...formData, active: c })} />
-                      <span className="text-sm font-medium">Active (Visible)</span>
+                      <span className="text-sm font-medium">Visible</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <Switch checked={formData.hasSerial} onCheckedChange={(c) => setFormData({ ...formData, hasSerial: c })} />
+                      <span className="text-sm font-medium">Track Serial Numbers</span>
                     </label>
                   </div>
                   <div className="flex flex-col-reverse sm:flex-row gap-2 mt-6">
@@ -622,6 +801,49 @@ export default function AdminProducts() {
             </Card>
           </div>
         )}
+
+        {/* Manage Units Modal */}
+        {managingUnitsProduct && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <Card className="w-full max-w-md shadow-xl">
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xl font-bold">Add Serialized Units</h3>
+                  <Button variant="ghost" size="sm" onClick={() => { setManagingUnitsProduct(null); setUnitSerials(""); }}>✕</Button>
+                </div>
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    Adding units for <strong>{managingUnitsProduct.name}</strong>. Scan or type serial numbers (one per line).
+                  </p>
+                  <Button type="button" variant="outline" className="w-full gap-2" onClick={() => setScannerMode("serial")}>
+                    <Barcode size={16} /> Scan Serial Number
+                  </Button>
+                  <Textarea
+                    rows={8}
+                    value={unitSerials}
+                    onChange={(e) => setUnitSerials(e.target.value)}
+                    placeholder="e.g. SN-123456&#10;SN-789012"
+                  />
+                  <Button 
+                    className="w-full bg-[var(--brand)] text-white hover:opacity-90" 
+                    onClick={handleCreateUnits}
+                    disabled={createUnitsMutation.isPending || !unitSerials.trim()}
+                  >
+                    {createUnitsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save Units"}
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Barcode Scanner Modal */}
+        <BarcodeScanner
+          isOpen={scannerMode !== null}
+          onClose={() => setScannerMode(null)}
+          onScan={handleBarcodeScan}
+          title={scannerMode === "serial" ? "Scan Serial Number" : "Scan Product Barcode"}
+        />
       </div>
     </AdminLayout>
   );

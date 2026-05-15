@@ -1,13 +1,14 @@
 import { useAuth } from "@/pages/useAuth";
 import { trpc } from "@/lib/trpc";
 import { addToGuestCart, formatPrice } from "@/lib/cart";
-import { ShoppingCart, Star, Zap, Scale } from "lucide-react";
+import { ShoppingCart, Star, Zap, Scale, Heart } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useState, useEffect } from "react";
 import { toggleCompare, getCompareList } from "@/lib/ux";
+import { OptimizedImage } from "./OptimizedImage";
 
 interface Product {
   id: number;
@@ -27,10 +28,13 @@ interface Product {
 
 interface ProductCardProps {
   product: Product;
+  /** Whether the product is in the user's wishlist (passed from parent to avoid N+1 queries) */
+  isWishlisted?: boolean;
   onCartUpdate?: () => void;
+  priority?: boolean;
 }
 
-export default function ProductCard({ product, onCartUpdate }: ProductCardProps) {
+export default function ProductCard({ product, isWishlisted = false, onCartUpdate, priority = false }: ProductCardProps) {
   const { isAuthenticated } = useAuth();
   const utils = trpc.useUtils();
 
@@ -43,8 +47,6 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
     onError: () => toast.error("Failed to add to cart"),
   });
 
-  const { data: wishlist } = trpc.wishlist.get.useQuery(undefined, { enabled: isAuthenticated });
-  const isWishlisted = wishlist?.some(w => w.product.id === product.id);
   const toggleWishlist = trpc.wishlist.toggle.useMutation({
     onSuccess: (data) => {
       utils.wishlist.get.invalidate();
@@ -86,16 +88,15 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
       <div 
         className="group bg-card border border-border rounded-2xl overflow-hidden hover:shadow-xl hover:-translate-y-1 hover:border-[var(--brand)]/40 transition-all duration-300 cursor-pointer h-full flex flex-col"
         style={{ contentVisibility: 'auto', containIntrinsicSize: '0 400px' }}
-        onMouseEnter={() => utils.products.bySlug.prefetch({ slug: product.slug })}
+        onMouseEnter={() => utils.products.bySlug.prefetch({ slug: product.slug }, { staleTime: 1000 * 60 * 5 })}
       >
         {/* Image */}
-        <div className="relative aspect-[4/3] overflow-hidden bg-muted">
-          <img
+        <div className="relative aspect-[4/3] overflow-hidden">
+          <OptimizedImage
             src={image}
             alt={product.name}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-            loading="lazy"
-            decoding="async"
+            className="w-full h-full object-contain p-4 group-hover:scale-105 transition-transform duration-300"
+            priority={priority}
           />
           {/* Badges */}
           <div className="absolute top-2 left-2 flex gap-1.5">
@@ -116,6 +117,30 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
             </div>
           )}
           
+          {/* Wishlist Button */}
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!isAuthenticated) {
+                toast.error("Please log in to add items to your wishlist");
+                return;
+              }
+              toggleWishlist.mutate({ productId: product.id });
+            }}
+            disabled={toggleWishlist.isPending}
+            className={`absolute top-2 right-12 p-1.5 rounded-lg backdrop-blur-md border transition-all z-10 ${
+              isWishlisted 
+                ? "bg-destructive border-destructive text-white shadow-md" 
+                : "bg-background/80 border-border text-muted-foreground hover:text-foreground hover:bg-background"
+            }`}
+            title={isWishlisted ? "Remove from Wishlist" : "Add to Wishlist"}
+            aria-label={isWishlisted ? "Remove from Wishlist" : "Add to Wishlist"}
+            aria-pressed={isWishlisted}
+          >
+            <Heart className={`w-3.5 h-3.5 ${isWishlisted ? "fill-current" : ""}`} />
+          </button>
+
           {/* Compare Button */}
           <button
             onClick={(e) => {
@@ -126,6 +151,8 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
                 toast.error("You can only compare up to 4 products at once.");
               } else if (added) {
                 toast.success("Added to comparison");
+              } else if (added === false && isComparing) {
+                toast.success("Removed from comparison");
               }
             }}
             className={`absolute top-2 right-2 p-1.5 rounded-lg backdrop-blur-md border transition-all z-10 ${
@@ -134,6 +161,8 @@ export default function ProductCard({ product, onCartUpdate }: ProductCardProps)
                 : "bg-background/80 border-border text-muted-foreground hover:text-foreground hover:bg-background"
             }`}
             title={isComparing ? "Remove from Compare" : "Compare Product"}
+            aria-label={isComparing ? "Remove from Compare" : "Compare Product"}
+            aria-pressed={isComparing}
           >
             <Scale className="w-3.5 h-3.5" />
           </button>

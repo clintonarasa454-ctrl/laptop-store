@@ -1,6 +1,7 @@
 import { useAuth } from "@/pages/useAuth";
 import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
+import { SettingsResponse } from "@shared/settingsTypes";
 import {
   formatPrice,
   getGuestCart,
@@ -59,10 +60,11 @@ export default function Cart() {
 
   // Guest cart
   const [guestDisplayItems, setGuestDisplayItems] = useState<GuestCartDisplayItem[]>([]);
-  const { data: settings } = trpc.settings.public.useQuery(
+  const { data: settingsData } = trpc.settings.public.useQuery(
     { keys: ["shipping", "general"] },
     { staleTime: Infinity }
   );
+  const settings = settingsData as SettingsResponse | undefined;
 
   // This effect now becomes the single source for guest cart data
   useEffect(() => {
@@ -88,8 +90,8 @@ export default function Cart() {
   const isLoading = isAuthenticated ? authLoading : false;
 
   // Compute totals
-  const freeThreshold = settings?.shipping?.freeShippingThreshold ? parseFloat(settings.shipping.freeShippingThreshold) : 50000;
-  const standardFee = settings?.shipping?.standardFee ? parseFloat(settings.shipping.standardFee) : 50;
+  const freeThreshold = settings?.shipping?.freeShippingThreshold ? Number(settings.shipping.freeShippingThreshold) : 50000;
+  const standardFee = settings?.shipping?.standardFee ? Number(settings.shipping.standardFee) : 50;
 
   const items = isAuthenticated
     ? (authCart ?? []).map((i) => ({
@@ -190,6 +192,8 @@ export default function Cart() {
                               : handleGuestRemove(item.productId)
                           }
                           className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                          title="Remove item from cart"
+                          aria-label="Remove item from cart"
                         >
                           <X className="w-4 h-4" />
                         </button>
@@ -211,6 +215,8 @@ export default function Cart() {
                             }}
                             className="w-8 h-8 flex items-center justify-center hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             disabled={Number(item.quantity) <= 1 || upsertCart.isPending}
+                            title="Decrease quantity"
+                            aria-label="Decrease quantity"
                           >
                             <Minus className="w-3 h-3" />
                           </button>
@@ -228,6 +234,8 @@ export default function Cart() {
                             }}
                             className="w-8 h-8 flex items-center justify-center hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             disabled={(item.stock && Number(item.quantity) >= Number(item.stock)) || upsertCart.isPending}
+                            title="Increase quantity"
+                            aria-label="Increase quantity"
                           >
                             <Plus className="w-3 h-3" />
                           </button>

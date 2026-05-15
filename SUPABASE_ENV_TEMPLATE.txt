@@ -1,0 +1,113 @@
+# === SUPABASE .env TEMPLATE ===
+# Copy this template and replace with your actual credentials from Supabase
+
+# Step 1: Go to https://supabase.com → Your Project
+# Step 2: Click Settings (bottom left gear icon)
+# Step 3: Click "Database" tab
+# Step 4: Copy the "Connection string (PostgreSQL)" 
+# Step 5: Paste below as DATABASE_URL
+
+# Example format:
+# postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_ID.supabase.co:5432/postgres
+
+# ═══════════════════════════════════════════════════════════════════
+
+# SWITCH TO SUPABASE
+DATABASE_TYPE=supabase
+
+# GET FROM: Settings → Database → Connection string (PostgreSQL)
+DATABASE_URL="postgresql://postgres:YOUR_PASSWORD_HERE@db.YOUR_PROJECT_ID.supabase.co:5432/postgres"
+
+# ═══════════════════════════════════════════════════════════════════
+
+# GET FROM: Settings → API
+# Look for "Project URL"
+SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+
+# GET FROM: Settings → API
+# Look for "Anon key" (public key)
+SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...PASTE_YOUR_ANON_KEY_HERE
+
+# GET FROM: Settings → API  
+# Look for "Service role key" (secret key)
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...PASTE_YOUR_SERVICE_ROLE_KEY_HERE
+
+# ═══════════════════════════════════════════════════════════════════
+# KEEP ALL OTHER SETTINGS SAME
+# ═══════════════════════════════════════════════════════════════════
+
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
+AI_PROVIDER=groq
+
+# ═══════════════════════════════════════════════════════════════════
+# OAUTH CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
+
+# Google OAuth
+# GET FROM: Google Cloud Console → APIs & Services → Credentials
+# Create OAuth 2.0 Client ID (Web Application)
+# Set Authorized Redirect URIs to:
+#   - http://localhost:3000/api/auth/google/callback (development)
+#   - https://yourdomain.com/api/auth/google/callback (production)
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+
+# Facebook OAuth
+# GET FROM: Facebook Developers → Settings → Basic
+FACEBOOK_APP_ID=your_facebook_app_id_here
+FACEBOOK_APP_SECRET=your_facebook_app_secret_here
+
+# OAuth Redirect Configuration
+OAUTH_SERVER_URL="https://your-oauth-server.com"
+OAUTH_CALLBACK_URL_BASE="http://localhost:3000"
+COOKIE_SECRET="a-very-long-random-secret-key"
+APP_ID="laptop-store-local"
+
+VITE_OAUTH_SERVER_URL="https://your-oauth-server.com"
+VITE_APP_ID="laptop-store-local"
+
+AWS_ACCESS_KEY_ID="your_access_key"
+AWS_SECRET_ACCESS_KEY="your_secret_key"
+AWS_REGION="us-east-1"
+AWS_S3_BUCKET="your_bucket_name"
+
+VITE_GOOGLE_MAPS_API_KEY="AIzaSyYourGeneratedKeyHere"
+STRIPE_WEBHOOK_SECRET=whsec_your_stripe_secret_here
+
+MPESA_CONSUMER_KEY=your_consumer_key
+MPESA_CONSUMER_SECRET=your_consumer_secret
+
+# ═══════════════════════════════════════════════════════════════════
+# 🆘 WHERE TO FIND CREDENTIALS
+# ═══════════════════════════════════════════════════════════════════
+
+# 1. DATABASE_URL
+#    📍 Supabase Dashboard → Your Project → Settings → Database
+#    🔍 Look for "Connection string" section
+#    📋 Copy: "postgresql://postgres:PASSWORD@db.PROJECT_ID.supabase.co:5432/postgres"
+
+# 2. SUPABASE_URL
+#    📍 Supabase Dashboard → Your Project → Settings → API
+#    🔍 Look for "Project URL" (not "API Gateway URL")
+#    📋 Format: https://YOUR_PROJECT_ID.supabase.co
+
+# 3. SUPABASE_ANON_KEY  
+#    📍 Supabase Dashboard → Your Project → Settings → API
+#    🔍 Look for "Anon key" under "Project API keys"
+#    📋 It's a long string starting with "eyJ..."
+
+# 4. SUPABASE_SERVICE_ROLE_KEY
+#    📍 Supabase Dashboard → Your Project → Settings → API
+#    🔍 Look for "Service role key" under "Project API keys"
+#    📋 It's a long string starting with "eyJ..."
+#    ⚠️  KEEP THIS SECRET - never commit to git!
+
+# ═══════════════════════════════════════════════════════════════════
+# ✅ VERIFICATION COMMANDS
+# ═══════════════════════════════════════════════════════════════════
+
+# After updating .env, run:
+# 1. npx tsx test-supabase.ts    (verify connection)
+# 2. pnpm db:push                (create tables)
+# 3. pnpm dev                     (start server)

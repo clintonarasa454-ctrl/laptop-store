@@ -3,6 +3,8 @@ import AdminLayout from "@/components/AdminLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MultiDriverMap } from "@/components/Map";
 import {
   Select,
   SelectContent,
@@ -11,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Search, Eye, FileText, Truck, ArrowUpDown } from "lucide-react";
+import { Search, Eye, FileText, Truck, ArrowUpDown, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { formatPrice } from "@/lib/cart";
 
@@ -21,14 +23,17 @@ export default function AdminOrders() {
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [timeRange, setTimeRange] = useState<string>("all");
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<string>("list");
+  const [focusedOrderId, setFocusedOrderId] = useState<number | null>(null);
   const [assignAgentId, setAssignAgentId] = useState<string>("");
   const [page, setPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
 
-  const { data: agents } = trpc.delivery.getAgents.useQuery();
-  const assignDelivery = trpc.delivery.assignDelivery.useMutation({
+  const { data: agents } = trpc.fleet.getAgents.useQuery();
+  const assignDelivery = trpc.fleet.assignDelivery.useMutation({
     onSuccess: () => {
       toast.success("Delivery assigned and customer notified!");
       utils.admin.orders.invalidate();
@@ -39,7 +44,7 @@ export default function AdminOrders() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, statusFilter, itemsPerPage, sortConfig]);
+  }, [debouncedSearch, statusFilter, timeRange, itemsPerPage, sortConfig]);
 
   const handleSort = (key: string) => {
     setSortConfig((current) => ({
@@ -55,8 +60,27 @@ export default function AdminOrders() {
 
   const { data: orders, isLoading } = trpc.admin.orders.useQuery(
     { search: debouncedSearch || undefined, status: statusFilter !== "all" ? statusFilter : undefined }, 
-    { refetchInterval: 5000 }
+    { 
+      staleTime: 0, // Data is immediately stale for real-time updates
+      refetchInterval: 5000, // Auto-refresh every 5 seconds
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+    }
   );
+
+  // Keep a separate persistent query so the map always sees active deliveries regardless of table filters
+  const { data: activeDeliveriesData } = trpc.admin.orders.useQuery(
+    { status: "out_for_delivery" },
+    { 
+      staleTime: 0, // Data is immediately stale for real-time updates
+      refetchInterval: 5000, // Auto-refresh every 5 seconds for active deliveries
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+    }
+  );
+  const activeDeliveries = activeDeliveriesData || [];
 
   type Order = NonNullable<typeof orders>[number];
   type Agent = NonNullable<typeof agents>[number];
@@ -80,12 +104,22 @@ export default function AdminOrders() {
     "refunded",
   ];
 
-  const filteredOrders = orders || [];
+  const filterByTimeRange = (dateString: string, range: string) => {
+    if (range === "all") return true;
+    const date = new Date(dateString).getTime();
+    const now = Date.now();
+    const days = { "1d": 1, "2d": 2, "3d": 3, "4d": 4, "7d": 7, "30d": 30, "90d": 90, "12m": 365 }[range] || 0;
+    return (now - date) <= days * 24 * 60 * 60 * 1000;
+  };
+
+  const filteredOrders = (orders || []).filter((o: any) => 
+    filterByTimeRange(o.createdAt, timeRange)
+  );
   
   const sortedOrders = [...filteredOrders].sort((a, b) => {
     if (!sortConfig) return 0;
-    let aVal = a[sortConfig.key];
-    let bVal = b[sortConfig.key];
+    let aVal = a[sortConfig.key as keyof typeof a];
+    let bVal = b[sortConfig.key as keyof typeof b];
     if (sortConfig.key === "total") {
       aVal = Number(aVal);
       bVal = Number(bVal);
@@ -239,17 +273,31 @@ export default function AdminOrders() {
 
   return (
     <AdminLayout activeTab="orders">
-      <div className="space-y-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
         {/* Header */}
-        <div>
-          <h2 className="text-3xl font-bold">Orders Management</h2>
-          <p className="text-muted-foreground mt-1">
-            View and manage all customer orders
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-3xl font-bold">Orders Management</h2>
+            <p className="text-muted-foreground mt-1">
+              View and manage all customer orders
+            </p>
+          </div>
+          <TabsList>
+            <TabsTrigger value="list">List View</TabsTrigger>
+            <TabsTrigger value="map" className="gap-2" onClick={() => setFocusedOrderId(null)}>
+              <MapPin className="w-4 h-4" /> Live Map
+              {activeDeliveries.length > 0 && (
+                <span className="ml-1 flex items-center justify-center bg-[var(--brand)] text-white text-[10px] rounded-full w-4 h-4 font-bold">
+                  {activeDeliveries.length}
+                </span>
+              )}
+            </TabsTrigger>
+          </TabsList>
         </div>
 
-        {/* Search & Filter */}
-        <Card className="p-4">
+        <TabsContent value="list" className="space-y-6 m-0">
+          {/* Search & Filter */}
+          <Card className="p-4">
           <div className="flex gap-4">
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-3 text-muted-foreground" size={18} />
@@ -260,6 +308,22 @@ export default function AdminOrders() {
                 className="pl-10"
               />
             </div>
+            <Select value={timeRange} onValueChange={setTimeRange}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Time Range" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1d">Today / 24h</SelectItem>
+                <SelectItem value="2d">Last 2 Days</SelectItem>
+                <SelectItem value="3d">Last 3 Days</SelectItem>
+                <SelectItem value="4d">Last 4 Days</SelectItem>
+                <SelectItem value="7d">Last 7 Days</SelectItem>
+                <SelectItem value="30d">Last 30 Days</SelectItem>
+                <SelectItem value="90d">Last 90 Days</SelectItem>
+                <SelectItem value="12m">Last 12 Months</SelectItem>
+                <SelectItem value="all">All Time</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="w-48">
                 <SelectValue placeholder="Filter by status" />
@@ -347,6 +411,19 @@ export default function AdminOrders() {
                           >
                             <Eye size={16} />
                           </Button>
+                          {order.status === "out_for_delivery" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Track Driver on Map"
+                              onClick={() => {
+                                setFocusedOrderId(order.id);
+                                setActiveTab("map");
+                              }}
+                            >
+                              <MapPin size={16} className="text-[var(--brand)]" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="sm"
@@ -421,9 +498,25 @@ export default function AdminOrders() {
             </div>
           )}
         </Card>
+        </TabsContent>
 
-        {/* Order Details Modal */}
-        {selectedOrder && activeOrder && (
+        <TabsContent value="map" className="m-0">
+          <Card className="p-2 border-border overflow-hidden shadow-sm">
+            {activeDeliveries.length > 0 ? (
+              <MultiDriverMap activeOrders={activeDeliveries} focusedOrderId={focusedOrderId} className="h-[600px] border-0 rounded-lg" />
+            ) : (
+              <div className="py-32 text-center text-muted-foreground flex flex-col items-center justify-center">
+                <Truck className="w-16 h-16 mb-4 opacity-20" />
+                <h3 className="text-xl font-semibold text-foreground mb-2">No Active Deliveries</h3>
+                <p className="max-w-sm">There are currently no orders out for delivery. When drivers start their trips, they will appear here in real-time.</p>
+              </div>
+            )}
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {/* Order Details Modal */}
+      {selectedOrder && activeOrder && (
           <Card className="p-6 fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
               <div className="p-6">
@@ -481,6 +574,7 @@ export default function AdminOrders() {
                       </div>
                     </div>
                   </div>
+                </div>
 
                 {/* Delivery Information (for Admin testing/support) */}
                 {activeOrder.status === "out_for_delivery" && activeOrder.deliveryOtp && (
@@ -510,17 +604,17 @@ export default function AdminOrders() {
                         <SelectContent>
                           {agents?.map((agent: Agent) => {
                             const isAssignedToThis = activeOrder.deliveryAgentId === agent.id;
-                            const isAgentDisabled = !agent.isAvailable || (agent.activeCity && agent.activeCity !== activeOrder.shippingCity);
+                            const isAgentDisabled = agent.status !== 'active' || (agent.activeCity && agent.activeCity !== activeOrder.shippingCity);
                             const isDisabled = isAgentDisabled && !isAssignedToThis;
 
                             let statusText = "";
-                            if (!agent.isAvailable) statusText = " (Offline)";
+                            if (agent.status !== 'active') statusText = " (Offline)";
                             else if (agent.activeCity && agent.activeCity !== activeOrder.shippingCity) statusText = ` (Busy in ${agent.activeCity})`;
                             else if (agent.activeCity === activeOrder.shippingCity) statusText = ` (Active in ${agent.activeCity})`;
 
                             return (
-                              <SelectItem key={agent.id} value={agent.id.toString()} disabled={isDisabled}>
-                                {agent.name} ({agent.vehicleType} - {agent.vehicleNumber}){statusText}
+                              <SelectItem key={agent.id} value={agent.id.toString()} disabled={!!isDisabled}>
+                                {agent.name}{statusText}
                               </SelectItem>
                             );
                           })}
@@ -537,6 +631,7 @@ export default function AdminOrders() {
                   </div>
                 )}
 
+                <div className="border-t border-border pt-4 flex gap-3">
                   <Button
                     variant="outline"
                     className="w-full"
@@ -549,7 +644,6 @@ export default function AdminOrders() {
             </Card>
           </Card>
         )}
-      </div>
     </AdminLayout>
   );
 }

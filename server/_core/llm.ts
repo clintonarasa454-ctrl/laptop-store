@@ -209,14 +209,28 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
+const resolveApiUrl = () => {
+  // Use Groq if Forge is not configured
+  if (ENV.groqApiKey && !ENV.forgeApiKey) {
+    return "https://api.groq.com/openai/v1/chat/completions";
+  }
+  
+  return ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
+};
+
+const getApiKey = () => {
+  return ENV.forgeApiKey || ENV.groqApiKey;
+};
+
+const getModel = () => {
+  return ENV.groqApiKey && !ENV.forgeApiKey ? ENV.groqModel : "gemini-2.5-flash";
+};
 
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+  if (!ENV.forgeApiKey && !ENV.groqApiKey) {
+    throw new Error("OPENAI_API_KEY or GROQ_API_KEY is not configured");
   }
 };
 
@@ -280,7 +294,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
+    model: getModel(),
     messages: messages.map(normalizeMessage),
   };
 
@@ -296,9 +310,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
+  payload.max_tokens = params.maxTokens || params.max_tokens || 4096;
+
+  // Only add thinking for Forge (gemini), not for Groq
+  if (ENV.forgeApiKey) {
+    payload.thinking = {
+      "budget_tokens": 128
+    };
   }
 
   const normalizedResponseFormat = normalizeResponseFormat({
@@ -316,7 +334,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
+      authorization: `Bearer ${getApiKey()}`,
     },
     body: JSON.stringify(payload),
   });
