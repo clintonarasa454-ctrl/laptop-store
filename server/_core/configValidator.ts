@@ -69,7 +69,12 @@ export function validateConfiguration(): ConfigurationStatus {
 
   // ===== STORAGE VALIDATION =====
   const hasForgeConfig = process.env.BUILT_IN_FORGE_API_URL && process.env.BUILT_IN_FORGE_API_KEY;
-  const hasS3Config = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_S3_BUCKET;
+  
+  const awsAccessKey = process.env.AWS_ACCESS_KEY_ID;
+  const awsSecret = process.env.AWS_SECRET_ACCESS_KEY;
+  const awsBucket = process.env.AWS_S3_BUCKET;
+
+  const hasS3Config = awsAccessKey && awsSecret && awsBucket && awsAccessKey !== "your_access_key";
 
   if (hasForgeConfig) {
     status.storage = { 
@@ -82,9 +87,14 @@ export function validateConfiguration(): ConfigurationStatus {
       message: "✅ Storage: AWS S3 configured" 
     };
   } else {
+    const missing = [];
+    if (!awsAccessKey || awsAccessKey === "your_access_key") missing.push("AWS_ACCESS_KEY_ID");
+    if (!awsSecret || awsSecret === "your_secret_key") missing.push("AWS_SECRET_ACCESS_KEY");
+    if (!awsBucket || awsBucket === "your_bucket_name") missing.push("AWS_S3_BUCKET");
+
     status.storage = { 
       status: "warning", 
-      message: "⚠️  No S3 storage backend configured. Image uploads will fall back to Base64." 
+      message: `⚠️  No S3 storage backend configured. Missing or placeholder value for: ${missing.join(", ")}. Image uploads will fall back to Base64.` 
     };
   }
 

@@ -6194,6 +6194,9 @@ export async function processAutoRestock() {
       port: Number(emailSettings.smtpPort),
       secure: Number(emailSettings.smtpPort) === 465,
       auth: { user: emailSettings.smtpUser, pass: emailSettings.smtpPassword },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
 
     // Group items by warehouseId
