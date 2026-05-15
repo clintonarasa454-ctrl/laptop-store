@@ -1283,8 +1283,6 @@ AI Response (JSON):
           // Don't throw error - allow signup to continue even if email fails
           // Log error details for debugging
           console.error("Email Configuration Issue:", {
-            smtpConfigured: !!emailSettings?.smtpHost,
-            port: emailSettings?.smtpPort,
             errorCode: err.code,
             errorMessage: err.message
           });
@@ -1466,8 +1464,6 @@ AI Response (JSON):
           // Don't throw error - allow password reset request to succeed
           // Even if email fails, user can still use OTP locally if needed
           console.error("Email Configuration Issue during password reset:", {
-            smtpConfigured: emailSettings?.smtpHost ? "yes" : "no",
-            port: emailSettings?.smtpPort,
             errorCode: err.code,
             errorMessage: err.message,
             email: user.email
@@ -1585,8 +1581,6 @@ AI Response (JSON):
           console.error("Failed to send verification email during registration", err); 
           // Log the error but don't fail the registration - email can be resent
           console.error("Email Configuration Issue during registration:", {
-            smtpConfigured: emailSettings?.smtpHost ? "yes" : "no",
-            port: emailSettings?.smtpPort,
             errorCode: err.code,
             errorMessage: err.message,
             email: input.email
