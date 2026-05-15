@@ -69,7 +69,17 @@ export function validateConfiguration(): ConfigurationStatus {
 
   // ===== STORAGE VALIDATION =====
   const hasForgeConfig = process.env.BUILT_IN_FORGE_API_URL && process.env.BUILT_IN_FORGE_API_KEY;
-  const hasS3Config = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_S3_BUCKET;
+
+  const awsAccessKey = process.env.AWS_ACCESS_KEY_ID;
+  const awsSecret = process.env.AWS_SECRET_ACCESS_KEY;
+  const awsBucket = process.env.AWS_S3_BUCKET;
+
+  const placeholders = ["your_access_key", "your_secret_key", "your_bucket"];
+  const isValidValue = (val: string | undefined): boolean =>
+    !!val && !placeholders.includes(val.toLowerCase());
+
+  const hasS3Config =
+    isValidValue(awsAccessKey) && isValidValue(awsSecret) && isValidValue(awsBucket);
 
   if (hasForgeConfig) {
     status.storage = { 
@@ -82,9 +92,14 @@ export function validateConfiguration(): ConfigurationStatus {
       message: "✅ Storage: AWS S3 configured" 
     };
   } else {
+    const missing: string[] = [];
+    if (!isValidValue(awsAccessKey)) missing.push(`AWS_ACCESS_KEY_ID${awsAccessKey ? ` (placeholder: "${awsAccessKey}")` : " (not set)"}`);
+    if (!isValidValue(awsSecret)) missing.push(`AWS_SECRET_ACCESS_KEY${awsSecret ? ` (placeholder: "${awsSecret}")` : " (not set)"}`);
+    if (!isValidValue(awsBucket)) missing.push(`AWS_S3_BUCKET${awsBucket ? ` (placeholder: "${awsBucket}")` : " (not set)"}`);
+
     status.storage = { 
       status: "warning", 
-      message: "⚠️  No S3 storage backend configured. Image uploads will fall back to Base64." 
+      message: `⚠️  No S3 storage backend configured. Image uploads will fall back to Base64. Missing/invalid: ${missing.join(", ")}` 
     };
   }
 
