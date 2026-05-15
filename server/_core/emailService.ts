@@ -16,10 +16,29 @@ export interface EmailOptions {
 }
 
 /**
- * Validates email configuration
+ * Validates email configuration - checks for placeholder values too
  */
 export function isEmailConfigured(config: EmailConfig): boolean {
-  return !!(config.smtpHost && config.smtpUser && config.smtpPassword && config.smtpPort);
+  if (!config.smtpHost || !config.smtpUser || !config.smtpPassword || !config.smtpPort) {
+    return false;
+  }
+  
+  // Check if using placeholder values (common mistake in production)
+  const placeholders = [
+    "your-email@gmail.com",
+    "your-app-password",
+    "your_email@gmail.com",
+    "smtp.gmail.com",
+    "placeholder",
+    "example@example.com"
+  ];
+  
+  const lowerUser = config.smtpUser.toLowerCase();
+  if (placeholders.some(p => lowerUser.includes(p) || config.smtpPassword === p)) {
+    return false;
+  }
+  
+  return true;
 }
 
 /**
@@ -42,11 +61,12 @@ export async function sendEmail(
 ): Promise<{ success: boolean; error?: string }> {
   // Check if email is configured
   if (!isEmailConfigured(config)) {
-    console.log(
-      `📧 No SMTP configured. Email to ${options.to}:\n` +
+    console.warn(
+      `⚠️ Email not configured or using placeholder values. Email to ${options.to}:\n` +
       `   Subject: ${options.subject}\n` +
-      `   (Would be sent in production)`
+      `   (Configure SMTP_HOST, SMTP_USER, SMTP_PASSWORD in environment)`
     );
+    // Don't throw error - allow app to continue
     return { success: false, error: "SMTP_NOT_CONFIGURED" };
   }
 
@@ -67,15 +87,20 @@ export async function sendEmail(
         user: config.smtpUser,
         pass: config.smtpPassword,
       },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
+      // Reduced timeouts for Railway environment
+      connectionTimeout: 5000,
+      greetingTimeout: 5000,
+      socketTimeout: 5000,
+      // Pool connections to avoid exhaustion
+      pool: true,
+      maxConnections: 5,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 14,
     });
 
-    // Verify connection before sending
-    await transporter.verify();
-
-    // Send email
+    // Skip verification on first send to avoid timeout delays
+    // Just send directly
     const result = await transporter.sendMail({
       from: options.from || `"${storeName}" <${config.smtpUser}>`,
       to: options.to,
@@ -84,6 +109,7 @@ export async function sendEmail(
     });
 
     console.log(`✅ Email sent successfully to ${options.to} (Message ID: ${result.messageId})`);
+    await transporter.close();
     return { success: true };
   } catch (err: any) {
     const errorCode = err.code || "UNKNOWN";
@@ -92,15 +118,17 @@ export async function sendEmail(
     // Provide helpful diagnostics
     let diagnostic = "";
     if (errorCode === "ECONNREFUSED") {
-      diagnostic = `Cannot connect to SMTP server at ${config.smtpHost}:${smtpPort}. Check host and port.`;
+      diagnostic = `Cannot connect to SMTP server at ${config.smtpHost}:${smtpPort}. Check SMTP_HOST and SMTP_PORT environment variables.`;
     } else if (errorCode === "ENOTFOUND") {
-      diagnostic = `SMTP host "${config.smtpHost}" not found. Check hostname spelling.`;
-    } else if (errorCode === "ETIMEDOUT") {
-      diagnostic = `Connection to ${config.smtpHost}:${smtpPort} timed out (10s). Server may be unreachable.`;
-    } else if (errorMessage.includes("Invalid login") || errorMessage.includes("Authentication failed")) {
-      diagnostic = `SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD.`;
+      diagnostic = `SMTP host "${config.smtpHost}" not found. Check SMTP_HOST spelling in environment.`;
+    } else if (errorCode === "ETIMEDOUT" || errorMessage.includes("timeout")) {
+      diagnostic = `Connection to ${config.smtpHost}:${smtpPort} timed out. SMTP server may be unreachable or misconfigured. Ensure SMTP is enabled and firewall allows connection.`;
+    } else if (errorMessage.includes("Invalid login") || errorMessage.includes("Authentication failed") || errorCode === "EAUTH") {
+      diagnostic = `SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD are correct and match your provider's requirements.`;
     } else if (errorMessage.includes("bad response on DATA command")) {
       diagnostic = `Email was rejected by SMTP server. Check recipient and email format.`;
+    } else if (errorMessage.includes("Unexpected server response")) {
+      diagnostic = `SMTP server rejected the command. Verify SMTP_HOST, SMTP_PORT, and secure setting match your provider.`;
     }
 
     const fullError = diagnostic ? `${errorMessage} - ${diagnostic}` : errorMessage;
