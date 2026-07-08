@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, lazy, Suspense } from "react";
 import { trpc } from "@/lib/trpc";
 import { Card } from "@/components/ui/card";
 import { TrendingUp, Clock, AlertTriangle } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+
+const InventoryVelocityChart = lazy(() => import("@/components/InventoryVelocityChart"));
 
 export default function InventoryTrends({ timeRange = "30d" }: { timeRange?: string }) {
   const { data: velocity, isLoading: loadingVelocity } = trpc.inventory.velocityTrends.useQuery(
@@ -44,15 +45,9 @@ export default function InventoryTrends({ timeRange = "30d" }: { timeRange?: str
         </h3>
         <div className="h-[300px]">
           {velocityData.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={velocityData} layout="vertical" margin={{ top: 0, right: 0, left: 40, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--border)" />
-                <XAxis type="number" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="name" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} width={100} />
-                <Tooltip contentStyle={{ borderRadius: "8px" }} cursor={{ fill: "var(--muted)" }} />
-                <Bar dataKey="Velocity" fill="#10b981" radius={[0, 4, 4, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
+            <Suspense fallback={<div className="h-full flex items-center justify-center text-muted-foreground bg-gray-50 rounded-lg">Loading chart…</div>}>
+              <InventoryVelocityChart data={velocityData} />
+            </Suspense>
           ) : (
             <div className="h-full flex items-center justify-center text-muted-foreground bg-gray-50 rounded-lg">No velocity data available.</div>
           )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -19,10 +19,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Link } from "wouter";
 import { Badge } from "@/components/ui/badge";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { ImageCropperModal } from "@/components/ImageCropperModal";
 import { Html5Qrcode } from "html5-qrcode";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+
+const EarningsBarChart = lazy(() => import("@/components/EarningsBarChart"));
 
 function TypewriterText({ text, onComplete, renderContent }: { text: string, onComplete: () => void, renderContent: (content: string) => any }) {
   const [displayed, setDisplayed] = useState("");
@@ -1510,19 +1511,9 @@ function EarningsContent({ agentId }: { agentId: number | null }) {
       <Card className="p-5">
         <h3 className="font-semibold mb-4 text-muted-foreground">Weekly Income</h3>
         <div className="h-[250px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={earningsData.chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-              <XAxis dataKey="day" stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} dy={10} />
-              <YAxis stroke="var(--muted-foreground)" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => formatPrice(val)} />
-              <Tooltip
-                cursor={{ fill: "var(--muted)" }}
-                contentStyle={{ backgroundColor: "var(--card)", borderColor: "var(--border)", borderRadius: "8px" }}
-                formatter={(value: number) => [formatPrice(value), "Earnings"]}
-              />
-              <Bar dataKey="earnings" fill="var(--brand)" radius={[4, 4, 0, 0]} barSize={40} />
-            </BarChart>
-          </ResponsiveContainer>
+          <Suspense fallback={<div className="h-full flex items-center justify-center text-muted-foreground">Loading chart…</div>}>
+            <EarningsBarChart chartData={earningsData.chartData} />
+          </Suspense>
         </div>
       </Card>
 
